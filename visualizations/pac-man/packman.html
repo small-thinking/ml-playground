@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q-Learning 吃豆人交互式演示</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+        .info-panel {
+            background-color: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .slider-container input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #d3d3d3;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+            border-radius: 5px;
+        }
+        .slider-container input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #4f46e5;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        .slider-container input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #4f46e5;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen p-4">
+
+    <div class="w-full max-w-5xl mx-auto flex flex-col lg:flex-row gap-6">
+        <!-- Game Canvas -->
+        <div class="flex-grow flex items-center justify-center">
+            <canvas id="gameCanvas" class="rounded-lg shadow-2xl border-2 border-indigo-500"></canvas>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="w-full lg:w-80 flex-shrink-0 space-y-4 info-panel p-6 rounded-lg shadow-xl border border-gray-700 text-gray-800">
+            <h1 data-lang-key="panelTitle" class="text-2xl font-bold text-center text-indigo-600">Q-Learning 控制面板</h1>
+            
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-4 text-center">
+                <div>
+                    <p data-lang-key="episodeLabel" class="text-sm font-medium text-gray-500">训练回合</p>
+                    <p id="episode-count" class="text-2xl font-semibold text-indigo-600">0</p>
+                </div>
+                <div>
+                    <p data-lang-key="rewardLabel" class="text-sm font-medium text-gray-500">平均奖励</p>
+                    <p id="average-reward" class="text-2xl font-semibold text-indigo-600">0</p>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="space-y-3 pt-4">
+                <div class="grid grid-cols-2 gap-3">
+                    <button id="start-btn" data-lang-key="startBtn" class="w-full bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors shadow">开始训练</button>
+                    <button id="stop-btn" data-lang-key="stopBtn" class="w-full bg-red-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-red-600 transition-colors shadow">暂停训练</button>
+                </div>
+                <button id="reset-btn" data-lang-key="resetBtn" class="w-full bg-gray-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-gray-600 transition-colors shadow">重置状态</button>
+            </div>
+            
+            <!-- Parameters -->
+            <div class="space-y-4 pt-4">
+                <div class="slider-container">
+                    <label for="alpha-slider" data-lang-key="alphaLabel" class="text-sm font-medium w-28">学习率 (α):</label>
+                    <input type="range" id="alpha-slider" min="0.1" max="1" step="0.1" value="0.5">
+                    <span id="alpha-value" class="text-sm font-semibold w-10 text-right">0.5</span>
+                </div>
+                <div class="slider-container">
+                    <label for="gamma-slider" data-lang-key="gammaLabel" class="text-sm font-medium w-28">折扣因子 (γ):</label>
+                    <input type="range" id="gamma-slider" min="0.1" max="0.99" step="0.01" value="0.9">
+                    <span id="gamma-value" class="text-sm font-semibold w-10 text-right">0.9</span>
+                </div>
+                <div class="slider-container">
+                    <label for="epsilon-slider" data-lang-key="epsilonLabel" class="text-sm font-medium w-28">探索率 (ε):</label>
+                    <input type="range" id="epsilon-slider" min="0" max="1" step="0.1" value="0.2">
+                    <span id="epsilon-value" class="text-sm font-semibold w-10 text-right">0.2</span>
+                </div>
+                 <div class="slider-container">
+                    <label for="speed-slider" data-lang-key="speedLabel" class="text-sm font-medium w-28">训练速度:</label>
+                    <input type="range" id="speed-slider" min="1" max="100" step="1" value="50">
+                    <span id="speed-value" class="text-sm font-semibold w-10 text-right">50</span>
+                </div>
+            </div>
+             <div class="pt-4 text-center">
+                <input type="checkbox" id="show-q-values-checkbox" checked>
+                <label for="show-q-values-checkbox" data-lang-key="qValuesLabel" class="text-sm font-medium">显示Q值可视化</label>
+            </div>
+            <div class="pt-2">
+                <button id="lang-toggle-btn" data-lang-key="langToggle" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-lg hover:bg-teal-600 transition-colors shadow">Switch to English</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Elements ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const episodeCountEl = document.getElementById('episode-count');
+        const averageRewardEl = document.getElementById('average-reward');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const alphaSlider = document.getElementById('alpha-slider');
+        const gammaSlider = document.getElementById('gamma-slider');
+        const epsilonSlider = document.getElementById('epsilon-slider');
+        const speedSlider = document.getElementById('speed-slider');
+        const alphaValueEl = document.getElementById('alpha-value');
+        const gammaValueEl = document.getElementById('gamma-value');
+        const epsilonValueEl = document.getElementById('epsilon-value');
+        const speedValueEl = document.getElementById('speed-value');
+        const showQValuesCheckbox = document.getElementById('show-q-values-checkbox');
+        const langToggleBtn = document.getElementById('lang-toggle-btn');
+
+        // --- Translations ---
+        const translations = {
+            zh: {
+                panelTitle: "Q-Learning 控制面板",
+                episodeLabel: "训练回合",
+                rewardLabel: "平均奖励",
+                startBtn: "开始训练",
+                stopBtn: "暂停训练",
+                resetBtn: "重置状态",
+                alphaLabel: "学习率 (α):",
+                gammaLabel: "折扣因子 (γ):",
+                epsilonLabel: "探索率 (ε):",
+                speedLabel: "训练速度:",
+                qValuesLabel: "显示Q值可视化",
+                langToggle: "Switch to English"
+            },
+            en: {
+                panelTitle: "Q-Learning Control Panel",
+                episodeLabel: "Episodes",
+                rewardLabel: "Average Reward",
+                startBtn: "Start Training",
+                stopBtn: "Pause Training",
+                resetBtn: "Reset State",
+                alphaLabel: "Learning Rate (α):",
+                gammaLabel: "Discount Factor (γ):",
+                epsilonLabel: "Exploration Rate (ε):",
+                speedLabel: "Training Speed:",
+                qValuesLabel: "Show Q-Values",
+                langToggle: "切换中文"
+            }
+        };
+        let currentLang = 'zh';
+
+        // --- Game & Q-Learning Configuration ---
+        const GRID_SIZE = 10;
+        let CELL_SIZE = 40; // Will be adjusted based on canvas size
+        const WALL = 1, DOT = 2, EMPTY = 0;
+        
+        const MAZE = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 2, 2, 2, 2, 1, 2, 2, 2, 1],
+            [1, 2, 1, 1, 2, 1, 2, 1, 2, 1],
+            [1, 2, 2, 2, 2, 2, 2, 1, 2, 1],
+            [1, 2, 1, 2, 1, 1, 2, 2, 2, 1],
+            [1, 2, 1, 2, 2, 2, 1, 2, 1, 1],
+            [1, 2, 1, 1, 1, 2, 1, 2, 2, 1],
+            [1, 2, 2, 2, 2, 2, 2, 2, 2, 1],
+            [1, 2, 1, 1, 1, 1, 1, 1, 2, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        let pacman = { x: 1, y: 1 };
+        let ghost = { x: 8, y: 8 };
+        let dots = [];
+        
+        let qTable = {};
+        let episode = 0;
+        let episodeRewards = [];
+        let currentEpisodeReward = 0;
+        let trainingInterval;
+        let isTraining = false;
+
+        // --- Hyperparameters ---
+        let alpha = 0.5; // Learning Rate
+        let gamma = 0.9; // Discount Factor
+        let epsilon = 0.2; // Exploration Rate
+        let speed = 50;
+        
+        const ACTIONS = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+        const REWARDS = {
+            DOT_BASE: 5, // Base reward for a dot
+            DOT_DISTANCE_MULTIPLIER: 2, // Multiplier for distance-based reward
+            GHOST: -100,
+            WALL: -5,
+            STEP: -1,
+            WIN: 200
+        };
+
+        // --- Initialization ---
+        function setup() {
+            const container = canvas.parentElement;
+            const size = Math.min(container.clientWidth, container.clientHeight, 500);
+            canvas.width = size;
+            canvas.height = size;
+            CELL_SIZE = canvas.width / GRID_SIZE;
+            setLanguage(currentLang);
+            reset();
+        }
+
+        function reset() {
+            stopTraining();
+            qTable = {};
+            episode = 0;
+            episodeRewards = [];
+            currentEpisodeReward = 0;
+            resetGame();
+            updateUI();
+            draw();
+        }
+        
+        function resetGame() {
+            pacman = { x: 1, y: 1 };
+            ghost = { x: 8, y: 8 };
+            currentEpisodeReward = 0;
+            dots = [];
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    if (MAZE[y][x] === DOT) {
+                        dots.push({ x, y });
+                    }
+                }
+            }
+        }
+
+        // --- Q-Learning Core Logic ---
+        function getState() {
+            return `${pacman.x},${pacman.y}`;
+        }
+
+        function getQValue(state, action) {
+            if (!qTable[state]) {
+                qTable[state] = { UP: 0, DOWN: 0, LEFT: 0, RIGHT: 0 };
+            }
+            return qTable[state][action];
+        }
+
+        function chooseAction(state) {
+            if (Math.random() < epsilon) {
+                return ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
+            } else {
+                const qValues = qTable[state] || { UP: 0, DOWN: 0, LEFT: 0, RIGHT: 0 };
+                let bestAction = 'UP';
+                let maxQ = -Infinity;
+                for (const action of ACTIONS) {
+                    if (qValues[action] > maxQ) {
+                        maxQ = qValues[action];
+                        bestAction = action;
+                    }
+                }
+                return bestAction;
+            }
+        }
+
+        function updateQValue(state, action, reward, nextState) {
+            const oldQ = getQValue(state, action);
+            const nextQValues = qTable[nextState] || { UP: 0, DOWN: 0, LEFT: 0, RIGHT: 0 };
+            const maxNextQ = Math.max(...Object.values(nextQValues));
+            const newQ = oldQ + alpha * (reward + gamma * maxNextQ - oldQ);
+            if (!qTable[state]) {
+                qTable[state] = { UP: 0, DOWN: 0, LEFT: 0, RIGHT: 0 };
+            }
+            qTable[state][action] = newQ;
+        }
+
+        // --- Game Simulation Step ---
+        function gameStep() {
+            if (!isTraining) return;
+            const state = getState();
+            const action = chooseAction(state);
+            const oldPos = { ...pacman };
+            switch (action) {
+                case 'UP': pacman.y--; break;
+                case 'DOWN': pacman.y++; break;
+                case 'LEFT': pacman.x--; break;
+                case 'RIGHT': pacman.x++; break;
+            }
+            let reward = REWARDS.STEP;
+            let gameOver = false;
+            if (MAZE[pacman.y][pacman.x] === WALL) {
+                pacman = oldPos;
+                reward += REWARDS.WALL;
+            }
+            
+            const dotIndex = dots.findIndex(d => d.x === pacman.x && d.y === pacman.y);
+            if (dotIndex !== -1) {
+                const eatenDot = dots.splice(dotIndex, 1)[0];
+                const distanceFromStart = Math.abs(eatenDot.x - 1) + Math.abs(eatenDot.y - 1);
+                const dynamicDotReward = REWARDS.DOT_BASE + distanceFromStart * REWARDS.DOT_DISTANCE_MULTIPLIER;
+                reward += dynamicDotReward;
+            }
+
+            moveGhost();
+            if (pacman.x === ghost.x && pacman.y === ghost.y) {
+                reward += REWARDS.GHOST;
+                gameOver = true;
+            }
+            if (dots.length === 0) {
+                reward += REWARDS.WIN;
+                gameOver = true;
+            }
+            
+            currentEpisodeReward += reward;
+            const nextState = getState();
+            updateQValue(state, action, reward, nextState);
+
+            if (gameOver) {
+                episode++;
+                episodeRewards.push(currentEpisodeReward);
+                resetGame();
+            }
+            updateUI();
+            draw();
+        }
+        
+        function moveGhost() {
+            const possibleMoves = [];
+            const { x, y } = ghost;
+            if (MAZE[y - 1][x] !== WALL) possibleMoves.push({ x: x, y: y - 1 });
+            if (MAZE[y + 1][x] !== WALL) possibleMoves.push({ x: x, y: y + 1 });
+            if (MAZE[y][x - 1] !== WALL) possibleMoves.push({ x: x - 1, y: y });
+            if (MAZE[y][x + 1] !== WALL) possibleMoves.push({ x: x + 1, y: y });
+            if (possibleMoves.length === 0) return;
+            let bestMove = possibleMoves[0];
+            let minDistance = Infinity;
+            for (const move of possibleMoves) {
+                const distance = Math.abs(move.x - pacman.x) + Math.abs(move.y - pacman.y);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    bestMove = move;
+                }
+            }
+            ghost.x = bestMove.x;
+            ghost.y = bestMove.y;
+        }
+
+        // --- Drawing ---
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawQValues();
+            drawMaze();
+            drawDots();
+            drawGhost();
+            drawPacman();
+        }
+
+        function drawMaze() {
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    if (MAZE[y][x] === WALL) {
+                        ctx.fillStyle = '#1e3a8a';
+                        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    }
+                }
+            }
+        }
+
+        function drawDots() {
+            ctx.fillStyle = '#facc15';
+            dots.forEach(dot => {
+                ctx.beginPath();
+                ctx.arc(dot.x * CELL_SIZE + CELL_SIZE / 2, dot.y * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE / 8, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+
+        function drawPacman() {
+            ctx.fillStyle = '#f59e0b';
+            ctx.beginPath();
+            ctx.arc(pacman.x * CELL_SIZE + CELL_SIZE / 2, pacman.y * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE / 3, 0.2 * Math.PI, 1.8 * Math.PI);
+            ctx.lineTo(pacman.x * CELL_SIZE + CELL_SIZE / 2, pacman.y * CELL_SIZE + CELL_SIZE / 2);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawGhost() {
+            ctx.fillStyle = '#ef4444';
+            const x = ghost.x * CELL_SIZE;
+            const y = ghost.y * CELL_SIZE;
+            const w = CELL_SIZE;
+            const h = CELL_SIZE;
+            ctx.beginPath();
+            ctx.arc(x + w / 2, y + h / 2, w / 3, Math.PI, 0);
+            ctx.lineTo(x + w, y + h);
+            ctx.lineTo(x + (w/4*3), y + (h/4*3));
+            ctx.lineTo(x + (w/2), y + h);
+            ctx.lineTo(x + (w/4), y + (h/4*3));
+            ctx.lineTo(x, y + h);
+            ctx.closePath();
+            ctx.fill();
+        }
+        
+        function drawQValues() {
+            if (!showQValuesCheckbox.checked) return;
+            let maxQOverall = -Infinity;
+            let minQOverall = Infinity;
+            for (const state in qTable) {
+                const maxQ = Math.max(...Object.values(qTable[state]));
+                if (maxQ > maxQOverall) maxQOverall = maxQ;
+                if (maxQ < minQOverall) minQOverall = maxQ;
+            }
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    if (MAZE[y][x] === WALL) continue;
+                    const state = `${x},${y}`;
+                    const qValues = qTable[state];
+                    if (!qValues) continue;
+                    const maxQ = Math.max(...Object.values(qValues));
+                    const normalizedQ = (maxQ - minQOverall) / (maxQOverall - minQOverall || 1);
+                    const red = Math.max(0, 255 * (1 - normalizedQ));
+                    const green = Math.max(0, 255 * normalizedQ);
+                    ctx.fillStyle = `rgba(${red}, ${green}, 0, 0.5)`;
+                    ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                    let bestAction = 'UP';
+                    let bestQ = -Infinity;
+                    for (const action in qValues) {
+                        if (qValues[action] > bestQ) {
+                            bestQ = qValues[action];
+                            bestAction = action;
+                        }
+                    }
+                    ctx.fillStyle = 'white';
+                    ctx.font = `${CELL_SIZE / 2}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    const centerX = x * CELL_SIZE + CELL_SIZE / 2;
+                    const centerY = y * CELL_SIZE + CELL_SIZE / 2;
+                    let arrow = '';
+                    if (bestAction === 'UP') arrow = '↑';
+                    else if (bestAction === 'DOWN') arrow = '↓';
+                    else if (bestAction === 'LEFT') arrow = '←';
+                    else if (bestAction === 'RIGHT') arrow = '→';
+                    ctx.fillText(arrow, centerX, centerY);
+                }
+            }
+        }
+
+        // --- UI & Controls ---
+        function updateUI() {
+            episodeCountEl.textContent = episode;
+            if (episodeRewards.length > 0) {
+                const sumOfRewards = episodeRewards.reduce((sum, reward) => sum + reward, 0);
+                const averageReward = sumOfRewards / episodeRewards.length;
+                averageRewardEl.textContent = Math.round(averageReward);
+            } else {
+                averageRewardEl.textContent = 0;
+            }
+            alphaValueEl.textContent = alpha.toFixed(2);
+            gammaValueEl.textContent = gamma.toFixed(2);
+            epsilonValueEl.textContent = epsilon.toFixed(2);
+            speedValueEl.textContent = speed;
+        }
+
+        function setLanguage(lang) {
+            currentLang = lang;
+            const t = translations[lang];
+            document.querySelectorAll('[data-lang-key]').forEach(el => {
+                const key = el.getAttribute('data-lang-key');
+                if (t[key]) {
+                    el.textContent = t[key];
+                }
+            });
+        }
+
+        function startTraining() {
+            if (isTraining) return;
+            isTraining = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            const interval = 101 - speed;
+            trainingInterval = setInterval(gameStep, interval);
+        }
+
+        function stopTraining() {
+            isTraining = false;
+            clearInterval(trainingInterval);
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+        
+        function updateSpeed() {
+            speed = speedSlider.value;
+            if (isTraining) {
+                stopTraining();
+                startTraining();
+            }
+        }
+
+        // --- Event Listeners ---
+        startBtn.addEventListener('click', startTraining);
+        stopBtn.addEventListener('click', stopTraining);
+        resetBtn.addEventListener('click', reset);
+        alphaSlider.addEventListener('input', (e) => { alpha = parseFloat(e.target.value); updateUI(); });
+        gammaSlider.addEventListener('input', (e) => { gamma = parseFloat(e.target.value); updateUI(); });
+        epsilonSlider.addEventListener('input', (e) => { epsilon = parseFloat(e.target.value); updateUI(); });
+        speedSlider.addEventListener('input', (e) => { speed = parseInt(e.target.value); updateUI(); });
+        speedSlider.addEventListener('change', updateSpeed);
+        showQValuesCheckbox.addEventListener('change', draw);
+        langToggleBtn.addEventListener('click', () => {
+            const newLang = currentLang === 'zh' ? 'en' : 'zh';
+            setLanguage(newLang);
+        });
+        window.addEventListener('resize', setup);
+
+        // --- Initial Load ---
+        setup();
+
+    </script>
+</body>
+</html>
