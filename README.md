@@ -4,34 +4,14 @@ A repository for HTML-based machine learning visualizations and interactive demo
 
 ## Demos
 
-- **[Pac-Man Game](https://username.github.io/ml-playground/visualizations/pac-man/packman.html)** - Interactive Pac-Man game demo
+- **[Pac-Man Game](https://small-thinking.github.io/ml-playground/visualizations/pac-man/packman.html)** - Interactive Pac-Man game demo
 
 ## Getting Started
 
-### View Live Demos
-Visit the GitHub Pages site: `https://username.github.io/ml-playground/`
+Visit the live site: [https://small-thinking.github.io/ml-playground/](https://small-thinking.github.io/ml-playground/)
 
-## Contributing
-
-1. Add your demo folder to `visualizations/`
-2. Include an `index.html` or descriptive HTML filename
-3. Update this README with your demo link
-
-## Deployment
-
-### Setup GitHub Pages
-1. Go to your repository Settings → Pages
-2. Source: Select "Deploy from a branch"
-3. Branch: Select "gh-pages" (will be created automatically)
-4. Save
-
-### Automatic (GitHub Actions)
-- Push to `main` branch
-- GitHub Actions automatically deploys to GitHub Pages
-- Site updates within minutes
-
-### Manual Sync
+For local development:
 ```bash
-# Run the sync script
-./scripts/sync-gh-pages.sh
+python -m http.server 8000
+# Then visit: http://localhost:8000
 ``` 
