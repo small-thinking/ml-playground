@@ -8,14 +8,6 @@ A repository for HTML-based machine learning visualizations and interactive demo
 
 ## Getting Started
 
-### Local Development
-```bash
-cd visualizations
-# Open any HTML file directly in your browser
-# or serve with a local server:
-python -m http.server 8000
-```
-
 ### View Live Demos
 Visit the GitHub Pages site: `https://username.github.io/ml-playground/`
 
@@ -23,4 +15,17 @@ Visit the GitHub Pages site: `https://username.github.io/ml-playground/`
 
 1. Add your demo folder to `visualizations/`
 2. Include an `index.html` or descriptive HTML filename
-3. Update this README with your demo link 
+3. Update this README with your demo link
+
+## Deployment
+
+### Automatic (GitHub Actions)
+- Push to `main` branch
+- GitHub Actions automatically deploys to GitHub Pages
+- Site updates within minutes
+
+### Manual Sync
+```bash
+# Run the sync script
+./scripts/sync-gh-pages.sh
+``` 
