@@ -19,6 +19,12 @@ Visit the GitHub Pages site: `https://username.github.io/ml-playground/`
 
 ## Deployment
 
+### Setup GitHub Pages
+1. Go to your repository Settings → Pages
+2. Source: Select "Deploy from a branch"
+3. Branch: Select "gh-pages" (will be created automatically)
+4. Save
+
 ### Automatic (GitHub Actions)
 - Push to `main` branch
 - GitHub Actions automatically deploys to GitHub Pages
