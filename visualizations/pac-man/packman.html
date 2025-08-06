@@ -48,6 +48,16 @@
             cursor: pointer;
             border-radius: 50%;
         }
+        select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.5rem center;
+            background-size: 1.5em 1.5em;
+            padding-right: 2.5rem;
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen p-4">
@@ -86,22 +96,29 @@
             <!-- Parameters -->
             <div class="space-y-4 pt-4">
                 <div class="slider-container">
-                    <label for="alpha-slider" data-lang-key="alphaLabel" class="text-sm font-medium w-28">学习率 (α):</label>
+                    <label for="reward-mode-select" data-lang-key="rewardModeLabel" class="text-sm font-medium w-28 shrink-0">奖励模式:</label>
+                    <select id="reward-mode-select" class="w-full bg-white border border-gray-300 rounded-md shadow-sm py-1 px-2 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                        <option value="distance" data-lang-key="rewardModeDistance">距离加权</option>
+                        <option value="equal" data-lang-key="rewardModeEqual">固定奖励</option>
+                    </select>
+                </div>
+                <div class="slider-container">
+                    <label for="alpha-slider" data-lang-key="alphaLabel" class="text-sm font-medium w-28 shrink-0">学习率 (α):</label>
                     <input type="range" id="alpha-slider" min="0.1" max="1" step="0.1" value="0.5">
                     <span id="alpha-value" class="text-sm font-semibold w-10 text-right">0.5</span>
                 </div>
                 <div class="slider-container">
-                    <label for="gamma-slider" data-lang-key="gammaLabel" class="text-sm font-medium w-28">折扣因子 (γ):</label>
+                    <label for="gamma-slider" data-lang-key="gammaLabel" class="text-sm font-medium w-28 shrink-0">折扣因子 (γ):</label>
                     <input type="range" id="gamma-slider" min="0.1" max="0.99" step="0.01" value="0.9">
                     <span id="gamma-value" class="text-sm font-semibold w-10 text-right">0.9</span>
                 </div>
                 <div class="slider-container">
-                    <label for="epsilon-slider" data-lang-key="epsilonLabel" class="text-sm font-medium w-28">探索率 (ε):</label>
+                    <label for="epsilon-slider" data-lang-key="epsilonLabel" class="text-sm font-medium w-28 shrink-0">探索率 (ε):</label>
                     <input type="range" id="epsilon-slider" min="0" max="1" step="0.1" value="0.2">
                     <span id="epsilon-value" class="text-sm font-semibold w-10 text-right">0.2</span>
                 </div>
                  <div class="slider-container">
-                    <label for="speed-slider" data-lang-key="speedLabel" class="text-sm font-medium w-28">训练速度:</label>
+                    <label for="speed-slider" data-lang-key="speedLabel" class="text-sm font-medium w-28 shrink-0">训练速度:</label>
                     <input type="range" id="speed-slider" min="1" max="100" step="1" value="50">
                     <span id="speed-value" class="text-sm font-semibold w-10 text-right">50</span>
                 </div>
@@ -135,6 +152,7 @@
         const speedValueEl = document.getElementById('speed-value');
         const showQValuesCheckbox = document.getElementById('show-q-values-checkbox');
         const langToggleBtn = document.getElementById('lang-toggle-btn');
+        const rewardModeSelect = document.getElementById('reward-mode-select');
 
         // --- Translations ---
         const translations = {
@@ -145,6 +163,9 @@
                 startBtn: "开始训练",
                 stopBtn: "暂停训练",
                 resetBtn: "重置状态",
+                rewardModeLabel: "奖励模式:",
+                rewardModeDistance: "距离加权",
+                rewardModeEqual: "固定奖励",
                 alphaLabel: "学习率 (α):",
                 gammaLabel: "折扣因子 (γ):",
                 epsilonLabel: "探索率 (ε):",
@@ -159,6 +180,9 @@
                 startBtn: "Start Training",
                 stopBtn: "Pause Training",
                 resetBtn: "Reset State",
+                rewardModeLabel: "Reward Mode:",
+                rewardModeDistance: "Distance-based",
+                rewardModeEqual: "Fixed Reward",
                 alphaLabel: "Learning Rate (α):",
                 gammaLabel: "Discount Factor (γ):",
                 epsilonLabel: "Exploration Rate (ε):",
@@ -171,7 +195,7 @@
 
         // --- Game & Q-Learning Configuration ---
         const GRID_SIZE = 10;
-        let CELL_SIZE = 40; // Will be adjusted based on canvas size
+        let CELL_SIZE = 40;
         const WALL = 1, DOT = 2, EMPTY = 0;
         
         const MAZE = [
@@ -198,16 +222,18 @@
         let trainingInterval;
         let isTraining = false;
 
-        // --- Hyperparameters ---
-        let alpha = 0.5; // Learning Rate
-        let gamma = 0.9; // Discount Factor
-        let epsilon = 0.2; // Exploration Rate
+        // --- Hyperparameters & Settings ---
+        let alpha = 0.5;
+        let gamma = 0.9;
+        let epsilon = 0.2;
         let speed = 50;
+        let rewardMode = 'distance';
         
         const ACTIONS = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
         const REWARDS = {
-            DOT_BASE: 5, // Base reward for a dot
-            DOT_DISTANCE_MULTIPLIER: 2, // Multiplier for distance-based reward
+            DOT_BASE: 5,
+            DOT_EQUAL: 20,
+            DOT_DISTANCE_MULTIPLIER: 2,
             GHOST: -100,
             WALL: -5,
             STEP: -1,
@@ -312,9 +338,14 @@
             const dotIndex = dots.findIndex(d => d.x === pacman.x && d.y === pacman.y);
             if (dotIndex !== -1) {
                 const eatenDot = dots.splice(dotIndex, 1)[0];
-                const distanceFromStart = Math.abs(eatenDot.x - 1) + Math.abs(eatenDot.y - 1);
-                const dynamicDotReward = REWARDS.DOT_BASE + distanceFromStart * REWARDS.DOT_DISTANCE_MULTIPLIER;
-                reward += dynamicDotReward;
+                let dotReward;
+                if (rewardMode === 'distance') {
+                    const distanceFromStart = Math.abs(eatenDot.x - 1) + Math.abs(eatenDot.y - 1);
+                    dotReward = REWARDS.DOT_BASE + distanceFromStart * REWARDS.DOT_DISTANCE_MULTIPLIER;
+                } else { // 'equal' mode
+                    dotReward = REWARDS.DOT_EQUAL;
+                }
+                reward += dotReward;
             }
 
             moveGhost();
@@ -528,6 +559,10 @@
         langToggleBtn.addEventListener('click', () => {
             const newLang = currentLang === 'zh' ? 'en' : 'zh';
             setLanguage(newLang);
+        });
+        rewardModeSelect.addEventListener('change', (e) => {
+            rewardMode = e.target.value;
+            reset(); // Reset the simulation for a fair comparison
         });
         window.addEventListener('resize', setup);
 
