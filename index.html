@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Playground</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 0.5rem;
+        }
+        .demo-list {
+            list-style: none;
+            padding: 0;
+        }
+        .demo-list li {
+            margin: 1rem 0;
+            padding: 1rem;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            background: #f6f8fa;
+        }
+        .demo-list a {
+            color: #007acc;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .demo-list a:hover {
+            text-decoration: underline;
+        }
+        .description {
+            color: #666;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>ML Playground</h1>
+    <p>A repository for HTML-based machine learning visualizations and interactive demos.</p>
+    
+    <h2>Available Demos</h2>
+    <ul class="demo-list">
+        <li>
+            <a href="visualizations/pac-man/packman.html">Pac-Man Game</a>
+            <div class="description">Interactive Pac-Man game demo</div>
+        </li>
+    </ul>
+    
+    <h2>Getting Started</h2>
+    <p>Click on any demo above to run it directly in your browser.</p>
+    
+    <h2>Local Development</h2>
+    <p>To run demos locally:</p>
+    <pre><code>python -m http.server 8000
+# Then visit: http://localhost:8000</code></pre>
+</body>
+</html> 
