@@ -7,7 +7,10 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
 from typing import List, Tuple, Dict
-from .config import DATASET_NAME, DATASET_SUBSET, DATASET_SPLIT, MAX_SAMPLES, MAX_LEN, BATCH_SIZE
+try:
+    from .config import DATASET_NAME, DATASET_SUBSET, DATASET_SPLIT, MAX_SAMPLES, MAX_LEN, BATCH_SIZE
+except ImportError:
+    from config import DATASET_NAME, DATASET_SUBSET, DATASET_SPLIT, MAX_SAMPLES, MAX_LEN, BATCH_SIZE
 
 
 class TextDataset(Dataset):

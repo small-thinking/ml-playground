@@ -10,6 +10,7 @@ Usage:
 import torch
 import numpy as np
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 from typing import Tuple, Dict, Optional
 
 # Import components
@@ -66,7 +67,7 @@ def train_epoch(
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    wandb_run: Optional = None,
+    wandb_run: Optional[object] = None,
 ) -> Tuple[float, Dict[str, float]]:
     """
     Train for one epoch.

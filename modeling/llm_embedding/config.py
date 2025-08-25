@@ -10,7 +10,7 @@ MODEL_NAME = "bert-base-uncased"
 MAX_LEN = 64
 
 # Training configuration
-BATCH_SIZE = 128
+BATCH_SIZE = 512
 LEARNING_RATE = 1e-5
 EPOCHS = 1
 DROPOUT_RATE = 0.1
@@ -24,6 +24,7 @@ MAX_SAMPLES = 1000000
 # SimCSE specific parameters
 TEMPERATURE = 0.05
 
+
 # Device detection
 def get_device():
     """Detect and return the best available device."""
@@ -33,5 +34,6 @@ def get_device():
         return "mps"
     else:
         return "cpu"
+
 
 DEVICE = get_device()

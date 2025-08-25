@@ -5,7 +5,10 @@ Loss functions for SimCSE contrastive learning.
 
 import torch
 import torch.nn.functional as F
-from .config import TEMPERATURE
+try:
+    from .config import TEMPERATURE
+except ImportError:
+    from config import TEMPERATURE
 
 
 def info_nce_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = TEMPERATURE) -> torch.Tensor:
