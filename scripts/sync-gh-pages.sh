@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# Check if there are changes in the visualizations folder
+if ! git diff --quiet HEAD~1 HEAD -- visualizations/; then
+    echo "Changes detected in visualizations folder. Proceeding with sync..."
+else
+    echo "No changes detected in visualizations folder. Skipping sync."
+    exit 0
+fi
+
 # Sync gh-pages branch with main branch
 echo "Syncing gh-pages branch with main..."
 
