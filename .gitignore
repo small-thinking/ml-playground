@@ -248,3 +248,4 @@ config.local.yml
 .Trashes
 ehthumbs.db
 Thumbs.db
+.env
