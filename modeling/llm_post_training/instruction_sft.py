@@ -262,14 +262,9 @@ class InstructionSFTTrainer:
         )
 
         # For SFT, we use the same input as labels (teacher forcing)
-        # Ensure labels is properly formatted as a list of lists
-        if isinstance(tokenized["input_ids"][0], list):
-            tokenized["labels"] = [ids.copy() for ids in tokenized["input_ids"]]
-        else:  # This branch is likely not hit with return_tensors="pt"
-            # Handle single example case
-            tokenized["labels"] = tokenized["input_ids"].copy()
-        # For SFT, we use the same input as labels (teacher forcing).
-        # The data collator will handle masking of padding tokens.
+        # Since we're using return_tensors="pt", input_ids will be PyTorch
+        # tensors
+        # Use clone() for PyTorch tensors instead of copy()
         tokenized["labels"] = tokenized["input_ids"].clone()
 
         return tokenized
