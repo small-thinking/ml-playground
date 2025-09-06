@@ -1,6 +1,38 @@
 #!/bin/bash
 set -e
 
+# Function to display usage
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "Options:"
+    echo "  -e, --email EMAIL    Email address for SSH key generation (optional)"
+    echo "  -h, --help          Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Setup without SSH key"
+    echo "  $0 --email user@example.com          # Setup with SSH key generation"
+    echo "  $0 -e user@example.com               # Short form"
+    exit 1
+}
+
+# Parse command line arguments
+EMAIL=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -e|--email)
+            EMAIL="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
 echo "=== [Step 1] Updating package lists ==="
 apt update
 
@@ -11,7 +43,9 @@ apt install -y \
   curl \
   wget \
   tmux \
-  unzip
+  unzip \
+  openssh-client \
+  build-essential
 
 echo "=== [Step 3] Setting up Python environment ==="
 pip3 install --upgrade pip
@@ -33,28 +67,64 @@ git config --global init.defaultBranch main
 git config --global core.editor vim
 git config --global color.ui auto
 
-# Soft link ssh and Git setting
+echo "=== [Step 6] Setting up SSH ==="
+# Create SSH directory and set permissions
 mkdir -p ~/.ssh
-cp /workspace/bootstrap/config/.ssh/id_ed25519 ~/.ssh/id_ed25519
-cp /workspace/bootstrap/config/.ssh/id_ed25519.pub ~/.ssh/id_ed25519.pub
-cp /workspace/bootstrap/config/.ssh/config ~/.ssh/config
-cp /workspace/bootstrap/config/.gitconfig ~/.gitconfig
+chmod 700 ~/.ssh
 
-chmod 600 ~/.ssh/id_ed25519
+if [ -n "$EMAIL" ]; then
+    echo "Generating SSH key with email: $EMAIL"
+    # Generate SSH key non-interactively
+    ssh-keygen -t ed25519 -C "$EMAIL" -f ~/.ssh/id_ed25519 -N ""
+    chmod 600 ~/.ssh/id_ed25519
+    chmod 644 ~/.ssh/id_ed25519.pub
+    
+    echo "SSH key generated successfully!"
+    echo "Public key (add this to GitHub/GitLab):"
+    echo "----------------------------------------"
+    cat ~/.ssh/id_ed25519.pub
+    echo "----------------------------------------"
+    echo ""
+    echo "To add this key to GitHub:"
+    echo "1. Go to GitHub Settings > SSH and GPG keys"
+    echo "2. Click 'New SSH key'"
+    echo "3. Copy the public key above and paste it"
+    echo ""
+else
+    echo "No email provided - skipping SSH key generation"
+    echo "To generate SSH key manually later:"
+    echo "  ssh-keygen -t ed25519 -C 'your_email@example.com'"
+    echo "  chmod 600 ~/.ssh/id_ed25519"
+fi
 
-# Start ssh-agent
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-
-echo "=== [Step 6] Install Ollama ==="
+echo "=== [Step 7] Install Ollama ==="
 curl -fsSL https://ollama.com/install.sh | sh
 ollama serve &
 
-echo "=== [Step 7] Ramp up workspace directory ==="
-source .bashrc
-cat /workspace/bootstrap/.bashrc >> ~/.bashrc
+echo "=== [Step 8] Setting up workspace directories ==="
+# Create workspace directories
+mkdir -p /workspace/models
+mkdir -p /workspace/data
+mkdir -p /workspace/cache
+mkdir -p /workspace/logs
+
+# Set environment variables for HuggingFace
 echo 'export HF_HOME=/workspace/cache' >> ~/.bashrc
+echo 'export TRANSFORMERS_CACHE=/workspace/models' >> ~/.bashrc
+echo 'export HF_DATASETS_CACHE=/workspace/data' >> ~/.bashrc
+echo 'export WORKSPACE_DIR=/workspace' >> ~/.bashrc
 
 echo "=== Done ==="
-echo "Run 'source ~/.bashrc' to activate oh-my-bash"
-source ~/.bashrc
+echo "Workspace setup complete!"
+echo "Directories created:"
+echo "  - /workspace/models (for model storage)"
+echo "  - /workspace/data (for dataset storage)"
+echo "  - /workspace/cache (for HuggingFace cache)"
+echo "  - /workspace/logs (for log files)"
+echo ""
+echo "To activate the environment, run: source ~/.bashrc"
+if [ -n "$EMAIL" ]; then
+    echo "SSH key generated and ready to use!"
+else
+    echo "To generate SSH key later: $0 --email your_email@example.com"
+fi

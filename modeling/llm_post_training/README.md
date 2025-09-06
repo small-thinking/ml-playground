@@ -1,34 +1,37 @@
 # LLM Post Training
 
-Docker setup for LLM post-training experiments.
+GRPO (Generative Reward-Powered Optimization) training for reasoning tasks.
 
 ## Quick Start
 
 ```bash
-# Build with your Git credentials (required)
-docker build -f modeling/llm_post_training/Dockerfile \
-  --build-arg GIT_USER_NAME="Your Name" \
-  --build-arg GIT_USER_EMAIL="your.email@example.com" \
-  -t llm-post-training .
+# Setup environment (with SSH key generation)
+./setup_env.sh --email your.email@example.com
 
-# Run container
-docker run -it --gpus all \
-  -v $(pwd):/workspace \
-  -v ~/.ssh:/root/.ssh:ro \
-  -v ~/.gitconfig:/root/.gitconfig:ro \
-  -p 8888:8888 \
-  llm-post-training
+# Activate environment
+source ~/.bashrc
+
+# Run GRPO training
+python reasoning_grpo.py --model-size 3B --use-lora
 ```
 
-## Build Args
+## Training Options
 
-- `GIT_USER_NAME`: Your Git username (required)
-- `GIT_USER_EMAIL`: Your Git email (required)
-- `INSTALL_OLLAMA`: Set to "true" to install Ollama
+```bash
+# Available model sizes
+python reasoning_grpo.py --model-size {0.5B,1.5B,3B,8B}
+
+# LoRA fine-tuning (recommended)
+python reasoning_grpo.py --model-size 3B --use-lora
+
+# Custom training parameters
+python reasoning_grpo.py --model-size 3B --max-steps 1000 --batch-size 8
+```
 
 ## Features
 
-- CUDA-enabled PyTorch 2.1.0
-- Development tools: vim, git, tmux, oh-my-bash
-- Mounts project directory and SSH keys
-- Port 8888 for Jupyter
+- **GRPO Training**: Reward-based optimization for reasoning tasks
+- **Model Support**: Llama 3.1/3.2 and Qwen2 models (0.5B to 8B)
+- **LoRA Support**: Efficient fine-tuning with PEFT
+- **Workspace Management**: Organized storage in `/workspace/{models,data,cache}`
+- **Automated Setup**: One-command environment setup with SSH key generation
