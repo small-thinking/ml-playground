@@ -6,6 +6,7 @@ GRPO (Generative Reward-Powered Optimization) training for reasoning tasks.
 
 ```bash
 # Setup environment (with SSH key generation)
+chmod +x setup_env.sh
 ./setup_env.sh --email your.email@example.com
 
 # Activate environment
