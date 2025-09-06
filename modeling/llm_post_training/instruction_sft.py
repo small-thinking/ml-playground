@@ -116,7 +116,8 @@ class InstructionSFTTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir, f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir,
+            f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
     def _get_model_name(self) -> str:
@@ -152,7 +153,9 @@ class InstructionSFTTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             cache_dir=self.models_dir,
-            torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
+            torch_dtype=(
+                torch.float16 if torch.cuda.is_available() else torch.float32
+            ),
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
         )
@@ -196,7 +199,8 @@ class InstructionSFTTrainer:
         if len(self.dataset) > 10000:
             self.dataset = self.dataset.select(range(10000))
             print(
-                f"📊 Using subset of {len(self.dataset)} examples for faster training"
+                f"📊 Using subset of {len(self.dataset)} examples for "
+                f"faster training"
             )
 
         # Format the dataset
@@ -210,6 +214,7 @@ class InstructionSFTTrainer:
             self._tokenize_function,
             batched=True,
             remove_columns=self.dataset.column_names,
+            desc="Tokenizing dataset",
         )
 
     def _format_instruction(self, example: Dict[str, Any]) -> Dict[str, str]:
@@ -249,17 +254,25 @@ class InstructionSFTTrainer:
         Returns:
             Tokenized examples
         """
-        # Tokenize the text
+        # Tokenize the text with proper configuration
         tokenized = self.tokenizer(
             examples["text"],
             truncation=True,
-            padding=False,
+            padding=False,  # We'll handle padding in the data collator
             max_length=512,
             return_tensors=None,
+            add_special_tokens=True,
         )
 
         # For SFT, we use the same input as labels (teacher forcing)
-        tokenized["labels"] = tokenized["input_ids"].copy()
+        # Ensure labels is properly formatted as a list of lists
+        if isinstance(tokenized["input_ids"][0], list):
+            tokenized["labels"] = [
+                ids.copy() for ids in tokenized["input_ids"]
+            ]
+        else:
+            # Handle single example case
+            tokenized["labels"] = tokenized["input_ids"].copy()
 
         return tokenized
 
@@ -323,13 +336,14 @@ class InstructionSFTTrainer:
         # Get training arguments
         training_args = self.get_training_arguments()
 
-        # Create data collator
+        # Create data collator with proper padding configuration
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,  # We're doing causal LM, not masked LM
+            pad_to_multiple_of=8,  # Pad to multiple of 8 for efficiency
         )
 
-        # Initialize trainer
+        # Initialize trainer with proper configuration
         trainer = Trainer(
             model=self.model,
             args=training_args,
@@ -337,6 +351,14 @@ class InstructionSFTTrainer:
             data_collator=data_collator,
             tokenizer=self.tokenizer,
         )
+
+        # Validate dataset before training
+        print("🔍 Validating dataset...")
+        sample_batch = next(iter(trainer.get_train_dataloader()))
+        print(f"   Batch keys: {sample_batch.keys()}")
+        print(f"   Input IDs shape: {sample_batch['input_ids'].shape}")
+        print(f"   Labels shape: {sample_batch['labels'].shape}")
+        print("✅ Dataset validation passed")
 
         # Start training
         print("🚀 Starting SFT training...")
@@ -381,7 +403,9 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=1000, help="Maximum training steps"
     )
 
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument(
+        "--batch-size", type=int, default=4, help="Training batch size"
+    )
 
     parser.add_argument(
         "--learning-rate",
@@ -409,7 +433,9 @@ def main():
     print(f"   Model: {args.model_size}")
     lora_status = "Enabled" if args.use_lora else "Disabled"
     wandb_status = "Disabled" if args.disable_wandb else "Enabled"
-    hf_token_status = "Provided" if args.hf_token else "Not provided"
+    hf_token_status = (
+        "Provided" if args.hf_token else "Not provided"
+    )
     print(f"   LoRA: {lora_status}")
     print(f"   Wandb: {wandb_status}")
     print(f"   HF Token: {hf_token_status}")
