@@ -8,7 +8,7 @@ how supervised fine-tuning transforms model behavior.
 Usage:
     python compare_base_vs_sft.py \
         --base-model meta-llama/Llama-3.2-3B \
-        --sft-model /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
+        --sft-model /workspace/models/Llama-3.2-3B-Full-SFT
 """
 
 import argparse
