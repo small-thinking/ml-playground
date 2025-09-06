@@ -198,7 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--hf-token", type=str, default=None)
     args = parser.parse_args()
