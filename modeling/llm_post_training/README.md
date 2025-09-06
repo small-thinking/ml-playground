@@ -12,6 +12,9 @@ chmod +x setup_env.sh
 # Activate environment
 source ~/.bashrc
 
+# Login to Hugging Face (required for gated models)
+huggingface-cli login
+
 # Run GRPO training
 python reasoning_grpo.py --model-size 3B --use-lora
 ```
@@ -36,3 +39,29 @@ python reasoning_grpo.py --model-size 3B --max-steps 1000 --batch-size 8
 - **LoRA Support**: Efficient fine-tuning with PEFT
 - **Workspace Management**: Organized storage in `/workspace/{models,data,cache}`
 - **Automated Setup**: One-command environment setup with SSH key generation
+- **Hugging Face Integration**: CLI tools for model access and authentication
+
+## Prerequisites
+
+- **Hugging Face Account**: Required for accessing gated models (Llama, etc.)
+- **Hugging Face Token**: Get from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+- **GitHub/GitLab Account**: For SSH key setup (optional but recommended)
+
+## Authentication
+
+### Hugging Face Login
+
+```bash
+# Login with your Hugging Face token
+huggingface-cli login
+
+# Or set token as environment variable
+export HUGGINGFACE_HUB_TOKEN=your_token_here
+```
+
+### SSH Key Setup
+
+The setup script automatically generates SSH keys. Add the public key to:
+
+- **GitHub**: Settings → SSH and GPG keys → New SSH key
+- **GitLab**: User Settings → SSH Keys → Add key

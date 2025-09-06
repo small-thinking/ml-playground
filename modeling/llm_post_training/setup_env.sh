@@ -65,6 +65,9 @@ pip3 install --upgrade pip
 pip3 install virtualenv ipython
 pip install -r requirements.txt
 
+echo "=== [Step 3.5] Installing Hugging Face CLI ==="
+pip install huggingface_hub[cli]
+
 echo "=== [Step 4] Installing oh-my-bash ==="
 if [ ! -d "$HOME/.oh-my-bash" ]; then
   git clone https://github.com/ohmybash/oh-my-bash.git ~/.oh-my-bash
@@ -130,3 +133,8 @@ echo "  - /workspace/logs (for log files)"
 echo ""
 echo "To activate the environment, run: source ~/.bashrc"
 echo "SSH key generated and ready to use!"
+echo ""
+echo "Next steps:"
+echo "1. Login to Hugging Face: huggingface-cli login"
+echo "2. Add your SSH key to GitHub/GitLab (see instructions above)"
+echo "3. Start training: python reasoning_grpo.py --model-size 3B --use-lora"
