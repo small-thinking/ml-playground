@@ -384,7 +384,7 @@ class InstructionSFTTrainer:
             # Add gradient accumulation for effective larger batch sizes
             gradient_accumulation_steps=1,
             # Add evaluation strategy
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             # Add early stopping patience
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
