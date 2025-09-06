@@ -2,8 +2,8 @@
 
 Examples of post-training techniques for Large Language Models:
 
-- **GRPO**: Generative Reward-Powered Optimization for reasoning tasks
 - **SFT**: Supervised Fine-Tuning for instruction following
+- **GRPO**: Generative Reward-Powered Optimization for reasoning tasks
 
 ## Quick Start
 
@@ -17,29 +17,29 @@ source ~/.bashrc
 huggingface-cli login
 
 # Train models
-python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
 python instruction_sft.py --model-size 3B --use-lora   # SFT
+python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
 ```
 
 ## Models & Datasets
 
 | Training | Models                           | Dataset        | Purpose                            |
 | -------- | -------------------------------- | -------------- | ---------------------------------- |
-| **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning | Reasoning with structured thinking |
 | **SFT**  | Base models (not instruct-tuned) | Alpaca         | Instruction following              |
+| **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning | Reasoning with structured thinking |
 
 ## Usage
-
-### GRPO Training
-
-```bash
-python reasoning_grpo.py --model-size 3B --use-lora --max-steps 1000
-```
 
 ### SFT Training
 
 ```bash
 python instruction_sft.py --model-size 3B --use-lora --max-steps 2000
+```
+
+### GRPO Training
+
+```bash
+python reasoning_grpo.py --model-size 3B --use-lora --max-steps 1000
 ```
 
 ### Model Comparison (SFT)
