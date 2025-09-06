@@ -18,7 +18,7 @@ Arguments:
     --disable-wandb: Disable wandb logging [default: False]
     --max-steps: Maximum training steps [default: 1000]
     --batch-size: Training batch size [default: 4]
-    --learning-rate: Learning rate [default: 2e-5]
+    --learning-rate: Learning rate [default: 5e-6]
     --hf-token: Hugging Face token for accessing gated repositories
     [default: None]
 
@@ -106,7 +106,7 @@ class InstructionSFTTrainer:
         wandb_enabled: bool = True,
         max_steps: int = 10000,
         batch_size: int = 4,
-        learning_rate: float = 2e-5,
+        learning_rate: float = 5e-6,  # Reduced from 2e-5 for better fine-tuning
         hf_token: Optional[str] = None,
     ):
         """
@@ -159,9 +159,7 @@ class InstructionSFTTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(
-            self.log_dir, f"sft_debug_{timestamp}.txt"
-        )
+        self.log_file = os.path.join(self.log_dir, f"sft_debug_{timestamp}.txt")
 
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
@@ -196,9 +194,7 @@ class InstructionSFTTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             cache_dir=self.models_dir,
-            torch_dtype=(
-                torch.float16 if torch.cuda.is_available() else torch.float32
-            ),
+            torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
         )
@@ -255,9 +251,7 @@ class InstructionSFTTrainer:
         """
         # Only apply when using GPU with mixed precision
         if torch.cuda.is_available():
-            print(
-                "🔧 Ensuring correct precision for mixed precision training..."
-            )
+            print("🔧 Ensuring correct precision for mixed precision training...")
             trainable_params = 0
             converted_params = 0
 
@@ -371,14 +365,30 @@ class InstructionSFTTrainer:
         model_output_name = f"{model_name_short}-Base-{lora_suffix}-SFT"
         output_dir = os.path.join(self.models_dir, model_output_name)
 
+        # Calculate warmup steps as 10% of total steps
+        warmup_steps = max(100, int(0.1 * self.max_steps))
         training_args = TrainingArguments(
             output_dir=output_dir,
             num_train_epochs=3,
             per_device_train_batch_size=self.batch_size,
             per_device_eval_batch_size=self.batch_size,
-            warmup_steps=100,
+            warmup_steps=warmup_steps,
             max_steps=self.max_steps,
             learning_rate=self.learning_rate,
+            # Add cosine learning rate scheduling
+            lr_scheduler_type="cosine",
+            # Add weight decay for regularization
+            weight_decay=0.01,
+            # Add gradient clipping to prevent exploding gradients
+            max_grad_norm=1.0,
+            # Add gradient accumulation for effective larger batch sizes
+            gradient_accumulation_steps=1,
+            # Add evaluation strategy
+            evaluation_strategy="steps",
+            # Add early stopping patience
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
             fp16=torch.cuda.is_available(),
             logging_steps=10,
             save_steps=500,
@@ -491,14 +501,12 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=10000, help="Maximum training steps"
     )
 
-    parser.add_argument(
-        "--batch-size", type=int, default=4, help="Training batch size"
-    )
+    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
 
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=2e-5,
+        default=5e-6,  # Reduced from 2e-5 for better fine-tuning stability
         help="Learning rate for training",
     )
 
