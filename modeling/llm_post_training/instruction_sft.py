@@ -116,8 +116,7 @@ class InstructionSFTTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir,
-            f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir, f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
     def _get_model_name(self) -> str:
@@ -153,9 +152,7 @@ class InstructionSFTTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             cache_dir=self.models_dir,
-            torch_dtype=(
-                torch.float16 if torch.cuda.is_available() else torch.float32
-            ),
+            torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
         )
@@ -267,9 +264,7 @@ class InstructionSFTTrainer:
         # For SFT, we use the same input as labels (teacher forcing)
         # Ensure labels is properly formatted as a list of lists
         if isinstance(tokenized["input_ids"][0], list):
-            tokenized["labels"] = [
-                ids.copy() for ids in tokenized["input_ids"]
-            ]
+            tokenized["labels"] = [ids.copy() for ids in tokenized["input_ids"]]
         else:
             # Handle single example case
             tokenized["labels"] = tokenized["input_ids"].copy()
@@ -403,9 +398,7 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=1000, help="Maximum training steps"
     )
 
-    parser.add_argument(
-        "--batch-size", type=int, default=4, help="Training batch size"
-    )
+    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
 
     parser.add_argument(
         "--learning-rate",
@@ -433,9 +426,7 @@ def main():
     print(f"   Model: {args.model_size}")
     lora_status = "Enabled" if args.use_lora else "Disabled"
     wandb_status = "Disabled" if args.disable_wandb else "Enabled"
-    hf_token_status = (
-        "Provided" if args.hf_token else "Not provided"
-    )
+    hf_token_status = "Provided" if args.hf_token else "Not provided"
     print(f"   LoRA: {lora_status}")
     print(f"   Wandb: {wandb_status}")
     print(f"   HF Token: {hf_token_status}")
