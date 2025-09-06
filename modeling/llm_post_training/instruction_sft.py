@@ -161,6 +161,9 @@ class InstructionSFTTrainer:
         if self.use_lora:
             self._apply_lora()
 
+        # Ensure parameters are in correct precision for mixed precision
+        self._ensure_correct_precision()
+
     def _apply_lora(self) -> None:
         """Apply LoRA configuration to the model."""
         print("🔧 Applying LoRA configuration...")
@@ -184,6 +187,49 @@ class InstructionSFTTrainer:
 
         self.model = get_peft_model(self.model, lora_config)
         self.model.print_trainable_parameters()
+
+        # Fix for FP16 gradients error: ensure trainable parameters are in FP32
+        # when using mixed precision training
+        print(
+            "🔧 Converting trainable parameters to FP32 for "
+            "mixed precision compatibility..."
+        )
+        for param in self.model.parameters():
+            if param.requires_grad:
+                param.data = param.data.float()
+
+    def _ensure_correct_precision(self) -> None:
+        """
+        Ensure model parameters are in the correct precision for mixed precision.
+
+        This method fixes the 'Attempting to unscale FP16 gradients' error by
+        ensuring that all trainable parameters are in FP32 when using mixed
+        precision training. AMP expects trainable parameters to be in FP32 and
+        handles casting to FP16 during the forward pass.
+        """
+        # Only apply when using GPU with mixed precision
+        if torch.cuda.is_available():
+            print("🔧 Ensuring correct precision for mixed precision training...")
+            trainable_params = 0
+            converted_params = 0
+
+            for param in self.model.parameters():
+                if param.requires_grad:
+                    trainable_params += 1
+                    if param.dtype == torch.float16:
+                        param.data = param.data.float()
+                        converted_params += 1
+
+            if converted_params > 0:
+                print(
+                    f"   Converted {converted_params}/{trainable_params} "
+                    f"trainable parameters from FP16 to FP32"
+                )
+            else:
+                print(
+                    f"   All {trainable_params} trainable parameters "
+                    f"already in correct precision"
+                )
 
     def load_and_prepare_dataset(self) -> None:
         """Load and prepare the Alpaca dataset."""
@@ -342,7 +388,7 @@ class InstructionSFTTrainer:
             args=training_args,
             train_dataset=self.dataset,
             data_collator=data_collator,
-            tokenizer=self.tokenizer,  # Keep for now, will be removed in v5.0.0
+            processing_class=self.tokenizer,  # Use processing_class instead of deprecated tokenizer
         )
 
         # Validate dataset before training
