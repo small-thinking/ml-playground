@@ -105,7 +105,7 @@ class InstructionSFTTrainer:
 
         # Set environment variables for HuggingFace
         os.environ["HF_HOME"] = self.cache_dir
-        os.environ["TRANSFORMERS_CACHE"] = self.models_dir
+        os.environ["HF_HUB_CACHE"] = self.models_dir
         os.environ["HF_DATASETS_CACHE"] = self.data_dir
 
         # Set Hugging Face token if provided
@@ -268,6 +268,9 @@ class InstructionSFTTrainer:
         else:  # This branch is likely not hit with return_tensors="pt"
             # Handle single example case
             tokenized["labels"] = tokenized["input_ids"].copy()
+        # For SFT, we use the same input as labels (teacher forcing).
+        # The data collator will handle masking of padding tokens.
+        tokenized["labels"] = tokenized["input_ids"].clone()
 
         return tokenized
 
