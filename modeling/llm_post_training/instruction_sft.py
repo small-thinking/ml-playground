@@ -383,16 +383,16 @@ class InstructionSFTTrainer:
             max_grad_norm=1.0,
             # Add gradient accumulation for effective larger batch sizes
             gradient_accumulation_steps=1,
-            # Add evaluation strategy
-            eval_strategy="steps",
-            # Add early stopping patience
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
+            # Add evaluation strategy (disabled since no eval dataset)
+            eval_strategy="no",
+            # Evaluation-related parameters disabled since no eval dataset
+            # load_best_model_at_end=True,
+            # metric_for_best_model="eval_loss",
+            # greater_is_better=False,
             fp16=torch.cuda.is_available(),
             logging_steps=10,
             save_steps=500,
-            eval_steps=500,
+            # eval_steps=500,  # Disabled since no evaluation
             save_total_limit=2,
             remove_unused_columns=False,
             push_to_hub=False,
