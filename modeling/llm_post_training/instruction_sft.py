@@ -105,7 +105,7 @@ class InstructionSFTTrainer:
 
         # Set environment variables for HuggingFace
         os.environ["HF_HOME"] = self.cache_dir
-        os.environ["TRANSFORMERS_CACHE"] = self.models_dir
+        os.environ["HF_HUB_CACHE"] = self.models_dir
         os.environ["HF_DATASETS_CACHE"] = self.data_dir
 
         # Set Hugging Face token if provided
@@ -262,12 +262,10 @@ class InstructionSFTTrainer:
         )
 
         # For SFT, we use the same input as labels (teacher forcing)
-        # Ensure labels is properly formatted as a list of lists
-        if isinstance(tokenized["input_ids"][0], list):
-            tokenized["labels"] = [ids.copy() for ids in tokenized["input_ids"]]
-        else:  # This branch is likely not hit with return_tensors="pt"
-            # Handle single example case
-            tokenized["labels"] = tokenized["input_ids"].copy()
+        # Since we're using return_tensors="pt", input_ids will be PyTorch
+        # tensors
+        # Use clone() for PyTorch tensors instead of copy()
+        tokenized["labels"] = tokenized["input_ids"].clone()
 
         return tokenized
 

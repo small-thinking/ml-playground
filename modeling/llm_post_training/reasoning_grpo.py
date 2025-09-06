@@ -96,7 +96,7 @@ class ReasoningGRPOTrainer:
 
         # Set environment variables for HuggingFace
         os.environ["HF_HOME"] = self.cache_dir
-        os.environ["TRANSFORMERS_CACHE"] = self.models_dir
+        os.environ["HF_HUB_CACHE"] = self.models_dir
         os.environ["HF_DATASETS_CACHE"] = self.data_dir
 
         # Set Hugging Face token if provided
