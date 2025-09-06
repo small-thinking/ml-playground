@@ -5,11 +5,10 @@ set -e
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
-    echo "  -e, --email EMAIL    Email address for SSH key generation (optional)"
+    echo "  -e, --email EMAIL    Email address for SSH key generation (required)"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                                    # Setup without SSH key"
     echo "  $0 --email user@example.com          # Setup with SSH key generation"
     echo "  $0 -e user@example.com               # Short form"
     exit 1
@@ -32,6 +31,20 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate that email is provided
+if [ -z "$EMAIL" ]; then
+    echo "Error: Email address is required for SSH key generation"
+    echo ""
+    usage
+fi
+
+# Validate email format (basic validation)
+if [[ ! "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+    echo "Error: Invalid email format: $EMAIL"
+    echo "Please provide a valid email address"
+    exit 1
+fi
 
 echo "=== [Step 1] Updating package lists ==="
 apt update
@@ -72,30 +85,23 @@ echo "=== [Step 6] Setting up SSH ==="
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-if [ -n "$EMAIL" ]; then
-    echo "Generating SSH key with email: $EMAIL"
-    # Generate SSH key non-interactively
-    ssh-keygen -t ed25519 -C "$EMAIL" -f ~/.ssh/id_ed25519 -N ""
-    chmod 600 ~/.ssh/id_ed25519
-    chmod 644 ~/.ssh/id_ed25519.pub
-    
-    echo "SSH key generated successfully!"
-    echo "Public key (add this to GitHub/GitLab):"
-    echo "----------------------------------------"
-    cat ~/.ssh/id_ed25519.pub
-    echo "----------------------------------------"
-    echo ""
-    echo "To add this key to GitHub:"
-    echo "1. Go to GitHub Settings > SSH and GPG keys"
-    echo "2. Click 'New SSH key'"
-    echo "3. Copy the public key above and paste it"
-    echo ""
-else
-    echo "No email provided - skipping SSH key generation"
-    echo "To generate SSH key manually later:"
-    echo "  ssh-keygen -t ed25519 -C 'your_email@example.com'"
-    echo "  chmod 600 ~/.ssh/id_ed25519"
-fi
+echo "Generating SSH key with email: $EMAIL"
+# Generate SSH key non-interactively
+ssh-keygen -t ed25519 -C "$EMAIL" -f ~/.ssh/id_ed25519 -N ""
+chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+
+echo "SSH key generated successfully!"
+echo "Public key (add this to GitHub/GitLab):"
+echo "----------------------------------------"
+cat ~/.ssh/id_ed25519.pub
+echo "----------------------------------------"
+echo ""
+echo "To add this key to GitHub:"
+echo "1. Go to GitHub Settings > SSH and GPG keys"
+echo "2. Click 'New SSH key'"
+echo "3. Copy the public key above and paste it"
+echo ""
 
 echo "=== [Step 7] Install Ollama ==="
 curl -fsSL https://ollama.com/install.sh | sh
@@ -123,8 +129,4 @@ echo "  - /workspace/cache (for HuggingFace cache)"
 echo "  - /workspace/logs (for log files)"
 echo ""
 echo "To activate the environment, run: source ~/.bashrc"
-if [ -n "$EMAIL" ]; then
-    echo "SSH key generated and ready to use!"
-else
-    echo "To generate SSH key later: $0 --email your_email@example.com"
-fi
+echo "SSH key generated and ready to use!"
