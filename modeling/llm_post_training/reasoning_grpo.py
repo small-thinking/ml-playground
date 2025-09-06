@@ -70,6 +70,22 @@ class ReasoningGRPOTrainer:
         self.index = {}
         self.step_counter = 0
 
+        # Setup workspace directories
+        self.workspace_dir = os.environ.get("WORKSPACE_DIR", "/workspace")
+        self.models_dir = os.path.join(self.workspace_dir, "models")
+        self.data_dir = os.path.join(self.workspace_dir, "data")
+        self.cache_dir = os.path.join(self.workspace_dir, "cache")
+
+        # Create directories if they don't exist
+        os.makedirs(self.models_dir, exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Set environment variables for HuggingFace
+        os.environ["HF_HOME"] = self.cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = self.models_dir
+        os.environ["HF_DATASETS_CACHE"] = self.data_dir
+
         # Setup logging
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
@@ -118,9 +134,9 @@ class ReasoningGRPOTrainer:
         """Create the reasoning prompt template."""
         return f"""
         The following question requires reasoning.
-        In addition to provide your answer, you should also provide your 
+        In addition to provide your answer, you should also provide your
         DETAILED thought process about how you arrive at your answer.
-        Put your thought process between <think></think> tags and then put 
+        Put your thought process between <think></think> tags and then put
         your answer between <answer></answer> tags.
 
         The question is:
@@ -384,7 +400,7 @@ class ReasoningGRPOTrainer:
         elif ground_truth.lower() in answer.lower():
             return 3.0
         else:
-            return -3.0
+            return -1.0
 
     def _format_debug_output(
         self,
@@ -400,7 +416,7 @@ class ReasoningGRPOTrainer:
         debug_output = []
         debug_output.append("\n" + "=" * 60)
         debug_output.append(
-            f"SPOT CHECK: PROMPT AND COMPLETIONS (Step: {self.step_counter})"
+            f"SPOT CHECK: PROMPT AND COMPLETIONS " f"(Step: {self.step_counter})"
         )
         debug_output.append("=" * 60)
         debug_output.append(f"==Prompt:==\n {self.index[ground_truth]}\n")
@@ -448,8 +464,14 @@ class ReasoningGRPOTrainer:
 
     def get_training_config(self) -> GRPOConfig:
         """Get GRPO training configuration."""
+        # Create output directory in models folder
+        model_name_short = self.model_name.split("/")[-1]
+        lora_suffix = "LoRA" if self.use_lora else "Full"
+        model_output_name = f"{model_name_short}-{lora_suffix}-GRPO"
+        output_dir = os.path.join(self.models_dir, model_output_name)
+
         return GRPOConfig(
-            output_dir=f"{self.model_name}-{'LoRA' if self.use_lora else 'Full'}-GRPO",
+            output_dir=output_dir,
             learning_rate=self.learning_rate,
             temperature=1.0,
             warmup_ratio=0.1,
@@ -461,14 +483,27 @@ class ReasoningGRPOTrainer:
             max_prompt_length=768,
             max_steps=self.max_steps,
             report_to="wandb",
-            run_name=f"{self.model_name}-{'LoRA' if self.use_lora else 'Full'}-GRPO",
+            run_name=f"{self.model_name}-{lora_suffix}-GRPO",
             fp16=True,
             fp16_full_eval=False,
             fp16_opt_level="O1",
         )
 
+    def print_directory_info(self) -> None:
+        """Print information about workspace directories."""
+        print("📁 Workspace Configuration:")
+        print(f"   Workspace Directory: {self.workspace_dir}")
+        print(f"   Models Directory: {self.models_dir}")
+        print(f"   Data Directory: {self.data_dir}")
+        print(f"   Cache Directory: {self.cache_dir}")
+        print(f"   Model: {self.model_name}")
+        print("-" * 50)
+
     def train(self) -> None:
         """Execute the training process."""
+        # Print directory information
+        self.print_directory_info()
+
         # Load and prepare dataset
         self.load_and_prepare_dataset()
 
@@ -530,9 +565,10 @@ def main():
     # Parse command-line arguments
     args = parse_arguments()
 
-    print(f"🚀 Starting GRPO training with:")
+    print("🚀 Starting GRPO training with:")
     print(f"   Model: {args.model_size}")
-    print(f"   LoRA: {'Enabled' if args.use_lora else 'Disabled'}")
+    lora_status = "Enabled" if args.use_lora else "Disabled"
+    print(f"   LoRA: {lora_status}")
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
