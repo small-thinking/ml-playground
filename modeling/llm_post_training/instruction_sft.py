@@ -106,7 +106,7 @@ def main(args):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
+        torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
     )
@@ -150,19 +150,20 @@ def main(args):
     output_dir = f"./models/{model_name.split('/')[-1]}-{'LoRA' if args.use_lora else 'Full'}-SFT"
     training_args = TrainingArguments(
         output_dir=output_dir,
-        num_train_epochs=3,
+        num_train_epochs=1,
         per_device_train_batch_size=args.batch_size,
-        warmup_steps=max(100, int(0.1 * args.max_steps)),
+        warmup_steps=max(100, int(0.05 * args.max_steps)),
         max_steps=args.max_steps,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
-        weight_decay=0.01,
+        weight_decay=0.005,
         max_grad_norm=1.0,
-        gradient_accumulation_steps=1,
-        fp16=torch.cuda.is_available(),
+        gradient_accumulation_steps=8,
+        fp16=False,
+        bf16=torch.cuda.is_available(),
         logging_steps=10,
-        save_steps=500,
-        save_total_limit=2,
+        save_steps=10000,
+        save_total_limit=1,
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None,
     )
@@ -197,7 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--hf-token", type=str, default=None)
     args = parser.parse_args()
