@@ -6,11 +6,11 @@ A machine learning playground for experimenting with various ML models and techn
 
 Open any HTML file in `visualizations/` in your browser.
 
-### [Pac-Man Visualization](/visualizations/pac-man/packman.html)
+### [Q-Learning Pac-Man Demo](/visualizations/pac-man/packman.html)
 
-Interactive Pac-Man game visualization built with HTML5 Canvas and JavaScript.
+Interactive Q-Learning reinforcement learning demonstration featuring a Pac-Man agent learning to navigate a maze and collect dots while avoiding ghosts. Built with HTML5 Canvas and JavaScript, this demo showcases RL concepts including Q-value visualization, hyperparameter tuning, and training progress monitoring.
 
-<img src="visualizations/pac-man/screenshot.png" alt="Pac-Man Game" width="400">
+<img src="visualizations/pac-man/screenshot.png" alt="Q-Learning Pac-Man Demo" width="400">
 
 ## Modeling Projects
 
