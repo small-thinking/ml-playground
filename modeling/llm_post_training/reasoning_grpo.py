@@ -17,6 +17,8 @@ Arguments:
     --max-steps: Maximum training steps [default: 500]
     --batch-size: Training batch size [default: 4]
     --learning-rate: Learning rate [default: 1e-5]
+    --hf-token: Hugging Face token for accessing gated repositories
+    [default: None]
 
 Examples:
     # Full fine-tuning with 3B model
@@ -27,6 +29,9 @@ Examples:
 
     # Custom training configuration
     python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
+
+    # With Hugging Face token for gated models
+    python reasoning_grpo.py --model-size 3B --hf-token your_token_here
 """
 
 import re
@@ -52,6 +57,7 @@ class ReasoningGRPOTrainer:
         max_steps: int = 500,
         batch_size: int = 4,
         learning_rate: float = 1e-5,
+        hf_token: Optional[str] = None,
     ):
         """
         Initialize the trainer with model configuration.
@@ -63,6 +69,7 @@ class ReasoningGRPOTrainer:
             max_steps: Maximum training steps
             batch_size: Training batch size
             learning_rate: Learning rate for training
+            hf_token: Hugging Face token for accessing gated repositories
         """
         self.model_size = model_size
         self.use_lora = use_lora
@@ -70,6 +77,7 @@ class ReasoningGRPOTrainer:
         self.max_steps = max_steps
         self.batch_size = batch_size
         self.learning_rate = learning_rate
+        self.hf_token = hf_token
         self.model_name = self._get_model_name()
         self.dataset = None
         self.index = {}
@@ -91,11 +99,16 @@ class ReasoningGRPOTrainer:
         os.environ["TRANSFORMERS_CACHE"] = self.models_dir
         os.environ["HF_DATASETS_CACHE"] = self.data_dir
 
+        # Set Hugging Face token if provided
+        if self.hf_token:
+            os.environ["HUGGINGFACE_HUB_TOKEN"] = self.hf_token
+
         # Setup logging
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir, f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir,
+            f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
         # Tag constants
@@ -121,9 +134,11 @@ class ReasoningGRPOTrainer:
     def load_and_prepare_dataset(self) -> None:
         """Load and prepare the mini-reasoning-dataset."""
         # Load dataset from HuggingFace
-        # Dataset: https://huggingface.co/datasets/
-        #          tech-tao/mini-reasoning-dataset
-        self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
+        # Dataset: https://huggingface.co/datasets/tech-tao/
+        #          mini-reasoning-dataset
+        self.dataset = load_dataset(
+            "tech-tao/mini-reasoning-dataset", split="train"
+        )
 
         # Transform dataset with reasoning prompt template
         self.dataset = self.dataset.map(
@@ -154,9 +169,12 @@ class ReasoningGRPOTrainer:
         for i, row in enumerate(self.dataset):
             self.index[row["ground_truth"]] = row["prompt"]
 
-    def match_format_func(self, completions: List[str], **kwargs) -> List[float]:
+    def match_format_func(
+        self, completions: List[str], **kwargs
+    ) -> List[float]:
         """
-        Format penalty function: perfect format gets 0, violations get penalties.
+        Format penalty function: perfect format gets 0, violations get
+        penalties.
 
         Args:
             completions: List of model completions to evaluate
@@ -185,10 +203,18 @@ class ReasoningGRPOTrainer:
                 continue
 
             # Missing or incorrect tags
-            penalty -= 1.0 if completion.count(self.reasoning_start) != 1 else 0
-            penalty -= 1.0 if completion.count(self.reasoning_end) != 1 else 0
-            penalty -= 1.0 if completion.count(self.answer_start) != 1 else 0
-            penalty -= 1.0 if completion.count(self.answer_end) != 1 else 0
+            penalty -= (
+                1.0 if completion.count(self.reasoning_start) != 1 else 0
+            )
+            penalty -= (
+                1.0 if completion.count(self.reasoning_end) != 1 else 0
+            )
+            penalty -= (
+                1.0 if completion.count(self.answer_start) != 1 else 0
+            )
+            penalty -= (
+                1.0 if completion.count(self.answer_end) != 1 else 0
+            )
 
             # Content structure penalties
             penalty += self._check_content_structure(completion)
@@ -330,7 +356,8 @@ class ReasoningGRPOTrainer:
 
     def _log_debug_info(self, completion: str, ground_truth: str) -> None:
         """Log debug information for monitoring training progress."""
-        # Always print when there's a full score, occasionally print other cases
+        # Always print when there's a full score, occasionally print other
+        # cases
         should_print = False
         print_reason = ""
 
@@ -347,8 +374,12 @@ class ReasoningGRPOTrainer:
                 print_reason = "🎯 FULL SCORE (8.0) - Exact match!"
             elif random.random() < 0.1:  # 10% chance for other cases
                 should_print = True
-                if ground_truth.lower() in extracted_answer.lower():
-                    print_reason = "✅ PARTIAL SCORE (3.0) - Contains ground truth"
+                if (
+                    ground_truth.lower() in extracted_answer.lower()
+                ):
+                    print_reason = (
+                        "✅ PARTIAL SCORE (3.0) - Contains ground truth"
+                    )
                 else:
                     print_reason = "❌ WRONG ANSWER (-1.0) - No match"
         elif random.random() < 0.1:  # 10% chance for no tags case
@@ -390,7 +421,9 @@ class ReasoningGRPOTrainer:
             f.write("\n".join(debug_output))
             f.write("\n")
 
-    def _calculate_answer_reward(self, completion: str, ground_truth: str) -> float:
+    def _calculate_answer_reward(
+        self, completion: str, ground_truth: str
+    ) -> float:
         """Calculate answer reward score."""
         answer_match = re.search(
             rf"{self.answer_start}\s*(.+?)\s*{self.answer_end}",
@@ -423,7 +456,7 @@ class ReasoningGRPOTrainer:
         debug_output = []
         debug_output.append("\n" + "=" * 60)
         debug_output.append(
-            f"SPOT CHECK: PROMPT AND COMPLETIONS " f"(Step: {self.step_counter})"
+            f"SPOT CHECK: PROMPT AND COMPLETIONS (Step: {self.step_counter})"
         )
         debug_output.append("=" * 60)
         debug_output.append(f"==Prompt:==\n {self.index[ground_truth]}\n")
@@ -530,17 +563,23 @@ class ReasoningGRPOTrainer:
         training_args = self.get_training_config()
 
         # Initialize trainer
-        trainer = GRPOTrainer(
-            model=self.model_name,
-            reward_funcs=[
+        trainer_kwargs = {
+            "model": self.model_name,
+            "reward_funcs": [
                 self.match_format_func,
                 self.penalize_short_think_func,
                 self.check_answer_func,
             ],
-            args=training_args,
-            train_dataset=self.dataset,
-            peft_config=lora_config,
-        )
+            "args": training_args,
+            "train_dataset": self.dataset,
+            "peft_config": lora_config,
+        }
+
+        # Add token if provided
+        if self.hf_token:
+            trainer_kwargs["token"] = self.hf_token
+
+        trainer = GRPOTrainer(**trainer_kwargs)
 
         # Start training
         trainer.train()
@@ -577,13 +616,22 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=500, help="Maximum training steps"
     )
 
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument(
+        "--batch-size", type=int, default=4, help="Training batch size"
+    )
 
     parser.add_argument(
         "--learning-rate",
         type=float,
         default=1e-5,
         help="Learning rate for training",
+    )
+
+    parser.add_argument(
+        "--hf-token",
+        type=str,
+        default=None,
+        help="Hugging Face token for accessing gated repositories",
     )
 
     return parser.parse_args()
@@ -598,8 +646,10 @@ def main():
     print(f"   Model: {args.model_size}")
     lora_status = "Enabled" if args.use_lora else "Disabled"
     wandb_status = "Disabled" if args.disable_wandb else "Enabled"
+    hf_token_status = "Provided" if args.hf_token else "Not provided"
     print(f"   LoRA: {lora_status}")
     print(f"   Wandb: {wandb_status}")
+    print(f"   HF Token: {hf_token_status}")
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
@@ -613,6 +663,7 @@ def main():
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        hf_token=args.hf_token,
     )
 
     trainer.train()
