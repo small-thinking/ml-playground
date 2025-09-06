@@ -38,6 +38,7 @@ Examples:
 
 import os
 import argparse
+import math
 from datetime import datetime
 from typing import Optional, Dict, Any
 
@@ -53,6 +54,46 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType
 
 
+class SFTMetricsTrainer(Trainer):
+    """Custom trainer that computes additional SFT metrics."""
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """Compute loss and additional metrics."""
+        outputs = model(**inputs)
+        loss = outputs.loss
+
+        if return_outputs:
+            return loss, outputs
+
+        return loss
+
+    def log(self, logs):
+        """Log additional metrics including perplexity."""
+        # Compute perplexity from loss
+        if "train_loss" in logs:
+            logs["train_perplexity"] = math.exp(logs["train_loss"])
+        if "eval_loss" in logs:
+            logs["eval_perplexity"] = math.exp(logs["eval_loss"])
+
+        # Compute token accuracy if we have predictions
+        if "eval_predictions" in logs and "eval_labels" in logs:
+            predictions = logs["eval_predictions"]
+            labels = logs["eval_labels"]
+
+            # Flatten and compute accuracy
+            predictions_flat = predictions.flatten()
+            labels_flat = labels.flatten()
+
+            # Mask out padding tokens (typically -100)
+            mask = labels_flat != -100
+            if mask.sum() > 0:
+                correct = (predictions_flat[mask] == labels_flat[mask]).sum()
+                total = mask.sum()
+                logs["eval_token_accuracy"] = correct.float() / total
+
+        super().log(logs)
+
+
 class InstructionSFTTrainer:
     """Main trainer class for SFT instruction following training."""
 
@@ -61,7 +102,7 @@ class InstructionSFTTrainer:
         model_size: str = "3B",
         use_lora: bool = False,
         wandb_enabled: bool = True,
-        max_steps: int = 1000,
+        max_steps: int = 10000,
         batch_size: int = 4,
         learning_rate: float = 2e-5,
         hf_token: Optional[str] = None,
@@ -115,9 +156,8 @@ class InstructionSFTTrainer:
         # Setup logging
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
-        self.log_file = os.path.join(
-            self.log_dir, f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = os.path.join(self.log_dir, f"sft_debug_{timestamp}.txt")
 
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
@@ -200,7 +240,7 @@ class InstructionSFTTrainer:
 
     def _ensure_correct_precision(self) -> None:
         """
-        Ensure model parameters are in the correct precision for mixed precision.
+        Ensure model parameters are in correct precision for mixed precision.
 
         This method fixes the 'Attempting to unscale FP16 gradients' error by
         ensuring that all trainable parameters are in FP32 when using mixed
@@ -383,12 +423,13 @@ class InstructionSFTTrainer:
         )
 
         # Initialize trainer with proper configuration
-        trainer = Trainer(
+        trainer = SFTMetricsTrainer(
             model=self.model,
             args=training_args,
             train_dataset=self.dataset,
             data_collator=data_collator,
-            processing_class=self.tokenizer,  # Use processing_class instead of deprecated tokenizer
+            # Use processing_class instead of deprecated tokenizer parameter
+            processing_class=self.tokenizer,
         )
 
         # Validate dataset before training
