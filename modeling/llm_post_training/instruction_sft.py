@@ -69,7 +69,7 @@ class SFTMetricsTrainer(Trainer):
 
         return loss
 
-    def log(self, logs):
+    def log(self, logs, start_time=None):
         """Log additional metrics including perplexity."""
         # Compute perplexity from loss
         if "train_loss" in logs:
@@ -93,7 +93,7 @@ class SFTMetricsTrainer(Trainer):
                 total = mask.sum()
                 logs["eval_token_accuracy"] = correct.float() / total
 
-        super().log(logs)
+        super().log(logs, start_time)
 
 
 class InstructionSFTTrainer:
@@ -159,7 +159,9 @@ class InstructionSFTTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = os.path.join(self.log_dir, f"sft_debug_{timestamp}.txt")
+        self.log_file = os.path.join(
+            self.log_dir, f"sft_debug_{timestamp}.txt"
+        )
 
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
@@ -194,7 +196,9 @@ class InstructionSFTTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             cache_dir=self.models_dir,
-            torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
+            torch_dtype=(
+                torch.float16 if torch.cuda.is_available() else torch.float32
+            ),
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
         )
@@ -251,7 +255,9 @@ class InstructionSFTTrainer:
         """
         # Only apply when using GPU with mixed precision
         if torch.cuda.is_available():
-            print("🔧 Ensuring correct precision for mixed precision training...")
+            print(
+                "🔧 Ensuring correct precision for mixed precision training..."
+            )
             trainable_params = 0
             converted_params = 0
 
@@ -485,7 +491,9 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=10000, help="Maximum training steps"
     )
 
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument(
+        "--batch-size", type=int, default=4, help="Training batch size"
+    )
 
     parser.add_argument(
         "--learning-rate",
