@@ -107,7 +107,8 @@ class ReasoningGRPOTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir, f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir,
+            f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
         # Tag constants
@@ -135,7 +136,9 @@ class ReasoningGRPOTrainer:
         # Load dataset from HuggingFace
         # Dataset: https://huggingface.co/datasets/tech-tao/
         #          mini-reasoning-dataset
-        self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
+        self.dataset = load_dataset(
+            "tech-tao/mini-reasoning-dataset", split="train"
+        )
 
         # Transform dataset with reasoning prompt template
         self.dataset = self.dataset.map(
@@ -544,23 +547,19 @@ class ReasoningGRPOTrainer:
         training_args = self.get_training_config()
 
         # Initialize trainer
-        trainer_kwargs = {
-            "model": self.model_name,
-            "reward_funcs": [
+        # Note: Token is handled via environment variable HUGGINGFACE_HUB_TOKEN
+        # which is set in __init__ when hf_token is provided
+        trainer = GRPOTrainer(
+            model=self.model_name,
+            reward_funcs=[
                 self.match_format_func,
                 self.penalize_short_think_func,
                 self.check_answer_func,
             ],
-            "args": training_args,
-            "train_dataset": self.dataset,
-            "peft_config": lora_config,
-        }
-
-        # Add token if provided
-        if self.hf_token:
-            trainer_kwargs["token"] = self.hf_token
-
-        trainer = GRPOTrainer(**trainer_kwargs)
+            args=training_args,
+            train_dataset=self.dataset,
+            peft_config=lora_config,
+        )
 
         # Start training
         trainer.train()
