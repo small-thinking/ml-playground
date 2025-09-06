@@ -201,6 +201,7 @@ processed_data/
 *.jsonl
 *.tsv
 *.txt
+!requirements.txt
 *.parquet
 *.h5
 *.hdf5
