@@ -107,8 +107,7 @@ class ReasoningGRPOTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir,
-            f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir, f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
         # Tag constants
@@ -136,9 +135,7 @@ class ReasoningGRPOTrainer:
         # Load dataset from HuggingFace
         # Dataset: https://huggingface.co/datasets/tech-tao/
         #          mini-reasoning-dataset
-        self.dataset = load_dataset(
-            "tech-tao/mini-reasoning-dataset", split="train"
-        )
+        self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
 
         # Transform dataset with reasoning prompt template
         self.dataset = self.dataset.map(
