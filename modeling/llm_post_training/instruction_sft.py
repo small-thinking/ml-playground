@@ -40,8 +40,8 @@ def get_model_name(model_size: str) -> str:
 def format_instruction(example: Dict[str, Any]) -> Dict[str, str]:
     """Format instruction following examples."""
     # Create the instruction-following format, which is the
-    # foundation of SFT. The model is trained on this structured format to learn
-    # how to follow instructions.
+    # foundation of SFT. The model is trained on this structured format to
+    # learn how to follow instructions.
     if example.get("input", "").strip():
         return {
             "text": (
@@ -135,8 +135,7 @@ def main(args):
     # Load and prepare dataset
     print("📊 Loading and preparing Alpaca dataset...")
     dataset = load_dataset("tatsu-lab/alpaca", split="train")
-    if len(dataset) > 10000:
-        dataset = dataset.select(range(10000))
+    print(f"📊 Dataset size: {len(dataset)} samples")
 
     dataset = dataset.map(format_instruction, remove_columns=dataset.column_names)
     dataset = dataset.map(
@@ -146,14 +145,28 @@ def main(args):
         desc="Tokenizing dataset",
     )
 
+    # Calculate max_steps based on dataset size
+    effective_batch_size = args.batch_size * 8  # gradient_accumulation_steps
+    max_possible_steps = len(dataset) // effective_batch_size
+    max_steps = min(args.max_steps, max_possible_steps)
+
+    print("📊 Training configuration:")
+    print(f"   - Dataset size: {len(dataset)} samples")
+    print(f"   - Effective batch size: {effective_batch_size}")
+    print(f"   - Max possible steps: {max_possible_steps}")
+    print(f"   - Using max_steps: {max_steps}")
+
     # Training arguments
-    output_dir = f"./models/{model_name.split('/')[-1]}-{'LoRA' if args.use_lora else 'Full'}-SFT"
+    output_dir = (
+        f"./models/{model_name.split('/')[-1]}-"
+        f"{'LoRA' if args.use_lora else 'Full'}-SFT"
+    )
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=1,
         per_device_train_batch_size=args.batch_size,
-        warmup_steps=max(100, int(0.05 * args.max_steps)),
-        max_steps=args.max_steps,
+        warmup_steps=max(100, int(0.05 * max_steps)),
+        max_steps=max_steps,
         learning_rate=args.learning_rate,
         lr_scheduler_type="cosine",
         weight_decay=0.005,
@@ -162,10 +175,12 @@ def main(args):
         fp16=False,
         bf16=torch.cuda.is_available(),
         logging_steps=10,
-        save_steps=10000,
+        save_steps=min(10000, max_steps),
         save_total_limit=1,
         report_to="wandb" if not args.disable_wandb else "none",
-        run_name=f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None,
+        run_name=(
+            f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None
+        ),
     )
 
     # Trainer
@@ -193,7 +208,10 @@ if __name__ == "__main__":
         description="SFT Training Script for Instruction Following"
     )
     parser.add_argument(
-        "--model-size", type=str, default="3B", choices=["0.5B", "1.5B", "3B", "8B"]
+        "--model-size",
+        type=str,
+        default="3B",
+        choices=["0.5B", "1.5B", "3B", "8B"],
     )
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
