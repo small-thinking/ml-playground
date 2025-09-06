@@ -254,10 +254,10 @@ class InstructionSFTTrainer:
         # Tokenize the text with proper configuration
         tokenized = self.tokenizer(
             examples["text"],
-            truncation=True,
-            padding=False,  # We'll handle padding in the data collator
+            truncation=True,  # Truncate to max_length
+            padding="max_length",  # Pad to max_length
             max_length=512,
-            return_tensors=None,
+            return_tensors="pt",  # Return PyTorch tensors
             add_special_tokens=True,
         )
 
@@ -265,7 +265,7 @@ class InstructionSFTTrainer:
         # Ensure labels is properly formatted as a list of lists
         if isinstance(tokenized["input_ids"][0], list):
             tokenized["labels"] = [ids.copy() for ids in tokenized["input_ids"]]
-        else:
+        else:  # This branch is likely not hit with return_tensors="pt"
             # Handle single example case
             tokenized["labels"] = tokenized["input_ids"].copy()
 
@@ -344,7 +344,7 @@ class InstructionSFTTrainer:
             args=training_args,
             train_dataset=self.dataset,
             data_collator=data_collator,
-            tokenizer=self.tokenizer,
+            tokenizer=self.tokenizer,  # Keep for now, will be removed in v5.0.0
         )
 
         # Validate dataset before training
