@@ -1,55 +1,70 @@
 # LLM Post Training
 
-GRPO (Generative Reward-Powered Optimization) training for reasoning tasks.
+Examples of post-training techniques for Large Language Models:
+
+- **GRPO**: Generative Reward-Powered Optimization for reasoning tasks
+- **SFT**: Supervised Fine-Tuning for instruction following
 
 ## Quick Start
 
 ```bash
-# Setup environment (with SSH key generation)
+# Setup environment
 chmod +x setup_env.sh
 ./setup_env.sh --email your.email@example.com
-
-# Activate environment
 source ~/.bashrc
 
-# Login to Hugging Face (required for gated models)
+# Login to Hugging Face
 huggingface-cli login
 
-# Run GRPO training
-python reasoning_grpo.py --model-size 3B --use-lora
+# Train models
+python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
+python instruction_sft.py --model-size 3B --use-lora   # SFT
 ```
 
-## Training Options
+## Models & Datasets
+
+| Training | Models                           | Dataset        | Purpose                            |
+| -------- | -------------------------------- | -------------- | ---------------------------------- |
+| **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning | Reasoning with structured thinking |
+| **SFT**  | Base models (not instruct-tuned) | Alpaca         | Instruction following              |
+
+## Usage
+
+### GRPO Training
 
 ```bash
-# Available model sizes
-python reasoning_grpo.py --model-size {0.5B,1.5B,3B,8B}
-
-# LoRA fine-tuning (recommended)
-python reasoning_grpo.py --model-size 3B --use-lora
-
-# Custom training parameters
-python reasoning_grpo.py --model-size 3B --max-steps 1000 --batch-size 8
+python reasoning_grpo.py --model-size 3B --use-lora --max-steps 1000
 ```
 
-## Features
+### SFT Training
 
-- **GRPO Training**: Reward-based optimization for reasoning tasks
-- **Model Support**: Llama 3.1/3.2 and Qwen2 models (0.5B to 8B)
+```bash
+python instruction_sft.py --model-size 3B --use-lora --max-steps 2000
+```
+
+### Model Comparison (SFT)
+
+```bash
+# Compare base vs SFT models
+python compare_base_vs_sft.py \
+    --base-model meta-llama/Llama-3.2-3B \
+    --sft-model /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
+```
+
+## Key Features
+
 - **LoRA Support**: Efficient fine-tuning with PEFT
+- **Base Models**: SFT uses base models to show clear transformation
 - **Workspace Management**: Organized storage in `/workspace/{models,data,cache}`
-- **Automated Setup**: One-command environment setup with SSH key generation
-- **Hugging Face Integration**: CLI tools for model access and authentication
+- **Comparison Tools**: Side-by-side base vs SFT model comparison
 
 ## Prerequisites
 
-- **Hugging Face Account**: Required for accessing gated models (Llama, etc.)
+- **Hugging Face Account**: Required for gated models (Llama, etc.)
 - **Hugging Face Token**: Get from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
-- **GitHub/GitLab Account**: For SSH key setup (optional but recommended)
+- **CUDA GPU**: Recommended for training
 
 ## Authentication
-
-### Hugging Face Login
 
 ```bash
 # Login with your Hugging Face token
@@ -58,10 +73,3 @@ huggingface-cli login
 # Or set token as environment variable
 export HUGGINGFACE_HUB_TOKEN=your_token_here
 ```
-
-### SSH Key Setup
-
-The setup script automatically generates SSH keys. Add the public key to:
-
-- **GitHub**: Settings → SSH and GPG keys → New SSH key
-- **GitLab**: User Settings → SSH Keys → Add key

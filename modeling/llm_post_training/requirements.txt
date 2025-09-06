@@ -10,3 +10,6 @@ sentencepiece>=0.1.99
 tokenizers>=0.15.0
 numpy>=1.24.0
 tqdm>=4.65.0
+# Additional dependencies for SFT
+evaluate>=0.4.0
+scikit-learn>=1.3.0
