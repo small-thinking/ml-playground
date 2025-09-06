@@ -116,8 +116,7 @@ class InstructionSFTTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir,
-            f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir, f"sft_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
 
     def _get_model_name(self) -> str:
@@ -153,9 +152,7 @@ class InstructionSFTTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             cache_dir=self.models_dir,
-            torch_dtype=(
-                torch.float16 if torch.cuda.is_available() else torch.float32
-            ),
+            torch_dtype=(torch.float16 if torch.cuda.is_available() else torch.float32),
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
         )
@@ -212,9 +209,7 @@ class InstructionSFTTrainer:
         """
         # Only apply when using GPU with mixed precision
         if torch.cuda.is_available():
-            print(
-                "🔧 Ensuring correct precision for mixed precision training..."
-            )
+            print("🔧 Ensuring correct precision for mixed precision training...")
             trainable_params = 0
             converted_params = 0
 
