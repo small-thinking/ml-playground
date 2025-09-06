@@ -51,13 +51,6 @@ python compare_base_vs_sft.py \
     --sft-model /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
 ```
 
-### Model Testing
-
-```bash
-# Test trained models
-python test_sft_model.py --model-path /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
-```
-
 ## Key Features
 
 - **LoRA Support**: Efficient fine-tuning with PEFT
