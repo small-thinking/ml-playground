@@ -7,11 +7,13 @@ for improving reasoning capabilities on the mini-reasoning-dataset.
 Usage:
     python reasoning_grpo.py --model-size 3B --use-lora
     python reasoning_grpo.py --model-size 8B --no-lora
+    python reasoning_grpo.py --disable-wandb
     python reasoning_grpo.py --help
 
 Arguments:
     --model-size: Model size to use ("0.5B", "1.5B", "3B", "8B") [default: 3B]
     --use-lora: Enable LoRA for efficient fine-tuning [default: False]
+    --disable-wandb: Disable wandb logging [default: False]
     --max-steps: Maximum training steps [default: 500]
     --batch-size: Training batch size [default: 4]
     --learning-rate: Learning rate [default: 1e-5]
@@ -46,6 +48,7 @@ class ReasoningGRPOTrainer:
         self,
         model_size: str = "3B",
         use_lora: bool = False,
+        wandb_enabled: bool = True,
         max_steps: int = 500,
         batch_size: int = 4,
         learning_rate: float = 1e-5,
@@ -56,12 +59,14 @@ class ReasoningGRPOTrainer:
         Args:
             model_size: Size of the model ("0.5B", "1.5B", "3B", "8B")
             use_lora: Whether to use LoRA for efficient fine-tuning
+            wandb_enabled: Whether to enable wandb logging
             max_steps: Maximum training steps
             batch_size: Training batch size
             learning_rate: Learning rate for training
         """
         self.model_size = model_size
         self.use_lora = use_lora
+        self.wandb_enabled = wandb_enabled
         self.max_steps = max_steps
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -116,7 +121,8 @@ class ReasoningGRPOTrainer:
     def load_and_prepare_dataset(self) -> None:
         """Load and prepare the mini-reasoning-dataset."""
         # Load dataset from HuggingFace
-        # Dataset: https://huggingface.co/datasets/tech-tao/mini-reasoning-dataset
+        # Dataset: https://huggingface.co/datasets/
+        #          tech-tao/mini-reasoning-dataset
         self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
 
         # Transform dataset with reasoning prompt template
@@ -262,10 +268,11 @@ class ReasoningGRPOTrainer:
 
             content_length = len(think_content)
 
-            # Gradual penalty for short thinking (under 200 characters)
+            # Gradual penalty for short thinking (under 200 chars)
             if content_length < 200:
                 penalty_ratio = (200 - content_length) / 200
-                score -= 10.0 * penalty_ratio  # Gradual penalty from 0 to -10.0
+                # Gradual penalty from 0 to -10.0
+                score -= 10.0 * penalty_ratio
 
             scores.append(score)
 
@@ -470,24 +477,35 @@ class ReasoningGRPOTrainer:
         model_output_name = f"{model_name_short}-{lora_suffix}-GRPO"
         output_dir = os.path.join(self.models_dir, model_output_name)
 
-        return GRPOConfig(
-            output_dir=output_dir,
-            learning_rate=self.learning_rate,
-            temperature=1.0,
-            warmup_ratio=0.1,
-            lr_scheduler_type="cosine",
-            logging_steps=1,
-            per_device_train_batch_size=self.batch_size,
-            gradient_accumulation_steps=8,
-            num_generations=8,
-            max_prompt_length=768,
-            max_steps=self.max_steps,
-            report_to="wandb",
-            run_name=f"{self.model_name}-{lora_suffix}-GRPO",
-            fp16=True,
-            fp16_full_eval=False,
-            fp16_opt_level="O1",
-        )
+        config_params = {
+            "output_dir": output_dir,
+            "learning_rate": self.learning_rate,
+            "temperature": 1.0,
+            "warmup_ratio": 0.1,
+            "lr_scheduler_type": "cosine",
+            "logging_steps": 1,
+            "per_device_train_batch_size": self.batch_size,
+            "gradient_accumulation_steps": 8,
+            "num_generations": 8,
+            "max_prompt_length": 768,
+            "max_steps": self.max_steps,
+            "fp16": True,
+            "fp16_full_eval": False,
+            "fp16_opt_level": "O1",
+        }
+
+        # Add wandb configuration if enabled
+        if self.wandb_enabled:
+            config_params.update(
+                {
+                    "report_to": "wandb",
+                    "run_name": f"{self.model_name}-{lora_suffix}-GRPO",
+                }
+            )
+        else:
+            config_params["report_to"] = "none"
+
+        return GRPOConfig(**config_params)
 
     def print_directory_info(self) -> None:
         """Print information about workspace directories."""
@@ -544,7 +562,15 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--use-lora", action="store_true", help="Enable LoRA for efficient fine-tuning"
+        "--use-lora",
+        action="store_true",
+        help="Enable LoRA for efficient fine-tuning",
+    )
+
+    parser.add_argument(
+        "--disable-wandb",
+        action="store_true",
+        help="Disable wandb logging",
     )
 
     parser.add_argument(
@@ -554,7 +580,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
 
     parser.add_argument(
-        "--learning-rate", type=float, default=1e-5, help="Learning rate for training"
+        "--learning-rate",
+        type=float,
+        default=1e-5,
+        help="Learning rate for training",
     )
 
     return parser.parse_args()
@@ -568,7 +597,9 @@ def main():
     print("🚀 Starting GRPO training with:")
     print(f"   Model: {args.model_size}")
     lora_status = "Enabled" if args.use_lora else "Disabled"
+    wandb_status = "Disabled" if args.disable_wandb else "Enabled"
     print(f"   LoRA: {lora_status}")
+    print(f"   Wandb: {wandb_status}")
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
@@ -578,6 +609,7 @@ def main():
     trainer = ReasoningGRPOTrainer(
         model_size=args.model_size,
         use_lora=args.use_lora,
+        wandb_enabled=not args.disable_wandb,
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
