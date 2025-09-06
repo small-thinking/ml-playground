@@ -57,7 +57,9 @@ from peft import LoraConfig, get_peft_model, TaskType
 class SFTMetricsTrainer(Trainer):
     """Custom trainer that computes additional SFT metrics."""
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
         """Compute loss and additional metrics."""
         outputs = model(**inputs)
         loss = outputs.loss
@@ -480,7 +482,7 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--max-steps", type=int, default=1000, help="Maximum training steps"
+        "--max-steps", type=int, default=10000, help="Maximum training steps"
     )
 
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
