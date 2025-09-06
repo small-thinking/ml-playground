@@ -158,12 +158,12 @@ def main(args):
         lr_scheduler_type="cosine",
         weight_decay=0.005,
         max_grad_norm=1.0,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=8,
         fp16=False,
         bf16=torch.cuda.is_available(),
         logging_steps=10,
         save_steps=10000,
-        save_total_limit=2,
+        save_total_limit=1,
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None,
     )
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--hf-token", type=str, default=None)
     args = parser.parse_args()
