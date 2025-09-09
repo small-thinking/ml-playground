@@ -146,7 +146,7 @@ def main(args):
     )
 
     # Calculate max_steps based on dataset size
-    effective_batch_size = args.batch_size * 8  # gradient_accumulation_steps
+    effective_batch_size = args.batch_size * args.gradient_accumulation_steps
     max_possible_steps = len(dataset) // effective_batch_size
     max_steps = min(args.max_steps, max_possible_steps)
 
@@ -171,7 +171,7 @@ def main(args):
         lr_scheduler_type="cosine",
         weight_decay=0.005,
         max_grad_norm=1.0,
-        gradient_accumulation_steps=8,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         fp16=False,
         bf16=torch.cuda.is_available(),
         logging_steps=10,
@@ -218,6 +218,12 @@ if __name__ == "__main__":
     parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=16,
+        help="Number of gradient accumulation steps",
+    )
     parser.add_argument("--hf-token", type=str, default=None)
     args = parser.parse_args()
     main(args)

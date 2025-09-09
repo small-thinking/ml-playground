@@ -57,6 +57,7 @@ class ReasoningGRPOTrainer:
         max_steps: int = 500,
         batch_size: int = 4,
         learning_rate: float = 1e-5,
+        gradient_accumulation_steps: int = 16,
         hf_token: Optional[str] = None,
     ):
         """
@@ -69,6 +70,7 @@ class ReasoningGRPOTrainer:
             max_steps: Maximum training steps
             batch_size: Training batch size
             learning_rate: Learning rate for training
+            gradient_accumulation_steps: Number of gradient accumulation steps
             hf_token: Hugging Face token for accessing gated repositories
         """
         self.model_size = model_size
@@ -77,6 +79,7 @@ class ReasoningGRPOTrainer:
         self.max_steps = max_steps
         self.batch_size = batch_size
         self.learning_rate = learning_rate
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.hf_token = hf_token
         self.model_name = self._get_model_name()
         self.dataset = None
@@ -107,7 +110,8 @@ class ReasoningGRPOTrainer:
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_file = os.path.join(
-            self.log_dir, f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            self.log_dir,
+            f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
         )
 
         # Tag constants
@@ -499,7 +503,7 @@ class ReasoningGRPOTrainer:
             "lr_scheduler_type": "cosine",
             "logging_steps": 1,
             "per_device_train_batch_size": self.batch_size,
-            "gradient_accumulation_steps": 8,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "num_generations": 8,
             "max_prompt_length": 768,
             "max_steps": self.max_steps,
@@ -603,6 +607,13 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=16,
+        help="Number of gradient accumulation steps",
+    )
+
+    parser.add_argument(
         "--hf-token",
         type=str,
         default=None,
@@ -628,6 +639,7 @@ def main():
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
+    print(f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
     print("-" * 50)
 
     # Create and run trainer
@@ -638,6 +650,7 @@ def main():
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         hf_token=args.hf_token,
     )
 
