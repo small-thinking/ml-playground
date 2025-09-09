@@ -5,10 +5,17 @@ This script implements GRPO (Generative Reward-Powered Optimization) training
 for improving reasoning capabilities on the mini-reasoning-dataset.
 
 Usage:
+    # Single GPU training
     python reasoning_grpo.py --model-size 3B --use-lora
     python reasoning_grpo.py --model-size 8B --gradient-accumulation-steps 16
     python reasoning_grpo.py --disable-wandb
-    python reasoning_grpo.py --help
+    
+    # Multi-GPU training with torchrun (recommended for multiple GPUs)
+    torchrun --nproc_per_node=4 reasoning_grpo.py --model-size 8B
+    torchrun --nproc_per_node=2 reasoning_grpo.py --use-lora --batch-size 8
+    
+    # Multi-GPU training with DataParallel (fallback)
+    python reasoning_grpo.py --model-size 8B  # Will use device_map="auto" if multiple GPUs detected
 
 Arguments:
     --model-size: Model size to use ("0.5B", "1.5B", "3B", "8B") [default: 8B]
@@ -21,21 +28,27 @@ Arguments:
     [default: None]
 
 Note:
-    Multi-GPU training (DDP) is automatically enabled when multiple GPUs
-    are detected. No additional flags are required.
+    Multi-GPU training is supported in two modes:
+    1. Distributed Data Parallel (DDP): Use torchrun for best performance
+    2. DataParallel: Automatic fallback when running with python directly
 
 Examples:
-    # Full fine-tuning with 8B model (default, auto-detects multi-GPU)
+    # Single GPU training
     python reasoning_grpo.py
-
-    # LoRA fine-tuning with 8B model (auto-detects multi-GPU)
     python reasoning_grpo.py --use-lora
-
-    # Custom training configuration (auto-detects multi-GPU)
-    python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
-
-    # With Hugging Face token for gated models (auto-detects multi-GPU)
-    python reasoning_grpo.py --hf-token your_token_here
+    
+    # Multi-GPU with DDP (recommended)
+    torchrun --nproc_per_node=4 reasoning_grpo.py
+    torchrun --nproc_per_node=2 reasoning_grpo.py --use-lora
+    
+    # Multi-GPU with DataParallel (fallback)
+    python reasoning_grpo.py  # Will automatically use multiple GPUs if available
+    
+    # Custom configuration with multi-GPU
+    torchrun --nproc_per_node=2 reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
+    
+    # With Hugging Face token
+    torchrun --nproc_per_node=4 reasoning_grpo.py --hf-token your_token_here
 """
 
 import re
@@ -46,6 +59,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import torch
+import torch.distributed as dist
 from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
@@ -94,6 +108,7 @@ class ReasoningGRPOTrainer:
         # Auto-detect and setup multi-GPU
         self.num_gpus = self._detect_gpus()
         self.use_multi_gpu = self.num_gpus > 1
+        self.is_distributed = self._init_distributed()
         self._setup_multi_gpu()
 
         # Setup workspace directories
@@ -150,13 +165,32 @@ class ReasoningGRPOTrainer:
             return 0
         return torch.cuda.device_count()
 
+    def _init_distributed(self) -> bool:
+        """Initialize distributed training if multiple GPUs are available."""
+        if not self.use_multi_gpu:
+            return False
+        
+        # Check if we're already running with torchrun/distributed launcher
+        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+            # Already launched with torchrun, just initialize
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            torch.cuda.set_device(local_rank)
+            dist.init_process_group(backend="nccl")
+            return True
+        
+        # Auto-launch with torchrun if multiple GPUs detected and not already distributed
+        return False
+
     def _setup_multi_gpu(self) -> None:
         """Setup multi-GPU configuration automatically."""
-        if self.use_multi_gpu:
-            # Set environment variables for DDP
-            os.environ["MASTER_ADDR"] = "localhost"
-            os.environ["MASTER_PORT"] = "12355"
-            print(f"🚀 Multi-GPU training enabled with {self.num_gpus} GPUs")
+        if self.is_distributed:
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            print(f"🚀 Distributed training: rank {rank}/{world_size}, local_rank {local_rank}")
+        elif self.use_multi_gpu:
+            print(f"🚀 Multi-GPU training available with {self.num_gpus} GPUs")
+            print("   → Use 'torchrun --nproc_per_node={} python reasoning_grpo.py [args]' for distributed training".format(self.num_gpus))
         else:
             print(f"💻 Single GPU training with {self.num_gpus} GPU(s)")
 
@@ -542,12 +576,22 @@ class ReasoningGRPOTrainer:
         }
 
         # Multi-GPU configuration
-        if self.use_multi_gpu and self.num_gpus > 1:
+        if self.is_distributed:
+            # Distributed training configuration
             config_params.update(
                 {
                     "ddp_find_unused_parameters": False,
                     "dataloader_pin_memory": True,
                     "dataloader_num_workers": 4,
+                    "remove_unused_columns": False,
+                }
+            )
+        elif self.use_multi_gpu:
+            # DataParallel configuration for single-node multi-GPU
+            config_params.update(
+                {
+                    "dataloader_pin_memory": True,
+                    "dataloader_num_workers": min(4, self.num_gpus * 2),
                 }
             )
 
@@ -566,14 +610,23 @@ class ReasoningGRPOTrainer:
 
     def print_directory_info(self) -> None:
         """Print information about workspace directories."""
+        # Only print from rank 0 in distributed training
+        if self.is_distributed and dist.get_rank() != 0:
+            return
+            
         print("📁 Workspace Configuration:")
         print(f"   Workspace Directory: {self.workspace_dir}")
         print(f"   Models Directory: {self.models_dir}")
         print(f"   Data Directory: {self.data_dir}")
         print(f"   Cache Directory: {self.cache_dir}")
         print(f"   Model: {self.model_name}")
-        multi_gpu_status = "Enabled" if self.use_multi_gpu else "Disabled"
-        print(f"   Multi-GPU: {multi_gpu_status}")
+        
+        if self.is_distributed:
+            print(f"   Multi-GPU: Distributed ({dist.get_world_size()} processes)")
+        elif self.use_multi_gpu:
+            print(f"   Multi-GPU: Available ({self.num_gpus} GPUs)")
+        else:
+            print(f"   Multi-GPU: Disabled")
         print(f"   Available GPUs: {self.num_gpus}")
         print("-" * 50)
 
@@ -592,17 +645,23 @@ class ReasoningGRPOTrainer:
         # Initialize trainer
         # Note: Token is handled via environment variable HUGGINGFACE_HUB_TOKEN
         # which is set in __init__ when hf_token is provided
-        trainer = GRPOTrainer(
-            model=self.model_name,
-            reward_funcs=[
+        trainer_kwargs = {
+            "model": self.model_name,
+            "reward_funcs": [
                 self.match_format_func,
                 self.penalize_short_think_func,
                 self.check_answer_func,
             ],
-            args=training_args,
-            train_dataset=self.dataset,
-            peft_config=lora_config,
-        )
+            "args": training_args,
+            "train_dataset": self.dataset,
+            "peft_config": lora_config,
+        }
+        
+        # Add device_map for non-distributed multi-GPU setups
+        if self.use_multi_gpu and not self.is_distributed:
+            trainer_kwargs["model_kwargs"] = {"device_map": "auto"}
+        
+        trainer = GRPOTrainer(**trainer_kwargs)
 
         # Start training
         trainer.train()
@@ -670,19 +729,26 @@ def main():
     # Parse command-line arguments
     args = parse_arguments()
 
-    print("🚀 Starting GRPO training with:")
-    print(f"   Model: {args.model_size}")
-    lora_status = "Enabled" if args.use_lora else "Disabled"
-    wandb_status = "Disabled" if args.disable_wandb else "Enabled"
-    hf_token_status = "Provided" if args.hf_token else "Not provided"
-    print(f"   LoRA: {lora_status}")
-    print(f"   Wandb: {wandb_status}")
-    print(f"   HF Token: {hf_token_status}")
-    print(f"   Max Steps: {args.max_steps}")
-    print(f"   Batch Size: {args.batch_size}")
-    print(f"   Learning Rate: {args.learning_rate}")
-    print(f"   Gradient Accumulation Steps: " f"{args.gradient_accumulation_steps}")
-    print("-" * 50)
+    # Only print from rank 0 in distributed training
+    if not (os.environ.get("RANK") and int(os.environ.get("RANK", 0)) != 0):
+        print("🚀 Starting GRPO training with:")
+        print(f"   Model: {args.model_size}")
+        lora_status = "Enabled" if args.use_lora else "Disabled"
+        wandb_status = "Disabled" if args.disable_wandb else "Enabled"
+        hf_token_status = "Provided" if args.hf_token else "Not provided"
+        print(f"   LoRA: {lora_status}")
+        print(f"   Wandb: {wandb_status}")
+        print(f"   HF Token: {hf_token_status}")
+        print(f"   Max Steps: {args.max_steps}")
+        print(f"   Batch Size: {args.batch_size}")
+        print(f"   Learning Rate: {args.learning_rate}")
+        print(f"   Gradient Accumulation Steps: " f"{args.gradient_accumulation_steps}")
+        
+        if "RANK" in os.environ:
+            world_size = os.environ.get("WORLD_SIZE", "1")
+            print(f"   Distributed: {world_size} processes")
+        
+        print("-" * 50)
 
     # Create and run trainer
     trainer = ReasoningGRPOTrainer(
