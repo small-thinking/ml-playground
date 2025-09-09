@@ -139,9 +139,7 @@ class ReasoningGRPOTrainer:
         # Load dataset from HuggingFace
         # Dataset: https://huggingface.co/datasets/tech-tao/
         #          mini-reasoning-dataset
-        self.dataset = load_dataset(
-            "tech-tao/mini-reasoning-dataset", split="train"
-        )
+        self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
 
         # Transform dataset with reasoning prompt template
         self.dataset = self.dataset.map(
@@ -172,9 +170,7 @@ class ReasoningGRPOTrainer:
         for i, row in enumerate(self.dataset):
             self.index[row["ground_truth"]] = row["prompt"]
 
-    def match_format_func(
-        self, completions: List[str], **kwargs
-    ) -> List[float]:
+    def match_format_func(self, completions: List[str], **kwargs) -> List[float]:
         """
         Format penalty function: perfect format gets 0, violations get
         penalties.
@@ -206,9 +202,7 @@ class ReasoningGRPOTrainer:
                 continue
 
             # Missing or incorrect tags
-            penalty -= (
-                1.0 if completion.count(self.reasoning_start) != 1 else 0
-            )
+            penalty -= 1.0 if completion.count(self.reasoning_start) != 1 else 0
             penalty -= 1.0 if completion.count(self.reasoning_end) != 1 else 0
             penalty -= 1.0 if completion.count(self.answer_start) != 1 else 0
             penalty -= 1.0 if completion.count(self.answer_end) != 1 else 0
@@ -372,9 +366,7 @@ class ReasoningGRPOTrainer:
             elif random.random() < 0.1:  # 10% chance for other cases
                 should_print = True
                 if ground_truth.lower() in extracted_answer.lower():
-                    print_reason = (
-                        "✅ PARTIAL SCORE (3.0) - Contains ground truth"
-                    )
+                    print_reason = "✅ PARTIAL SCORE (3.0) - Contains ground truth"
                 else:
                     print_reason = "❌ WRONG ANSWER (-1.0) - No match"
         elif random.random() < 0.1:  # 10% chance for no tags case
@@ -393,9 +385,7 @@ class ReasoningGRPOTrainer:
         think_reward = self.penalize_short_think_func([completion])[0]
 
         # Calculate answer score manually
-        answer_reward = self._calculate_answer_reward(
-            completion, ground_truth
-        )
+        answer_reward = self._calculate_answer_reward(completion, ground_truth)
         total_reward = format_reward + think_reward + answer_reward
 
         # Prepare debug output
@@ -418,9 +408,7 @@ class ReasoningGRPOTrainer:
             f.write("\n".join(debug_output))
             f.write("\n")
 
-    def _calculate_answer_reward(
-        self, completion: str, ground_truth: str
-    ) -> float:
+    def _calculate_answer_reward(self, completion: str, ground_truth: str) -> float:
         """Calculate answer reward score."""
         answer_match = re.search(
             rf"{self.answer_start}\s*(.+?)\s*{self.answer_end}",
@@ -609,9 +597,7 @@ def parse_arguments() -> argparse.Namespace:
         "--max-steps", type=int, default=500, help="Maximum training steps"
     )
 
-    parser.add_argument(
-        "--batch-size", type=int, default=4, help="Training batch size"
-    )
+    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
 
     parser.add_argument(
         "--learning-rate",
@@ -653,9 +639,7 @@ def main():
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
-    print(
-        f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}"
-    )
+    print(f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
     print("-" * 50)
 
     # Create and run trainer
