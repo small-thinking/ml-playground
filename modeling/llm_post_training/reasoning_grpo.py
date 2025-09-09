@@ -20,17 +20,21 @@ Arguments:
     --hf-token: Hugging Face token for accessing gated repositories
     [default: None]
 
+Note:
+    Multi-GPU training (DDP) is automatically enabled when multiple GPUs
+    are detected. No additional flags are required.
+
 Examples:
-    # Full fine-tuning with 8B model (default)
+    # Full fine-tuning with 8B model (default, auto-detects multi-GPU)
     python reasoning_grpo.py
 
-    # LoRA fine-tuning with 8B model (default)
+    # LoRA fine-tuning with 8B model (auto-detects multi-GPU)
     python reasoning_grpo.py --use-lora
 
-    # Custom training configuration
+    # Custom training configuration (auto-detects multi-GPU)
     python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
 
-    # With Hugging Face token for gated models
+    # With Hugging Face token for gated models (auto-detects multi-GPU)
     python reasoning_grpo.py --hf-token your_token_here
 """
 
@@ -41,6 +45,7 @@ import argparse
 from datetime import datetime
 from typing import List, Optional
 
+import torch
 from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
@@ -85,6 +90,11 @@ class ReasoningGRPOTrainer:
         self.dataset = None
         self.index = {}
         self.step_counter = 0
+
+        # Auto-detect and setup multi-GPU
+        self.num_gpus = self._detect_gpus()
+        self.use_multi_gpu = self.num_gpus > 1
+        self._setup_multi_gpu()
 
         # Setup workspace directories
         self.workspace_dir = os.environ.get("WORKSPACE_DIR", "/workspace")
@@ -133,6 +143,22 @@ class ReasoningGRPOTrainer:
             raise ValueError(f"Invalid model size: {self.model_size}")
 
         return model_mapping[self.model_size]
+
+    def _detect_gpus(self) -> int:
+        """Detect the number of available GPUs."""
+        if not torch.cuda.is_available():
+            return 0
+        return torch.cuda.device_count()
+
+    def _setup_multi_gpu(self) -> None:
+        """Setup multi-GPU configuration automatically."""
+        if self.use_multi_gpu:
+            # Set environment variables for DDP
+            os.environ["MASTER_ADDR"] = "localhost"
+            os.environ["MASTER_PORT"] = "12355"
+            print(f"🚀 Multi-GPU training enabled with {self.num_gpus} GPUs")
+        else:
+            print(f"💻 Single GPU training with {self.num_gpus} GPU(s)")
 
     def load_and_prepare_dataset(self) -> None:
         """Load and prepare the mini-reasoning-dataset."""
@@ -366,7 +392,7 @@ class ReasoningGRPOTrainer:
             elif random.random() < 0.1:  # 10% chance for other cases
                 should_print = True
                 if ground_truth.lower() in extracted_answer.lower():
-                    print_reason = "✅ PARTIAL SCORE (3.0) - Contains ground truth"
+                    print_reason = "✅ PARTIAL SCORE (3.0) - " "Contains ground truth"
                 else:
                     print_reason = "❌ WRONG ANSWER (-1.0) - No match"
         elif random.random() < 0.1:  # 10% chance for no tags case
@@ -441,7 +467,7 @@ class ReasoningGRPOTrainer:
         debug_output = []
         debug_output.append("\n" + "=" * 60)
         debug_output.append(
-            f"SPOT CHECK: PROMPT AND COMPLETIONS (Step: {self.step_counter})"
+            f"SPOT CHECK: PROMPT AND COMPLETIONS " f"(Step: {self.step_counter})"
         )
         debug_output.append("=" * 60)
         debug_output.append(f"==Prompt:==\n {self.index[ground_truth]}\n")
@@ -492,7 +518,10 @@ class ReasoningGRPOTrainer:
         # Create output directory in models folder
         model_name_short = self.model_name.split("/")[-1]
         lora_suffix = "LoRA" if self.use_lora else "Full"
-        model_output_name = f"{model_name_short}-{lora_suffix}-GRPO"
+        multi_gpu_suffix = f"-{self.num_gpus}GPU" if self.use_multi_gpu else ""
+        model_output_name = (
+            f"{model_name_short}-{lora_suffix}-GRPO" f"{multi_gpu_suffix}"
+        )
         output_dir = os.path.join(self.models_dir, model_output_name)
 
         config_params = {
@@ -511,6 +540,16 @@ class ReasoningGRPOTrainer:
             "fp16_full_eval": False,
             "fp16_opt_level": "O1",
         }
+
+        # Multi-GPU configuration
+        if self.use_multi_gpu and self.num_gpus > 1:
+            config_params.update(
+                {
+                    "ddp_find_unused_parameters": False,
+                    "dataloader_pin_memory": True,
+                    "dataloader_num_workers": 4,
+                }
+            )
 
         # Add wandb configuration if enabled
         if self.wandb_enabled:
@@ -533,6 +572,9 @@ class ReasoningGRPOTrainer:
         print(f"   Data Directory: {self.data_dir}")
         print(f"   Cache Directory: {self.cache_dir}")
         print(f"   Model: {self.model_name}")
+        multi_gpu_status = "Enabled" if self.use_multi_gpu else "Disabled"
+        print(f"   Multi-GPU: {multi_gpu_status}")
+        print(f"   Available GPUs: {self.num_gpus}")
         print("-" * 50)
 
     def train(self) -> None:
@@ -639,7 +681,7 @@ def main():
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
-    print(f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
+    print(f"   Gradient Accumulation Steps: " f"{args.gradient_accumulation_steps}")
     print("-" * 50)
 
     # Create and run trainer
