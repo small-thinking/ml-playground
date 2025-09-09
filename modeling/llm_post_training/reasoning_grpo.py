@@ -6,7 +6,7 @@ for improving reasoning capabilities on the mini-reasoning-dataset.
 
 Usage:
     python reasoning_grpo.py --model-size 3B --use-lora
-    python reasoning_grpo.py --model-size 8B --no-lora
+    python reasoning_grpo.py --model-size 8B
     python reasoning_grpo.py --disable-wandb
     python reasoning_grpo.py --help
 
@@ -16,6 +16,8 @@ Arguments:
     --disable-wandb: Disable wandb logging [default: False]
     --max-steps: Maximum training steps [default: 500]
     --batch-size: Training batch size [default: 4]
+    --gradient-accumulation-steps: Number of gradient accumulation steps
+    [default: 8]
     --learning-rate: Learning rate [default: 1e-5]
     --hf-token: Hugging Face token for accessing gated repositories
     [default: None]
@@ -56,6 +58,7 @@ class ReasoningGRPOTrainer:
         wandb_enabled: bool = True,
         max_steps: int = 500,
         batch_size: int = 4,
+        gradient_accumulation_steps: int = 8,
         learning_rate: float = 1e-5,
         hf_token: Optional[str] = None,
     ):
@@ -68,6 +71,7 @@ class ReasoningGRPOTrainer:
             wandb_enabled: Whether to enable wandb logging
             max_steps: Maximum training steps
             batch_size: Training batch size
+            gradient_accumulation_steps: Number of gradient accumulation steps
             learning_rate: Learning rate for training
             hf_token: Hugging Face token for accessing gated repositories
         """
@@ -76,6 +80,7 @@ class ReasoningGRPOTrainer:
         self.wandb_enabled = wandb_enabled
         self.max_steps = max_steps
         self.batch_size = batch_size
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.learning_rate = learning_rate
         self.hf_token = hf_token
         self.model_name = self._get_model_name()
@@ -106,9 +111,8 @@ class ReasoningGRPOTrainer:
         # Setup logging
         self.log_dir = "debug_logs"
         os.makedirs(self.log_dir, exist_ok=True)
-        self.log_file = os.path.join(
-            self.log_dir, f"grpo_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = os.path.join(self.log_dir, f"grpo_debug_{timestamp}.txt")
 
         # Tag constants
         self.reasoning_start = "<think>"
@@ -499,7 +503,7 @@ class ReasoningGRPOTrainer:
             "lr_scheduler_type": "cosine",
             "logging_steps": 1,
             "per_device_train_batch_size": self.batch_size,
-            "gradient_accumulation_steps": 8,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "num_generations": 8,
             "max_prompt_length": 768,
             "max_steps": self.max_steps,
@@ -590,10 +594,25 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--max-steps", type=int, default=500, help="Maximum training steps"
+        "--max-steps",
+        type=int,
+        default=500,
+        help="Maximum training steps",
     )
 
-    parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Training batch size",
+    )
+
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=8,
+        help="Number of gradient accumulation steps",
+    )
 
     parser.add_argument(
         "--learning-rate",
@@ -627,6 +646,7 @@ def main():
     print(f"   HF Token: {hf_token_status}")
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
+    print(f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
     print(f"   Learning Rate: {args.learning_rate}")
     print("-" * 50)
 
@@ -637,6 +657,7 @@ def main():
         wandb_enabled=not args.disable_wandb,
         max_steps=args.max_steps,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         hf_token=args.hf_token,
     )
