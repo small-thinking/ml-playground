@@ -82,7 +82,9 @@ def tokenize_function(
         marker_pos = text.find(response_start_marker)
         if marker_pos != -1:
             prompt_part = text[:marker_pos]
-            prompt_tokens = tokenizer(prompt_part, add_special_tokens=True).input_ids
+            prompt_tokens = tokenizer(
+                prompt_part, add_special_tokens=True
+            ).input_ids
             response_start_token_idx = len(prompt_tokens)
             labels[i, :response_start_token_idx] = -100
 
@@ -100,13 +102,17 @@ def main(args):
     print(f"🚀 Starting SFT training for {model_name}")
 
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=True
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
+        torch_dtype=(
+            torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        ),
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
     )
@@ -137,7 +143,9 @@ def main(args):
     dataset = load_dataset("tatsu-lab/alpaca", split="train")
     print(f"📊 Dataset size: {len(dataset)} samples")
 
-    dataset = dataset.map(format_instruction, remove_columns=dataset.column_names)
+    dataset = dataset.map(
+        format_instruction, remove_columns=dataset.column_names
+    )
     dataset = dataset.map(
         lambda x: tokenize_function(x, tokenizer),
         batched=True,
@@ -146,7 +154,7 @@ def main(args):
     )
 
     # Calculate max_steps based on dataset size
-    effective_batch_size = args.batch_size * 8  # gradient_accumulation_steps
+    effective_batch_size = args.batch_size * args.gradient_accumulation_steps
     max_possible_steps = len(dataset) // effective_batch_size
     max_steps = min(args.max_steps, max_possible_steps)
 
@@ -171,7 +179,7 @@ def main(args):
         lr_scheduler_type="cosine",
         weight_decay=0.005,
         max_grad_norm=1.0,
-        gradient_accumulation_steps=8,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         fp16=False,
         bf16=torch.cuda.is_available(),
         logging_steps=10,
@@ -179,7 +187,9 @@ def main(args):
         save_total_limit=1,
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=(
-            f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None
+            f"{model_name.split('/')[-1]}-SFT"
+            if not args.disable_wandb
+            else None
         ),
     )
 
@@ -218,6 +228,12 @@ if __name__ == "__main__":
     parser.add_argument("--max-steps", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=16,
+        help="Number of gradient accumulation steps",
+    )
     parser.add_argument("--hf-token", type=str, default=None)
     args = parser.parse_args()
     main(args)
