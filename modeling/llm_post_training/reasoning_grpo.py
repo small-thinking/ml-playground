@@ -5,13 +5,13 @@ This script implements GRPO (Generative Reward-Powered Optimization) training
 for improving reasoning capabilities on the mini-reasoning-dataset.
 
 Usage:
+    # Single GPU training
     python reasoning_grpo.py --model-size 3B --use-lora
-    python reasoning_grpo.py --model-size 8B --gradient-accumulation-steps 16
+    python reasoning_grpo.py --model-size 4B --gradient-accumulation-steps 16
     python reasoning_grpo.py --disable-wandb
-    python reasoning_grpo.py --help
 
 Arguments:
-    --model-size: Model size to use ("0.5B", "1.5B", "3B", "8B") [default: 8B]
+    --model-size: Model size to use ("0.5B", "1.5B", "3B", "4B") [default: 4B]
     --use-lora: Enable LoRA for efficient fine-tuning [default: False]
     --disable-wandb: Disable wandb logging [default: False]
     --max-steps: Maximum training steps [default: 500]
@@ -21,16 +21,14 @@ Arguments:
     [default: None]
 
 Examples:
-    # Full fine-tuning with 8B model (default)
+    # Basic training
     python reasoning_grpo.py
-
-    # LoRA fine-tuning with 8B model (default)
     python reasoning_grpo.py --use-lora
 
-    # Custom training configuration
+    # Custom configuration
     python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
 
-    # With Hugging Face token for gated models
+    # With Hugging Face token
     python reasoning_grpo.py --hf-token your_token_here
 """
 
@@ -51,7 +49,7 @@ class ReasoningGRPOTrainer:
 
     def __init__(
         self,
-        model_size: str = "8B",
+        model_size: str = "4B",
         use_lora: bool = False,
         wandb_enabled: bool = True,
         max_steps: int = 500,
@@ -64,7 +62,7 @@ class ReasoningGRPOTrainer:
         Initialize the trainer with model configuration.
 
         Args:
-            model_size: Size of the model ("0.5B", "1.5B", "3B", "8B")
+            model_size: Size of the model ("0.5B", "1.5B", "3B", "4B")
             use_lora: Whether to use LoRA for efficient fine-tuning
             wandb_enabled: Whether to enable wandb logging
             max_steps: Maximum training steps
@@ -123,7 +121,7 @@ class ReasoningGRPOTrainer:
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
         model_mapping = {
-            "8B": "meta-llama/Llama-3.1-8B-Instruct",
+            "4B": "Qwen/Qwen3-4B-Instruct-2507",
             "3B": "meta-llama/Llama-3.2-3B-Instruct",
             "1.5B": "Qwen/Qwen2-1.5B-Instruct",
             "0.5B": "Qwen/Qwen2-0.5B-Instruct",
@@ -366,7 +364,7 @@ class ReasoningGRPOTrainer:
             elif random.random() < 0.1:  # 10% chance for other cases
                 should_print = True
                 if ground_truth.lower() in extracted_answer.lower():
-                    print_reason = "✅ PARTIAL SCORE (3.0) - Contains ground truth"
+                    print_reason = "✅ PARTIAL SCORE (3.0) - " "Contains ground truth"
                 else:
                     print_reason = "❌ WRONG ANSWER (-1.0) - No match"
         elif random.random() < 0.1:  # 10% chance for no tags case
@@ -441,7 +439,7 @@ class ReasoningGRPOTrainer:
         debug_output = []
         debug_output.append("\n" + "=" * 60)
         debug_output.append(
-            f"SPOT CHECK: PROMPT AND COMPLETIONS (Step: {self.step_counter})"
+            f"SPOT CHECK: PROMPT AND COMPLETIONS " f"(Step: {self.step_counter})"
         )
         debug_output.append("=" * 60)
         debug_output.append(f"==Prompt:==\n {self.index[ground_truth]}\n")
@@ -550,17 +548,19 @@ class ReasoningGRPOTrainer:
         # Initialize trainer
         # Note: Token is handled via environment variable HUGGINGFACE_HUB_TOKEN
         # which is set in __init__ when hf_token is provided
-        trainer = GRPOTrainer(
-            model=self.model_name,
-            reward_funcs=[
+        trainer_kwargs = {
+            "model": self.model_name,
+            "reward_funcs": [
                 self.match_format_func,
                 self.penalize_short_think_func,
                 self.check_answer_func,
             ],
-            args=training_args,
-            train_dataset=self.dataset,
-            peft_config=lora_config,
-        )
+            "args": training_args,
+            "train_dataset": self.dataset,
+            "peft_config": lora_config,
+        }
+
+        trainer = GRPOTrainer(**trainer_kwargs)
 
         # Start training
         trainer.train()
@@ -576,8 +576,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--model-size",
         type=str,
-        choices=["0.5B", "1.5B", "3B", "8B"],
-        default="8B",
+        choices=["0.5B", "1.5B", "3B", "4B"],
+        default="4B",
         help="Model size to use for training",
     )
 
@@ -594,7 +594,10 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--max-steps", type=int, default=500, help="Maximum training steps"
+        "--max-steps",
+        type=int,
+        default=500,
+        help="Maximum training steps",
     )
 
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
@@ -639,7 +642,7 @@ def main():
     print(f"   Max Steps: {args.max_steps}")
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
-    print(f"   Gradient Accumulation Steps: {args.gradient_accumulation_steps}")
+    print(f"   Gradient Accumulation Steps: " f"{args.gradient_accumulation_steps}")
     print("-" * 50)
 
     # Create and run trainer
