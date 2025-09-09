@@ -6,7 +6,7 @@ for improving reasoning capabilities on the mini-reasoning-dataset.
 
 Usage:
     python reasoning_grpo.py --model-size 3B --use-lora
-    python reasoning_grpo.py --model-size 8B --no-lora
+    python reasoning_grpo.py --model-size 8B --gradient-accumulation-steps 16
     python reasoning_grpo.py --disable-wandb
     python reasoning_grpo.py --help
 
@@ -123,7 +123,7 @@ class ReasoningGRPOTrainer:
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
         model_mapping = {
-            "8B": "meta-llama/Llama-3.2-8B-Instruct",
+            "8B": "meta-llama/Llama-3.1-8B-Instruct",
             "3B": "meta-llama/Llama-3.2-3B-Instruct",
             "1.5B": "Qwen/Qwen2-1.5B-Instruct",
             "0.5B": "Qwen/Qwen2-0.5B-Instruct",
