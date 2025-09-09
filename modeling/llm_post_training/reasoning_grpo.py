@@ -11,7 +11,7 @@ Usage:
     python reasoning_grpo.py --help
 
 Arguments:
-    --model-size: Model size to use ("0.5B", "1.5B", "3B", "8B") [default: 3B]
+    --model-size: Model size to use ("0.5B", "1.5B", "3B", "8B") [default: 8B]
     --use-lora: Enable LoRA for efficient fine-tuning [default: False]
     --disable-wandb: Disable wandb logging [default: False]
     --max-steps: Maximum training steps [default: 500]
@@ -21,17 +21,17 @@ Arguments:
     [default: None]
 
 Examples:
-    # Full fine-tuning with 3B model
-    python reasoning_grpo.py --model-size 3B
+    # Full fine-tuning with 8B model (default)
+    python reasoning_grpo.py
 
-    # LoRA fine-tuning with 8B model
-    python reasoning_grpo.py --model-size 8B --use-lora
+    # LoRA fine-tuning with 8B model (default)
+    python reasoning_grpo.py --use-lora
 
     # Custom training configuration
     python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
 
     # With Hugging Face token for gated models
-    python reasoning_grpo.py --model-size 3B --hf-token your_token_here
+    python reasoning_grpo.py --hf-token your_token_here
 """
 
 import re
@@ -51,7 +51,7 @@ class ReasoningGRPOTrainer:
 
     def __init__(
         self,
-        model_size: str = "3B",
+        model_size: str = "8B",
         use_lora: bool = False,
         wandb_enabled: bool = True,
         max_steps: int = 500,
@@ -119,7 +119,7 @@ class ReasoningGRPOTrainer:
     def _get_model_name(self) -> str:
         """Get the model name based on size."""
         model_mapping = {
-            "8B": "meta-llama/Llama-3.1-8B-Instruct",
+            "8B": "meta-llama/Llama-3.2-8B-Instruct",
             "3B": "meta-llama/Llama-3.2-3B-Instruct",
             "1.5B": "Qwen/Qwen2-1.5B-Instruct",
             "0.5B": "Qwen/Qwen2-0.5B-Instruct",
@@ -573,7 +573,7 @@ def parse_arguments() -> argparse.Namespace:
         "--model-size",
         type=str,
         choices=["0.5B", "1.5B", "3B", "8B"],
-        default="3B",
+        default="8B",
         help="Model size to use for training",
     )
 
