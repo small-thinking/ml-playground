@@ -7,8 +7,10 @@ Can be run from repo root:
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 import wandb
+import numpy as np
 from typing import List, Optional
 import logging
 import os
@@ -42,6 +44,10 @@ class AutoEncoderTrainer:
         save_dir: str = "checkpoints",
         wandb_enabled: bool = True,
         project_name: str = "autoencoder-training",
+        use_cosine_scheduler: bool = True,
+        scheduler_t_max: int = 100,
+        scheduler_eta_min: float = 0.0,
+        step_level_scheduling: bool = True,
     ) -> None:
         """
         Initialize trainer.
@@ -56,6 +62,10 @@ class AutoEncoderTrainer:
             save_dir: Directory to save checkpoints
             wandb_enabled: Whether to enable wandb logging
             project_name: Name of the wandb project
+            use_cosine_scheduler: Whether to use cosine annealing scheduler
+            scheduler_t_max: Max steps/epochs for cosine scheduler
+            scheduler_eta_min: Minimum learning rate for cosine scheduler
+            step_level_scheduling: Step scheduler per batch (True) or per epoch
         """
         self.model = model
         self.train_loader = train_loader
@@ -64,6 +74,10 @@ class AutoEncoderTrainer:
         self.save_dir = save_dir
         self.wandb_enabled = wandb_enabled
         self.project_name = project_name
+        self.use_cosine_scheduler = use_cosine_scheduler
+        self.scheduler_t_max = scheduler_t_max
+        self.scheduler_eta_min = scheduler_eta_min
+        self.step_level_scheduling = step_level_scheduling
 
         # Create save directory
         os.makedirs(save_dir, exist_ok=True)
@@ -76,6 +90,16 @@ class AutoEncoderTrainer:
         )
         self.criterion = nn.MSELoss()
 
+        # Setup learning rate scheduler
+        if self.use_cosine_scheduler:
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.scheduler_t_max,
+                eta_min=self.scheduler_eta_min,
+            )
+        else:
+            self.scheduler = None
+
         # Training history
         self.train_losses: List[float] = []
         self.val_losses: List[float] = []
@@ -84,37 +108,43 @@ class AutoEncoderTrainer:
         # Initialize wandb if enabled
         if self.wandb_enabled:
             # Create meaningful run name with key hyperparameters
-            run_name = f"ae_latent{model.latent_dim}_lr{learning_rate}_bs{train_loader.batch_size}"
-            logger.info(
-                f"Initializing wandb with project: {self.project_name}, run: {run_name}"
+            run_name = (
+                f"ae_latent{model.latent_dim}_lr{learning_rate}_"
+                f"bs{train_loader.batch_size}"
             )
+            logger.info(
+                f"Initializing wandb with project: {self.project_name}, "
+                f"run: {run_name}"
+            )
+            # Prepare config for wandb
+            wandb_config = {
+                "learning_rate": learning_rate,
+                "weight_decay": weight_decay,
+                "batch_size": train_loader.batch_size,
+                "device": str(device),
+                "model_parameters": sum(p.numel() for p in model.parameters()),
+                "latent_dim": model.latent_dim,
+            }
+
+            # Add scheduler config
+            wandb_config["use_cosine_scheduler"] = self.use_cosine_scheduler
+            wandb_config["scheduler_t_max"] = self.scheduler_t_max
+            wandb_config["scheduler_eta_min"] = self.scheduler_eta_min
+            wandb_config["step_level_scheduling"] = self.step_level_scheduling
+
             wandb.init(
                 project=self.project_name,
                 name=run_name,
                 mode="online",  # Explicitly set to online mode
-                config={
-                    "learning_rate": learning_rate,
-                    "weight_decay": weight_decay,
-                    "batch_size": train_loader.batch_size,
-                    "device": str(device),
-                    "model_parameters": sum(p.numel() for p in model.parameters()),
-                    "latent_dim": model.latent_dim,
-                },
+                config=wandb_config,
             )
             logger.info("Wandb initialized successfully")
 
-            # Define metrics for wandb
-            wandb.define_metric("epoch")
-            wandb.define_metric("train_loss", step_metric="epoch")
-            wandb.define_metric("val_loss", step_metric="epoch")
-            wandb.define_metric("test_init", step_metric="epoch")
-
-            # Test wandb logging
-            try:
-                wandb.log({"test_init": 1.0, "epoch": 0}, commit=True)
-                logger.info("✅ Test wandb log successful")
-            except Exception as e:
-                logger.error(f"❌ Test wandb log failed: {e}")
+            # # Define metrics for wandb
+            # wandb.define_metric("epoch")
+            # wandb.define_metric("train_loss", step_metric="epoch")
+            # wandb.define_metric("val_loss", step_metric="epoch")
+            # wandb.define_metric("learning_rate", step_metric="epoch")
 
         logger.info(
             f"Initialized trainer with "
@@ -147,6 +177,10 @@ class AutoEncoderTrainer:
             loss.backward()
             self.optimizer.step()
 
+            # Step scheduler after each batch if step-level scheduling enabled
+            if self.scheduler is not None and self.step_level_scheduling:
+                self.scheduler.step()
+
             total_loss += loss.item()
             num_batches += 1
 
@@ -158,11 +192,18 @@ class AutoEncoderTrainer:
         # Log to wandb if enabled
         if self.wandb_enabled:
             try:
+                current_lr = self.optimizer.param_groups[0]["lr"]
                 wandb.log(
-                    {"train_loss": avg_loss, "epoch": self.current_epoch}, commit=True
+                    {
+                        "train_loss": avg_loss,
+                        "learning_rate": current_lr,
+                        "epoch": self.current_epoch,
+                    },
                 )
                 logger.info(
-                    f"✅ Logged train_loss {avg_loss:.6f} to wandb (epoch {self.current_epoch})"
+                    f"✅ Logged train_loss {avg_loss:.6f}, "
+                    f"lr {current_lr:.2e} to wandb "
+                    f"(epoch {self.current_epoch})"
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to log train_loss to wandb: {e}")
@@ -193,11 +234,10 @@ class AutoEncoderTrainer:
         # Log to wandb if enabled
         if self.wandb_enabled:
             try:
-                wandb.log(
-                    {"val_loss": avg_loss, "epoch": self.current_epoch}, commit=True
-                )
+                wandb.log({"val_loss": avg_loss, "epoch": self.current_epoch})
                 logger.info(
-                    f"✅ Logged val_loss {avg_loss:.6f} to wandb (epoch {self.current_epoch})"
+                    f"✅ Logged val_loss {avg_loss:.6f} to wandb "
+                    f"(epoch {self.current_epoch})"
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to log val_loss to wandb: {e}")
@@ -216,6 +256,9 @@ class AutoEncoderTrainer:
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": (
+                self.scheduler.state_dict() if self.scheduler is not None else None
+            ),
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
         }
@@ -243,6 +286,15 @@ class AutoEncoderTrainer:
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        # Load scheduler state if available
+        if (
+            self.scheduler is not None
+            and "scheduler_state_dict" in checkpoint
+            and checkpoint["scheduler_state_dict"] is not None
+        ):
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
         self.train_losses = checkpoint.get("train_losses", [])
         self.val_losses = checkpoint.get("val_losses", [])
 
@@ -312,11 +364,15 @@ class AutoEncoderTrainer:
             for i in range(num_samples):
                 # Original image
                 img_orig = batch[i].permute(1, 2, 0)
-                images.append(wandb.Image(img_orig, caption=f"Original {i+1}"))
+                # Convert to numpy and scale to uint8
+                img_orig_np = (img_orig.numpy() * 255).astype(np.uint8)
+                images.append(wandb.Image(img_orig_np, caption=f"Original {i+1}"))
 
                 # Reconstructed image
                 img_recon = reconstructed[i].permute(1, 2, 0)
-                images.append(wandb.Image(img_recon, caption=f"Reconstructed {i+1}"))
+                # Convert to numpy and scale to uint8
+                img_recon_np = (img_recon.numpy() * 255).astype(np.uint8)
+                images.append(wandb.Image(img_recon_np, caption=f"Reconstructed {i+1}"))
 
             # Log to wandb
             log_dict = {"reconstructions": images}
@@ -365,8 +421,15 @@ class AutoEncoderTrainer:
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     self.save_checkpoint(epoch + 1, is_best=True)
+
+                # Step scheduler at epoch level if not using step-level
+                if self.scheduler is not None and not self.step_level_scheduling:
+                    self.scheduler.step()
             else:
                 logger.info(f"Epoch {epoch + 1}: Train Loss = {train_loss:.6f}")
+                # Step scheduler even without validation
+                if self.scheduler is not None and not self.step_level_scheduling:
+                    self.scheduler.step()
 
             # Save checkpoint
             if (epoch + 1) % save_every == 0:
@@ -399,8 +462,14 @@ def main():
         "hidden_dims": [32, 64, 128, 256],
         "learning_rate": 1e-3,
         "weight_decay": 1e-5,
-        "num_epochs": 10,
+        "num_epochs": 5,
         "save_dir": "autoencoder_checkpoints",
+        # Learning rate scheduler config
+        "use_cosine_scheduler": True,
+        # Updated to total steps if step_level_scheduling=True
+        "scheduler_t_max": 5,
+        "scheduler_eta_min": 1e-5,  # Non-zero minimum
+        "step_level_scheduling": True,  # Step per batch for finer granularity
     }
 
     # Device - Support Mac Silicon MPS
@@ -428,6 +497,16 @@ def main():
         num_workers=4,
     )
 
+    # Calculate total steps for step-level scheduling
+    if config["step_level_scheduling"]:
+        steps_per_epoch = len(train_loader)
+        total_steps = steps_per_epoch * config["num_epochs"]
+        config["scheduler_t_max"] = total_steps
+        logger.info(
+            f"Step-level scheduling: {steps_per_epoch} steps/epoch, "
+            f"{total_steps} total steps"
+        )
+
     # Create model
     logger.info("Creating auto-encoder model...")
     model = create_autoencoder(
@@ -449,6 +528,10 @@ def main():
         save_dir=config["save_dir"],
         wandb_enabled=True,
         project_name="autoencoder-celeba",
+        use_cosine_scheduler=config["use_cosine_scheduler"],
+        scheduler_t_max=config["scheduler_t_max"],
+        scheduler_eta_min=config["scheduler_eta_min"],
+        step_level_scheduling=config["step_level_scheduling"],
     )
 
     # Train
