@@ -26,7 +26,7 @@ if str(project_root) not in sys.path:
 
 # Now import the modules
 from modeling.generation.ae.autoencoder import create_autoencoder
-from modeling.generation.celeba_dataloader import create_celeba_dataloader
+from modeling.generation.image_dataloader import create_celeba_dataloader
 
 logger = logging.getLogger(__name__)
 

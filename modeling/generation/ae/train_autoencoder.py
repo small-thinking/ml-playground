@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
 
 # Now import the modules
 from modeling.generation.ae.autoencoder import create_autoencoder
-from modeling.generation.celeba_dataloader import create_celeba_dataloader
+from modeling.generation.image_dataloader import create_image_dataloader
 
 logger = logging.getLogger(__name__)
 
@@ -483,17 +483,20 @@ def main():
 
     # Create data loaders
     logger.info("Creating data loaders...")
-    train_loader = create_celeba_dataloader(
+    train_loader = create_image_dataloader(
+        dataset_type="afhq",
         batch_size=config["batch_size"],
         image_size=config["image_size"],
         split="train",
         num_workers=4,
     )
 
-    val_loader = create_celeba_dataloader(
+    # For AFHQv2, we create a validation split from the training data
+    val_loader = create_image_dataloader(
+        dataset_type="afhq",
         batch_size=config["batch_size"],
         image_size=config["image_size"],
-        split="valid",
+        split="validation",  # This will create a validation split from training data
         num_workers=4,
     )
 
@@ -527,7 +530,7 @@ def main():
         weight_decay=config["weight_decay"],
         save_dir=config["save_dir"],
         wandb_enabled=True,
-        project_name="autoencoder-celeba",
+        project_name="autoencoder-afhq",
         use_cosine_scheduler=config["use_cosine_scheduler"],
         scheduler_t_max=config["scheduler_t_max"],
         scheduler_eta_min=config["scheduler_eta_min"],
