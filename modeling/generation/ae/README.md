@@ -1,62 +1,74 @@
-# Autoencoder (AE)
+# Autoencoder & VAE
 
-A complete autoencoder implementation with convolutional encoder-decoder architecture for image compression and reconstruction.
+Convolutional autoencoder and variational autoencoder implementations for image compression, reconstruction, and generation.
 
-## Features
+## Autoencoder (AE)
 
-- **Convolutional Architecture**: Efficient encoder-decoder with configurable layers
-- **Training Pipeline**: Complete training loop with validation and checkpointing
-- **Inference Tools**: Image compression, reconstruction, and quality analysis
-- **CelebA Integration**: Ready-to-use dataloader for face image training
-
-## Quick Start
-
-### Training
+### Quick Start
 
 ```bash
-# From repo root
+# Training
 python -m modeling.generation.ae.train_autoencoder
-```
 
-This creates checkpoints in `autoencoder_checkpoints/` directory.
-
-### Inference
-
-```bash
-# Basic inference with 8 samples
+# Inference - reconstruct 8 samples
 python -m modeling.generation.ae.inference_autoencoder \
     --checkpoint_path autoencoder_checkpoints/best_model.pt \
-    --num_samples 8 \
-    --output_dir inference_results
+    --num_samples 8
 
 # Single image reconstruction
 python -m modeling.generation.ae.inference_autoencoder \
     --checkpoint_path autoencoder_checkpoints/best_model.pt \
-    --image_path path/to/image.jpg \
-    --output_dir inference_results
+    --image_path path/to/image.jpg
 ```
 
-## Model Architecture
+### Architecture
 
-- **Input**: 3-channel RGB images (64x64 by default)
-- **Latent Space**: 128 dimensions (configurable)
-- **Hidden Layers**: [32, 64, 128, 256] channels (configurable)
-- **Output**: Reconstructed images matching input size
+- **Input**: 3-channel RGB images (64x64)
+- **Latent**: 128 dimensions
+- **Hidden**: [32, 64, 128, 256] channels
+- **Output**: Reconstructed images
 
-## Quality Metrics
+## Variational Autoencoder (VAE)
 
-The inference script provides:
+### Quick Start
 
-- **PSNR** (Peak Signal-to-Noise Ratio): Higher is better (dB)
-- **SSIM** (Structural Similarity Index): Closer to 1.0 is better
-- **MSE** (Mean Squared Error): Lower is better
-- **Compression Ratio**: Latent space compression factor
+```bash
+# Training
+python -m modeling.generation.ae.train_vae
+
+# Generate new samples
+python -m modeling.generation.ae.inference_vae \
+    --checkpoint_path vae_checkpoints/best_model.pt \
+    --generate_only --num_samples 16
+
+# Reconstruct single image
+python -m modeling.generation.ae.inference_vae \
+    --checkpoint_path vae_checkpoints/best_model.pt \
+    --image_path path/to/image.jpg
+
+# Interpolate between images
+python -m modeling.generation.ae.inference_vae \
+    --checkpoint_path vae_checkpoints/best_model.pt \
+    --image1_path path/to/image1.jpg \
+    --image2_path path/to/image2.jpg \
+    --interpolate_only
+```
+
+### Key Features
+
+- **Probabilistic Encoding**: Learns distribution over latent space (mean + variance)
+- **Generation**: Sample new images from prior distribution
+- **Beta-VAE**: Configurable beta parameter for disentangled representations
+- **ELBO Loss**: Combines reconstruction + KL divergence
+
+## Metrics
+
+- **PSNR**: Peak Signal-to-Noise Ratio (dB)
+- **SSIM**: Structural Similarity Index (0-1)
+- **MSE**: Mean Squared Error
+- **Compression**: Latent space ratio
 
 ## Output
 
-Inference generates:
-
-- Original and reconstructed image comparisons
-- Quality metrics in console output
-- Batch visualization grids
-- Individual image analysis (when using `--image_path`)
+- **AE**: Checkpoints in `autoencoder_checkpoints/`
+- **VAE**: Checkpoints in `vae_checkpoints/` + Wandb logs

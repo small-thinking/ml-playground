@@ -1,6 +1,20 @@
 # Generation Module
 
-This module contains implementations for auto-encoder and VAE training, including image dataset dataloaders (CelebA and AFHQv2) and complete auto-encoder implementation.
+This module contains implementations for various image generation and reconstruction models, including autoencoders, VAEs, and planned implementations of GANs, Stable Diffusion, and Diffusion Transformers (DiT).
+
+## Directory Structure
+
+- [`ae/`](./ae/) - Autoencoder and VAE implementations
+  - Autoencoder training and inference
+  - VAE training and inference
+  - Model architectures and utilities
+
+## Planned Implementations
+
+- **GANs** - Generative Adversarial Networks for image synthesis
+- **Stable Diffusion** - Latent diffusion models for text-to-image generation
+- **DiT** - Diffusion Transformers for scalable image generation
+- **Additional Models** - Other state-of-the-art generation architectures
 
 ## Auto-Encoder Implementation
 
