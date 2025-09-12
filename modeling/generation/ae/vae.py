@@ -1,4 +1,4 @@
-"""Auto-encoder model implementation for image reconstruction."""
+"""Variational Auto-Encoder (VAE) model implementation for image generation and reconstruction."""
 
 import torch
 import torch.nn as nn
@@ -9,22 +9,24 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class ConvEncoder(nn.Module):
-    """Convolutional encoder for auto-encoder."""
+class VAEEncoder(nn.Module):
+    """Convolutional encoder for Variational Auto-Encoder."""
 
     def __init__(
         self,
         input_channels: int = 3,
         latent_dim: int = 128,
         hidden_dims: list = [32, 64, 128, 256],
+        input_size: int = 64,
     ) -> None:
         """
-        Initialize convolutional encoder.
+        Initialize VAE encoder.
 
         Args:
             input_channels: Number of input channels (3 for RGB)
             latent_dim: Dimension of latent space
             hidden_dims: List of hidden dimensions for each layer
+            input_size: Input image size (assumes square images)
         """
         super().__init__()
         self.latent_dim = latent_dim
@@ -37,7 +39,11 @@ class ConvEncoder(nn.Module):
             layers.extend(
                 [
                     nn.Conv2d(
-                        in_channels, hidden_dim, kernel_size=3, stride=2, padding=1
+                        in_channels,
+                        hidden_dim,
+                        kernel_size=3,
+                        stride=2,
+                        padding=1,
                     ),
                     nn.BatchNorm2d(hidden_dim),
                     nn.ReLU(inplace=True),
@@ -48,16 +54,16 @@ class ConvEncoder(nn.Module):
         self.encoder = nn.Sequential(*layers)
 
         # Calculate the size after convolutions
-        self.flatten_size = self._get_flatten_size(input_channels)
+        self.flatten_size = self._get_flatten_size(input_channels, input_size)
 
-        # Latent layer
+        # Latent layers for mean and log variance
         self.fc_mu = nn.Linear(self.flatten_size, latent_dim)
         self.fc_logvar = nn.Linear(self.flatten_size, latent_dim)
 
-    def _get_flatten_size(self, input_channels: int) -> int:
+    def _get_flatten_size(self, input_channels: int, input_size: int = 64) -> int:
         """Calculate the flattened size after convolutions."""
         with torch.no_grad():
-            dummy_input = torch.zeros(1, input_channels, 64, 64)
+            dummy_input = torch.zeros(1, input_channels, input_size, input_size)
             dummy_output = self.encoder(dummy_input)
             return dummy_output.view(1, -1).size(1)
 
@@ -80,8 +86,8 @@ class ConvEncoder(nn.Module):
         return mu, logvar
 
 
-class ConvDecoder(nn.Module):
-    """Convolutional decoder for auto-encoder."""
+class VAEDecoder(nn.Module):
+    """Convolutional decoder for Variational Auto-Encoder."""
 
     def __init__(
         self,
@@ -91,7 +97,7 @@ class ConvDecoder(nn.Module):
         output_size: int = 64,
     ) -> None:
         """
-        Initialize convolutional decoder.
+        Initialize VAE decoder.
 
         Args:
             latent_dim: Dimension of latent space
@@ -187,11 +193,11 @@ class ConvDecoder(nn.Module):
                 align_corners=False,
             )
 
-        return torch.tanh(x)  # Output in [-1, 1] range for MSE loss
+        return torch.sigmoid(x)  # Output in [0, 1] range for VAE
 
 
-class AutoEncoder(nn.Module):
-    """Complete auto-encoder model."""
+class VariationalAutoEncoder(nn.Module):
+    """Complete Variational Auto-Encoder model."""
 
     def __init__(
         self,
@@ -199,47 +205,65 @@ class AutoEncoder(nn.Module):
         latent_dim: int = 128,
         hidden_dims: list = [32, 64, 128, 256],
         output_size: int = 64,
+        beta: float = 1.0,
     ) -> None:
         """
-        Initialize auto-encoder.
+        Initialize Variational Auto-Encoder.
 
         Args:
             input_channels: Number of input channels (3 for RGB)
             latent_dim: Dimension of latent space
             hidden_dims: List of hidden dimensions for encoder/decoder
             output_size: Target output image size
+            beta: Beta parameter for beta-VAE (controls KL divergence weight)
         """
         super().__init__()
         self.latent_dim = latent_dim
+        self.beta = beta
 
         # Reverse hidden_dims for decoder
         decoder_hidden_dims = hidden_dims[::-1]
 
-        self.encoder = ConvEncoder(
+        self.encoder = VAEEncoder(
             input_channels=input_channels,
             latent_dim=latent_dim,
             hidden_dims=hidden_dims,
+            input_size=output_size,
         )
 
-        self.decoder = ConvDecoder(
+        self.decoder = VAEDecoder(
             latent_dim=latent_dim,
             output_channels=input_channels,
             hidden_dims=decoder_hidden_dims,
             output_size=output_size,
         )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """
-        Encode input to latent space.
+        Reparameterization trick for VAE.
+
+        Args:
+            mu: Mean of latent distribution
+            logvar: Log variance of latent distribution
+
+        Returns:
+            Sampled latent vector
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode input to latent distribution parameters.
 
         Args:
             x: Input tensor
 
         Returns:
-            Latent representation
+            Tuple of (mu, logvar) for latent distribution
         """
-        mu, logvar = self.encoder(x)
-        return mu  # For auto-encoder, we just use the mean
+        return self.encoder(x)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -255,25 +279,25 @@ class AutoEncoder(nn.Module):
 
     def forward(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Forward pass through auto-encoder.
+        Forward pass through VAE.
 
         Args:
             x: Input tensor
 
         Returns:
-            Tuple of (reconstructed, mu, logvar)
+            Tuple of (reconstructed, mu, logvar, z)
         """
-        mu, logvar = self.encoder(x)
-        z = mu  # For auto-encoder, we use deterministic encoding
-        reconstructed = self.decoder(z)
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        reconstructed = self.decode(z)
 
-        return reconstructed, mu, logvar
+        return reconstructed, mu, logvar, z
 
     def reconstruct(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Reconstruct input without returning latent parameters.
+        Reconstruct input using mean of latent distribution (deterministic).
 
         Args:
             x: Input tensor
@@ -281,35 +305,121 @@ class AutoEncoder(nn.Module):
         Returns:
             Reconstructed tensor
         """
-        reconstructed, _, _ = self.forward(x)
+        mu, logvar = self.encode(x)
+        reconstructed = self.decode(mu)
         return reconstructed
 
+    def generate(self, num_samples: int, device: torch.device) -> torch.Tensor:
+        """
+        Generate new samples from prior distribution.
 
-def create_autoencoder(
+        Args:
+            num_samples: Number of samples to generate
+            device: Device to generate on
+
+        Returns:
+            Generated samples
+        """
+        with torch.no_grad():
+            # Sample from prior N(0, I)
+            z = torch.randn(num_samples, self.latent_dim, device=device)
+            generated = self.decode(z)
+        return generated
+
+    def interpolate(
+        self, x1: torch.Tensor, x2: torch.Tensor, num_steps: int = 10
+    ) -> torch.Tensor:
+        """
+        Interpolate between two images in latent space.
+
+        Args:
+            x1: First input image
+            x2: Second input image
+            num_steps: Number of interpolation steps
+
+        Returns:
+            Interpolated images
+        """
+        with torch.no_grad():
+            # Encode both images
+            mu1, _ = self.encode(x1)
+            mu2, _ = self.encode(x2)
+
+            # Create interpolation weights
+            alphas = torch.linspace(0, 1, num_steps, device=x1.device)
+
+            # Interpolate in latent space
+            interpolated_images = []
+            for alpha in alphas:
+                z_interp = (1 - alpha) * mu1 + alpha * mu2
+                img_interp = self.decode(z_interp)
+                interpolated_images.append(img_interp)
+
+        return torch.stack(interpolated_images, dim=0)
+
+
+def vae_loss(
+    reconstructed: torch.Tensor,
+    target: torch.Tensor,
+    mu: torch.Tensor,
+    logvar: torch.Tensor,
+    beta: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Calculate VAE loss (ELBO).
+
+    Args:
+        reconstructed: Reconstructed images
+        target: Target images
+        mu: Mean of latent distribution
+        logvar: Log variance of latent distribution
+        beta: Beta parameter for beta-VAE
+
+    Returns:
+        Tuple of (total_loss, reconstruction_loss, kl_loss)
+    """
+    # Reconstruction loss (MSE for consistency with AE, handles range mismatch)
+    # Convert target from [-1, 1] to [0, 1] for comparison with sigmoid output
+    target_normalized = (target + 1) / 2
+    recon_loss = F.mse_loss(reconstructed, target_normalized, reduction="sum")
+
+    # KL divergence loss
+    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+
+    # Total loss
+    total_loss = recon_loss + beta * kl_loss
+
+    return total_loss, recon_loss, kl_loss
+
+
+def create_vae(
     input_channels: int = 3,
     latent_dim: int = 128,
     hidden_dims: list = [32, 64, 128, 256],
     output_size: int = 64,
+    beta: float = 1.0,
     device: Optional[torch.device] = None,
-) -> AutoEncoder:
+) -> VariationalAutoEncoder:
     """
-    Create and initialize auto-encoder model.
+    Create and initialize VAE model.
 
     Args:
         input_channels: Number of input channels
         latent_dim: Dimension of latent space
         hidden_dims: List of hidden dimensions
         output_size: Target output image size
+        beta: Beta parameter for beta-VAE
         device: Device to move model to
 
     Returns:
-        Initialized auto-encoder model
+        Initialized VAE model
     """
-    model = AutoEncoder(
+    model = VariationalAutoEncoder(
         input_channels=input_channels,
         latent_dim=latent_dim,
         hidden_dims=hidden_dims,
         output_size=output_size,
+        beta=beta,
     )
 
     if device is not None:
@@ -331,6 +441,83 @@ def create_autoencoder(
     model.apply(init_weights)
 
     logger.info(
-        f"Created auto-encoder with {sum(p.numel() for p in model.parameters())} parameters"
+        f"Created VAE with {sum(p.numel() for p in model.parameters())} parameters, "
+        f"beta={beta}"
     )
     return model
+
+
+if __name__ == "__main__":
+    """Example usage of the VAE model."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="VAE Model Example")
+    parser.add_argument(
+        "--input_channels",
+        type=int,
+        default=3,
+        help="Number of input channels (default: 3 for RGB)",
+    )
+    parser.add_argument(
+        "--output_size",
+        type=int,
+        default=64,
+        help="Output image size (default: 64x64)",
+    )
+    parser.add_argument(
+        "--hidden_dims",
+        type=int,
+        nargs="+",
+        default=[32, 64, 128, 256],
+        help="Hidden dimensions for encoder/decoder",
+    )
+    parser.add_argument("--latent_dim", type=int, default=128, help="Latent dimension")
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=1.0,
+        help="Beta parameter for KL divergence",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cpu", help="Device to use (cpu/cuda)"
+    )
+
+    args = parser.parse_args()
+
+    # Create VAE model
+    model = create_vae(
+        input_channels=args.input_channels,
+        output_size=args.output_size,
+        hidden_dims=args.hidden_dims,
+        latent_dim=args.latent_dim,
+        beta=args.beta,
+    )
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    print("VAE model created successfully!")
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Device: {device}")
+
+    # Test forward pass with random input (normalized to [0,1] for BCE loss)
+    batch_size = 4
+    x = torch.rand(
+        batch_size, args.input_channels, args.output_size, args.output_size
+    ).to(device)
+
+    with torch.no_grad():
+        recon_x, mu, logvar, z = model(x)
+        print(f"Input shape: {x.shape}")
+        print(f"Reconstructed shape: {recon_x.shape}")
+        print(f"Mean shape: {mu.shape}")
+        print(f"Log variance shape: {logvar.shape}")
+        print(f"Latent shape: {z.shape}")
+
+        # Calculate loss
+        total_loss, recon_loss, kl_loss = vae_loss(
+            recon_x, x, mu, logvar, beta=args.beta
+        )
+        print(f"Total VAE Loss: {total_loss.item():.4f}")
+        print(f"Reconstruction Loss: {recon_loss.item():.4f}")
+        print(f"KL Loss: {kl_loss.item():.4f}")

@@ -175,7 +175,7 @@ class AFHQv2Dataset(Dataset):
         ]
 
         if normalize:
-            # Check if we're using MNIST (grayscale) or AFHQv2 (RGB)
+            # Check if we're using MNIST (grayscale) or CelebA (RGB)
             if hasattr(self.dataset, "features") and "image" in self.dataset.features:
                 # Check if the image is grayscale or RGB
                 sample_image = self.dataset[0]["image"]
