@@ -1,10 +1,15 @@
 """Generation module for auto-encoder and VAE implementations."""
 
-from .celeba_dataloader import CelebADataLoader, create_celeba_dataloader
+from .image_dataloader import (
+    ImageDataLoader,
+    create_image_dataloader,
+    create_celeba_dataloader,
+)
 from .ae.autoencoder import AutoEncoder, create_autoencoder
 
 __all__ = [
-    "CelebADataLoader",
+    "ImageDataLoader",
+    "create_image_dataloader",
     "create_celeba_dataloader",
     "AutoEncoder",
     "create_autoencoder",

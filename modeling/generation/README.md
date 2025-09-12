@@ -1,6 +1,6 @@
 # Generation Module
 
-This module contains implementations for auto-encoder and VAE training, including a CelebA dataset dataloader and complete auto-encoder implementation.
+This module contains implementations for auto-encoder and VAE training, including image dataset dataloaders (CelebA and AFHQv2) and complete auto-encoder implementation.
 
 ## Auto-Encoder Implementation
 
@@ -17,7 +17,7 @@ A complete auto-encoder implementation with convolutional encoder-decoder archit
 ### Quick Start
 
 ```python
-from modeling.generation import create_autoencoder, AutoEncoderTrainer, create_celeba_dataloader
+from modeling.generation import create_autoencoder, AutoEncoderTrainer, create_image_dataloader
 
 # Create model
 model = create_autoencoder(
@@ -27,9 +27,9 @@ model = create_autoencoder(
     output_size=64
 )
 
-# Create data loaders
-train_loader = create_celeba_dataloader(batch_size=32, image_size=64, split="train")
-val_loader = create_celeba_dataloader(batch_size=32, image_size=64, split="validation")
+# Create data loaders (supports both CelebA and AFHQv2)
+train_loader = create_image_dataloader(dataset_type="afhq", batch_size=32, image_size=64, split="train")
+val_loader = create_image_dataloader(dataset_type="afhq", batch_size=32, image_size=64, split="validation")
 
 # Create trainer
 trainer = AutoEncoderTrainer(model, train_loader, val_loader, device)
@@ -55,14 +55,15 @@ Test the implementation:
 python test_autoencoder.py
 ```
 
-## CelebA DataLoader
+## Image DataLoaders
 
-A simple and efficient PyTorch DataLoader for the CelebA dataset from Hugging Face, optimized for auto-encoder and VAE training.
+Simple and efficient PyTorch DataLoaders for image datasets (CelebA and AFHQv2) from Hugging Face, optimized for auto-encoder and VAE training.
 
 ### Features
 
 - **Simple API**: Easy-to-use interface with sensible defaults
 - **Flexible Configuration**: Customizable batch size, image size, and preprocessing
+- **Multiple Datasets**: Support for CelebA and AFHQv2 datasets
 - **Multiple Splits**: Support for train, validation, and test splits
 - **Auto-encoder/VAE Ready**: Images normalized to [-1, 1] range by default
 - **Efficient Loading**: Multi-worker support with proper memory pinning
@@ -70,10 +71,19 @@ A simple and efficient PyTorch DataLoader for the CelebA dataset from Hugging Fa
 ### Quick Start
 
 ```python
-from modeling.generation import create_celeba_dataloader
+from modeling.generation import create_image_dataloader
 
-# Create a simple dataloader
-dataloader = create_celeba_dataloader(
+# Create a simple dataloader (CelebA)
+dataloader = create_image_dataloader(
+    dataset_type="celeba",
+    batch_size=32,
+    image_size=64,
+    split="train"
+)
+
+# Or use AFHQv2 dataset
+dataloader = create_image_dataloader(
+    dataset_type="afhq",
     batch_size=32,
     image_size=64,
     split="train"
@@ -89,10 +99,11 @@ for batch in dataloader:
 ### Advanced Usage
 
 ```python
-from modeling.generation import CelebADataLoader
+from modeling.generation import ImageDataLoader
 
 # Create a factory for multiple dataloaders
-factory = CelebADataLoader(
+factory = ImageDataLoader(
+    dataset_type="afhq",  # or "celeba"
     batch_size=64,
     image_size=128,
     normalize=True,
@@ -107,14 +118,15 @@ test_loader = factory.get_test_dataloader()
 
 ### Configuration Options
 
-| Parameter     | Default | Description                           |
-| ------------- | ------- | ------------------------------------- |
-| `batch_size`  | 32      | Number of images per batch            |
-| `image_size`  | 64      | Target image size (square)            |
-| `split`       | "train" | Dataset split (train/validation/test) |
-| `normalize`   | True    | Normalize to [-1, 1] range            |
-| `num_workers` | 4       | Number of worker processes            |
-| `cache_dir`   | None    | Directory to cache dataset            |
+| Parameter      | Default | Description                           |
+| -------------- | ------- | ------------------------------------- |
+| `dataset_type` | "afhq"  | Dataset type ("celeba" or "afhq")     |
+| `batch_size`   | 32      | Number of images per batch            |
+| `image_size`   | 64      | Target image size (square)            |
+| `split`        | "train" | Dataset split (train/validation/test) |
+| `normalize`    | True    | Normalize to [-1, 1] range            |
+| `num_workers`  | 4       | Number of worker processes            |
+| `cache_dir`    | None    | Directory to cache dataset            |
 
 ### Testing
 
@@ -122,7 +134,7 @@ Run the test script to verify everything works:
 
 ```bash
 cd modeling/generation
-python test_celeba_dataloader.py
+python test_image_dataloader.py
 ```
 
 ### Examples

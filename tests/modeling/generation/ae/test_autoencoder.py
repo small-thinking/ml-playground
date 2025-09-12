@@ -11,7 +11,6 @@ modeling_path = Path(__file__).parent.parent.parent.parent.parent / "modeling"
 sys.path.insert(0, str(modeling_path))
 
 from generation.ae.autoencoder import create_autoencoder
-from generation.celeba_dataloader import create_celeba_dataloader
 
 
 class TestAutoencoder:
