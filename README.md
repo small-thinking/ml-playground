@@ -14,6 +14,10 @@ Interactive Q-Learning reinforcement learning demonstration featuring a Pac-Man 
 
 ## Modeling Projects
 
+#### [Generation Models](modeling/generation/README.md)
+
+Image generation and reconstruction models including autoencoders, VAEs, and planned implementations of GANs, Stable Diffusion, and Diffusion Transformers (DiT).
+
 #### [LLM Embedding](modeling/llm_embedding/README.md)
 
 Sentence embedding learning using SimCSE approach.
