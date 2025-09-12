@@ -1,7 +1,7 @@
-"""Training script for auto-encoder model.
+"""Training script for Variational Auto-Encoder (VAE) model.
 
 Can be run from repo root:
-    python -m modeling.generation.ae.train_autoencoder
+    python -m modeling.generation.ae.train_vae
 """
 
 import torch
@@ -24,14 +24,14 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Now import the modules
-from modeling.generation.ae.autoencoder import create_autoencoder
+from modeling.generation.ae.vae import create_vae, vae_loss
 from modeling.generation.image_dataloader import create_image_dataloader
 
 logger = logging.getLogger(__name__)
 
 
-class AutoEncoderTrainer:
-    """Trainer class for auto-encoder model."""
+class VAETrainer:
+    """Trainer class for Variational Auto-Encoder model."""
 
     def __init__(
         self,
@@ -41,19 +41,20 @@ class AutoEncoderTrainer:
         device: torch.device,
         learning_rate: float = 1e-4,
         weight_decay: float = 1e-5,
-        save_dir: str = "checkpoints",
+        save_dir: str = "vae_checkpoints",
         wandb_enabled: bool = True,
-        project_name: str = "autoencoder-training",
+        project_name: str = "vae-training",
         use_cosine_scheduler: bool = True,
         scheduler_t_max: int = 100,
         scheduler_eta_min: float = 0.0,
         step_level_scheduling: bool = True,
+        beta: float = 1.0,
     ) -> None:
         """
-        Initialize trainer.
+        Initialize VAE trainer.
 
         Args:
-            model: Auto-encoder model
+            model: VAE model
             train_loader: Training data loader
             val_loader: Validation data loader
             device: Device to train on
@@ -66,6 +67,7 @@ class AutoEncoderTrainer:
             scheduler_t_max: Max steps/epochs for cosine scheduler
             scheduler_eta_min: Minimum learning rate for cosine scheduler
             step_level_scheduling: Step scheduler per batch (True) or per epoch
+            beta: Beta parameter for beta-VAE
         """
         self.model = model
         self.train_loader = train_loader
@@ -78,17 +80,17 @@ class AutoEncoderTrainer:
         self.scheduler_t_max = scheduler_t_max
         self.scheduler_eta_min = scheduler_eta_min
         self.step_level_scheduling = step_level_scheduling
+        self.beta = beta
 
         # Create save directory
         os.makedirs(save_dir, exist_ok=True)
 
-        # Setup optimizer and loss
+        # Setup optimizer
         self.optimizer = optim.AdamW(
             model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay,
         )
-        self.criterion = nn.MSELoss()  # Use MSE loss for reconstruction task
 
         # Setup learning rate scheduler
         if self.use_cosine_scheduler:
@@ -103,13 +105,17 @@ class AutoEncoderTrainer:
         # Training history
         self.train_losses: List[float] = []
         self.val_losses: List[float] = []
+        self.train_recon_losses: List[float] = []
+        self.val_recon_losses: List[float] = []
+        self.train_kl_losses: List[float] = []
+        self.val_kl_losses: List[float] = []
         self.current_epoch = 0
 
         # Initialize wandb if enabled
         if self.wandb_enabled:
             # Create meaningful run name with key hyperparameters
             run_name = (
-                f"ae_latent{model.latent_dim}_lr{learning_rate}_"
+                f"vae_latent{model.latent_dim}_beta{beta}_lr{learning_rate}_"
                 f"bs{train_loader.batch_size}"
             )
             logger.info(
@@ -124,6 +130,7 @@ class AutoEncoderTrainer:
                 "device": str(device),
                 "model_parameters": sum(p.numel() for p in model.parameters()),
                 "latent_dim": model.latent_dim,
+                "beta": beta,
             }
 
             # Add scheduler config
@@ -140,26 +147,23 @@ class AutoEncoderTrainer:
             )
             logger.info("Wandb initialized successfully")
 
-            # # Define metrics for wandb
-            # wandb.define_metric("epoch")
-            # wandb.define_metric("train_loss", step_metric="epoch")
-            # wandb.define_metric("val_loss", step_metric="epoch")
-            # wandb.define_metric("learning_rate", step_metric="epoch")
-
         logger.info(
-            f"Initialized trainer with "
-            f"{sum(p.numel() for p in model.parameters())} parameters"
+            f"Initialized VAE trainer with "
+            f"{sum(p.numel() for p in model.parameters())} parameters, "
+            f"beta={beta}"
         )
 
-    def train_epoch(self) -> float:
+    def train_epoch(self) -> tuple[float, float, float]:
         """
         Train for one epoch.
 
         Returns:
-            Average training loss for the epoch
+            Tuple of (average_total_loss, average_recon_loss, average_kl_loss)
         """
         self.model.train()
         total_loss = 0.0
+        total_recon_loss = 0.0
+        total_kl_loss = 0.0
         num_batches = 0
 
         pbar = tqdm(self.train_loader, desc="Training")
@@ -168,26 +172,44 @@ class AutoEncoderTrainer:
 
             # Forward pass
             self.optimizer.zero_grad()
-            reconstructed, mu, logvar = self.model(batch)
+            reconstructed, mu, logvar, z = self.model(batch)
 
-            # Compute loss (MSE between input and reconstructed)
-            loss = self.criterion(reconstructed, batch)
+            # Compute VAE loss
+            total_loss_batch, recon_loss_batch, kl_loss_batch = vae_loss(
+                reconstructed, batch, mu, logvar, self.beta
+            )
+
+            # Normalize by batch size
+            batch_size = batch.size(0)
+            total_loss_batch = total_loss_batch / batch_size
+            recon_loss_batch = recon_loss_batch / batch_size
+            kl_loss_batch = kl_loss_batch / batch_size
 
             # Backward pass
-            loss.backward()
+            total_loss_batch.backward()
             self.optimizer.step()
 
             # Step scheduler after each batch if step-level scheduling enabled
             if self.scheduler is not None and self.step_level_scheduling:
                 self.scheduler.step()
 
-            total_loss += loss.item()
+            total_loss += total_loss_batch.item()
+            total_recon_loss += recon_loss_batch.item()
+            total_kl_loss += kl_loss_batch.item()
             num_batches += 1
 
             # Update progress bar
-            pbar.set_postfix({"loss": f"{loss.item():.6f}"})
+            pbar.set_postfix(
+                {
+                    "total": f"{total_loss_batch.item():.4f}",
+                    "recon": f"{recon_loss_batch.item():.4f}",
+                    "kl": f"{kl_loss_batch.item():.4f}",
+                }
+            )
 
-        avg_loss = total_loss / num_batches
+        avg_total_loss = total_loss / num_batches
+        avg_recon_loss = total_recon_loss / num_batches
+        avg_kl_loss = total_kl_loss / num_batches
 
         # Log to wandb if enabled
         if self.wandb_enabled:
@@ -195,54 +217,86 @@ class AutoEncoderTrainer:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 wandb.log(
                     {
-                        "train_loss": avg_loss,
+                        "train_total_loss": avg_total_loss,
+                        "train_recon_loss": avg_recon_loss,
+                        "train_kl_loss": avg_kl_loss,
                         "learning_rate": current_lr,
                         "epoch": self.current_epoch,
                     },
                 )
                 logger.info(
-                    f"✅ Logged train_loss {avg_loss:.6f}, "
-                    f"lr {current_lr:.2e} to wandb "
-                    f"(epoch {self.current_epoch})"
+                    f"✅ Logged train losses to wandb "
+                    f"(epoch {self.current_epoch}): "
+                    f"total={avg_total_loss:.4f}, "
+                    f"recon={avg_recon_loss:.4f}, "
+                    f"kl={avg_kl_loss:.4f}, "
+                    f"lr={current_lr:.2e}"
                 )
             except Exception as e:
-                logger.error(f"❌ Failed to log train_loss to wandb: {e}")
+                logger.error(f"❌ Failed to log train losses to wandb: {e}")
 
-        return avg_loss
+        return avg_total_loss, avg_recon_loss, avg_kl_loss
 
-    def validate(self) -> float:
+    def validate(self) -> tuple[float, float, float]:
         """
         Validate the model.
 
         Returns:
-            Average validation loss
+            Tuple of (average_total_loss, average_recon_loss, average_kl_loss)
         """
         self.model.eval()
         total_loss = 0.0
+        total_recon_loss = 0.0
+        total_kl_loss = 0.0
         num_batches = 0
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
                 batch = batch.to(self.device)
-                reconstructed, mu, logvar = self.model(batch)
-                loss = self.criterion(reconstructed, batch)
-                total_loss += loss.item()
+                reconstructed, mu, logvar, z = self.model(batch)
+
+                # Compute VAE loss
+                total_loss_batch, recon_loss_batch, kl_loss_batch = vae_loss(
+                    reconstructed, batch, mu, logvar, self.beta
+                )
+
+                # Normalize by batch size
+                batch_size = batch.size(0)
+                total_loss_batch = total_loss_batch / batch_size
+                recon_loss_batch = recon_loss_batch / batch_size
+                kl_loss_batch = kl_loss_batch / batch_size
+
+                total_loss += total_loss_batch.item()
+                total_recon_loss += recon_loss_batch.item()
+                total_kl_loss += kl_loss_batch.item()
                 num_batches += 1
 
-        avg_loss = total_loss / num_batches
+        avg_total_loss = total_loss / num_batches
+        avg_recon_loss = total_recon_loss / num_batches
+        avg_kl_loss = total_kl_loss / num_batches
 
         # Log to wandb if enabled
         if self.wandb_enabled:
             try:
-                wandb.log({"val_loss": avg_loss, "epoch": self.current_epoch})
+                wandb.log(
+                    {
+                        "val_total_loss": avg_total_loss,
+                        "val_recon_loss": avg_recon_loss,
+                        "val_kl_loss": avg_kl_loss,
+                        "epoch": self.current_epoch,
+                    }
+                )
                 logger.info(
-                    f"✅ Logged val_loss {avg_loss:.6f} to wandb "
-                    f"(epoch {self.current_epoch})"
+                    f"✅ Logged val losses to wandb "
+                    f"(epoch {self.current_epoch}): "
+                    f"total={avg_total_loss:.4f}, "
+                    f"recon={avg_recon_loss:.4f}, "
+                    f"kl={avg_kl_loss:.4f}"
                 )
             except Exception as e:
-                logger.error(f"❌ Failed to log val_loss to wandb: {e}")
+                logger.error(f"❌ Failed to log val losses to wandb: {e}")
 
-        return avg_loss
+        return avg_total_loss, avg_recon_loss, avg_kl_loss
 
     def save_checkpoint(self, epoch: int, is_best: bool = False) -> None:
         """
@@ -261,6 +315,11 @@ class AutoEncoderTrainer:
             ),
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
+            "train_recon_losses": self.train_recon_losses,
+            "val_recon_losses": self.val_recon_losses,
+            "train_kl_losses": self.train_kl_losses,
+            "val_kl_losses": self.val_kl_losses,
+            "beta": self.beta,
         }
 
         # Save regular checkpoint
@@ -297,6 +356,10 @@ class AutoEncoderTrainer:
 
         self.train_losses = checkpoint.get("train_losses", [])
         self.val_losses = checkpoint.get("val_losses", [])
+        self.train_recon_losses = checkpoint.get("train_recon_losses", [])
+        self.val_recon_losses = checkpoint.get("val_recon_losses", [])
+        self.train_kl_losses = checkpoint.get("train_kl_losses", [])
+        self.val_kl_losses = checkpoint.get("val_kl_losses", [])
 
         epoch = checkpoint["epoch"]
         logger.info(f"Loaded checkpoint from epoch {epoch}")
@@ -307,21 +370,82 @@ class AutoEncoderTrainer:
         Log training history to wandb.
         """
         if self.wandb_enabled:
-            # Create a custom chart for training history
+            # Create custom charts for training history
             data = []
-            for i, (train_loss, val_loss) in enumerate(
-                zip(self.train_losses, self.val_losses)
+            for i, (
+                total_loss,
+                val_total_loss,
+                recon_loss,
+                val_recon_loss,
+                kl_loss,
+                val_kl_loss,
+            ) in enumerate(
+                zip(
+                    self.train_losses,
+                    self.val_losses,
+                    self.train_recon_losses,
+                    self.val_recon_losses,
+                    self.train_kl_losses,
+                    self.val_kl_losses,
+                )
             ):
-                data.append([i, train_loss, val_loss])
+                data.append(
+                    [
+                        i,
+                        total_loss,
+                        val_total_loss,
+                        recon_loss,
+                        val_recon_loss,
+                        kl_loss,
+                        val_kl_loss,
+                    ]
+                )
 
-            table = wandb.Table(data=data, columns=["epoch", "train_loss", "val_loss"])
+            table = wandb.Table(
+                data=data,
+                columns=[
+                    "epoch",
+                    "train_total_loss",
+                    "val_total_loss",
+                    "train_recon_loss",
+                    "val_recon_loss",
+                    "train_kl_loss",
+                    "val_kl_loss",
+                ],
+            )
+
+            # Log total loss chart
             wandb.log(
                 {
-                    "training_history": wandb.plot.line(
+                    "training_history_total": wandb.plot.line(
                         table,
                         "epoch",
-                        ["train_loss", "val_loss"],
-                        title="Training History",
+                        ["train_total_loss", "val_total_loss"],
+                        title="Total Loss History",
+                    )
+                }
+            )
+
+            # Log reconstruction loss chart
+            wandb.log(
+                {
+                    "training_history_recon": wandb.plot.line(
+                        table,
+                        "epoch",
+                        ["train_recon_loss", "val_recon_loss"],
+                        title="Reconstruction Loss History",
+                    )
+                }
+            )
+
+            # Log KL loss chart
+            wandb.log(
+                {
+                    "training_history_kl": wandb.plot.line(
+                        table,
+                        "epoch",
+                        ["train_kl_loss", "val_kl_loss"],
+                        title="KL Loss History",
                     )
                 }
             )
@@ -347,16 +471,16 @@ class AutoEncoderTrainer:
             batch = batch.to(self.device)[:num_samples]
 
             # Get reconstructions
-            reconstructed, _, _ = self.model(batch)
+            reconstructed, mu, logvar, z = self.model(batch)
 
-            # Move to CPU and denormalize from [-1, 1] to [0, 1] for visualization
+            # Move to CPU and handle different ranges for visualization
             batch = batch.cpu()
             reconstructed = reconstructed.cpu()
 
-            # Denormalize from [-1, 1] to [0, 1] for proper visualization
+            # Denormalize input from [-1, 1] to [0, 1] for visualization
             batch = (batch + 1) / 2
-            reconstructed = (reconstructed + 1) / 2
             batch = torch.clamp(batch, 0, 1)
+            # VAE output is already in [0, 1] range from sigmoid
             reconstructed = torch.clamp(reconstructed, 0, 1)
 
             # Log images to wandb
@@ -373,11 +497,49 @@ class AutoEncoderTrainer:
                 # Convert to numpy and scale to uint8
                 img_recon_np = (img_recon.numpy() * 255).astype(np.uint8)
                 images.append(
-                    wandb.Image(img_recon_np, caption=f"AE Reconstructed {i+1}")
+                    wandb.Image(img_recon_np, caption=f"VAE Reconstructed {i+1}")
                 )
 
             # Log to wandb
             log_dict = {"reconstructions": images}
+            if epoch is not None:
+                log_dict["epoch"] = epoch
+
+            wandb.log(log_dict)
+
+    def log_generated_samples(
+        self,
+        num_samples: int = 16,
+        epoch: Optional[int] = None,
+    ) -> None:
+        """
+        Log generated samples to wandb.
+
+        Args:
+            num_samples: Number of samples to generate
+            epoch: Current epoch number for logging
+        """
+        if not self.wandb_enabled:
+            return
+        self.model.eval()
+        with torch.no_grad():
+            # Generate samples
+            generated = self.model.generate(num_samples, self.device)
+            generated = generated.cpu()
+
+            # Ensure output is in [0, 1] range
+            generated = torch.clamp(generated, 0, 1)
+
+            # Log images to wandb
+            images = []
+            for i in range(num_samples):
+                img_gen = generated[i].permute(1, 2, 0)
+                # Convert to numpy and scale to uint8
+                img_gen_np = (img_gen.numpy() * 255).astype(np.uint8)
+                images.append(wandb.Image(img_gen_np, caption=f"Generated {i+1}"))
+
+            # Log to wandb
+            log_dict = {"generated_samples": images}
             if epoch is not None:
                 log_dict["epoch"] = epoch
 
@@ -389,17 +551,19 @@ class AutoEncoderTrainer:
         save_every: int = 10,
         validate_every: int = 1,
         log_reconstructions_every: int = 5,
+        log_generated_every: int = 10,
     ) -> None:
         """
-        Train the auto-encoder.
+        Train the VAE.
 
         Args:
             num_epochs: Number of epochs to train
             save_every: Save checkpoint every N epochs
             validate_every: Validate every N epochs
             log_reconstructions_every: Log reconstructions every N epochs
+            log_generated_every: Log generated samples every N epochs
         """
-        logger.info(f"Starting training for {num_epochs} epochs")
+        logger.info(f"Starting VAE training for {num_epochs} epochs")
         best_val_loss = float("inf")
 
         for epoch in range(num_epochs):
@@ -407,28 +571,46 @@ class AutoEncoderTrainer:
             logger.info(f"Epoch {epoch + 1}/{num_epochs}")
 
             # Training
-            train_loss = self.train_epoch()
-            self.train_losses.append(train_loss)
+            (
+                train_total_loss,
+                train_recon_loss,
+                train_kl_loss,
+            ) = self.train_epoch()
+            self.train_losses.append(train_total_loss)
+            self.train_recon_losses.append(train_recon_loss)
+            self.train_kl_losses.append(train_kl_loss)
 
             # Validation
             if (epoch + 1) % validate_every == 0:
-                val_loss = self.validate()
-                self.val_losses.append(val_loss)
+                val_total_loss, val_recon_loss, val_kl_loss = self.validate()
+                self.val_losses.append(val_total_loss)
+                self.val_recon_losses.append(val_recon_loss)
+                self.val_kl_losses.append(val_kl_loss)
                 logger.info(
-                    f"Epoch {epoch + 1}: Train Loss = {train_loss:.6f}, "
-                    f"Val Loss = {val_loss:.6f}"
+                    f"Epoch {epoch + 1}: "
+                    f"Train Total = {train_total_loss:.4f}, "
+                    f"Train Recon = {train_recon_loss:.4f}, "
+                    f"Train KL = {train_kl_loss:.4f} | "
+                    f"Val Total = {val_total_loss:.4f}, "
+                    f"Val Recon = {val_recon_loss:.4f}, "
+                    f"Val KL = {val_kl_loss:.4f}"
                 )
 
                 # Check if best model
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                if val_total_loss < best_val_loss:
+                    best_val_loss = val_total_loss
                     self.save_checkpoint(epoch + 1, is_best=True)
 
                 # Step scheduler at epoch level if not using step-level
                 if self.scheduler is not None and not self.step_level_scheduling:
                     self.scheduler.step()
             else:
-                logger.info(f"Epoch {epoch + 1}: Train Loss = {train_loss:.6f}")
+                logger.info(
+                    f"Epoch {epoch + 1}: "
+                    f"Train Total = {train_total_loss:.4f}, "
+                    f"Train Recon = {train_recon_loss:.4f}, "
+                    f"Train KL = {train_kl_loss:.4f}"
+                )
                 # Step scheduler even without validation
                 if self.scheduler is not None and not self.step_level_scheduling:
                     self.scheduler.step()
@@ -441,6 +623,10 @@ class AutoEncoderTrainer:
             if (epoch + 1) % log_reconstructions_every == 0:
                 self.log_reconstructions(epoch=epoch + 1)
 
+            # Log generated samples to wandb
+            if (epoch + 1) % log_generated_every == 0:
+                self.log_generated_samples(epoch=epoch + 1)
+
         # Log final training history
         self.log_training_history()
 
@@ -448,7 +634,7 @@ class AutoEncoderTrainer:
         if self.wandb_enabled:
             wandb.finish()
 
-        logger.info("Training completed!")
+        logger.info("VAE training completed!")
 
 
 def main():
@@ -464,12 +650,13 @@ def main():
         "hidden_dims": [32, 64, 128, 256],
         "learning_rate": 1e-3,
         "weight_decay": 1e-5,
-        "num_epochs": 5,
-        "save_dir": "autoencoder_checkpoints",
+        "num_epochs": 10,
+        "save_dir": "vae_checkpoints",
+        "beta": 1.0,  # Beta parameter for beta-VAE
         # Learning rate scheduler config
         "use_cosine_scheduler": True,
         # Updated to total steps if step_level_scheduling=True
-        "scheduler_t_max": 5,
+        "scheduler_t_max": 10,
         "scheduler_eta_min": 1e-5,  # Non-zero minimum
         "step_level_scheduling": True,  # Step per batch for finer granularity
     }
@@ -513,17 +700,18 @@ def main():
         )
 
     # Create model
-    logger.info("Creating auto-encoder model...")
-    model = create_autoencoder(
+    logger.info("Creating VAE model...")
+    model = create_vae(
         input_channels=3,
         latent_dim=config["latent_dim"],
         hidden_dims=config["hidden_dims"],
         output_size=config["image_size"],
+        beta=config["beta"],
         device=device,
     )
 
     # Create trainer
-    trainer = AutoEncoderTrainer(
+    trainer = VAETrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -532,11 +720,12 @@ def main():
         weight_decay=config["weight_decay"],
         save_dir=config["save_dir"],
         wandb_enabled=True,
-        project_name="autoencoder-afhq",
+        project_name="vae-afhq",
         use_cosine_scheduler=config["use_cosine_scheduler"],
         scheduler_t_max=config["scheduler_t_max"],
         scheduler_eta_min=config["scheduler_eta_min"],
         step_level_scheduling=config["step_level_scheduling"],
+        beta=config["beta"],
     )
 
     # Train
@@ -545,6 +734,7 @@ def main():
         save_every=10,
         validate_every=1,
         log_reconstructions_every=5,
+        log_generated_every=10,
     )
 
 
