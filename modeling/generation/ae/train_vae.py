@@ -115,7 +115,7 @@ class VAETrainer:
         if self.wandb_enabled:
             # Create meaningful run name with key hyperparameters
             run_name = (
-                f"vae_latent{model.latent_dim}_beta{beta}_lr{learning_rate}_"
+                f"vae_512x512_latent{model.latent_dim}_beta{beta}_lr{learning_rate}_"
                 f"bs{train_loader.batch_size}"
             )
             logger.info(
@@ -174,10 +174,42 @@ class VAETrainer:
             self.optimizer.zero_grad()
             reconstructed, mu, logvar, z = self.model(batch)
 
+            # Debug: Check for NaN values in model outputs
+            if torch.isnan(reconstructed).any():
+                logger.error(
+                    f"❌ NaN detected in reconstructed output at batch {batch_idx}"
+                )
+                logger.error(
+                    f"Reconstructed stats: min={reconstructed.min():.4f}, max={reconstructed.max():.4f}"
+                )
+            if torch.isnan(mu).any():
+                logger.error(f"❌ NaN detected in mu at batch {batch_idx}")
+                logger.error(f"Mu stats: min={mu.min():.4f}, max={mu.max():.4f}")
+            if torch.isnan(logvar).any():
+                logger.error(f"❌ NaN detected in logvar at batch {batch_idx}")
+                logger.error(
+                    f"Logvar stats: min={logvar.min():.4f}, max={logvar.max():.4f}"
+                )
+
             # Compute VAE loss
             total_loss_batch, recon_loss_batch, kl_loss_batch = vae_loss(
                 reconstructed, batch, mu, logvar, self.beta
             )
+
+            # Debug: Check for NaN values in loss components
+            if torch.isnan(total_loss_batch):
+                logger.error(f"❌ NaN detected in total_loss at batch {batch_idx}")
+                logger.error(
+                    f"Recon loss: {recon_loss_batch.item():.4f}, KL loss: {kl_loss_batch.item():.4f}"
+                )
+                logger.error(
+                    f"Batch stats: min={batch.min():.4f}, max={batch.max():.4f}"
+                )
+                logger.error(
+                    f"Reconstructed stats: min={reconstructed.min():.4f}, max={reconstructed.max():.4f}"
+                )
+                # Skip this batch to prevent training from crashing
+                continue
 
             # Normalize by batch size
             batch_size = batch.size(0)
@@ -187,8 +219,8 @@ class VAETrainer:
 
             # Backward pass
             total_loss_batch.backward()
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            # Gradient clipping - more aggressive for stability
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
             self.optimizer.step()
 
             # Step scheduler after each batch if step-level scheduling enabled
@@ -644,23 +676,22 @@ def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    # Configuration
+    # Configuration - Original 512x512 resolution with stability fixes
     config = {
-        "batch_size": 64,
-        "image_size": 256,
-        "latent_dim": 256,
-        "hidden_dims": [32, 64, 128, 256],
-        "learning_rate": 1e-4,
+        "batch_size": 16,  # Smaller batch size for 512x512 images
+        "image_size": 512,  # Back to original resolution
+        "latent_dim": 512,  # Back to original latent dimension
+        "hidden_dims": [64, 128, 256, 512],  # Back to original capacity
+        "learning_rate": 3e-5,  # Slightly reduced for stability
         "weight_decay": 1e-5,
-        "num_epochs": 10,
+        "num_epochs": 5,
         "save_dir": "vae_checkpoints",
-        "beta": 1.0,  # Beta parameter for beta-VAE
+        "beta": 0.1,  # Keep low beta for stability
         # Learning rate scheduler config
         "use_cosine_scheduler": True,
-        # Updated to total steps if step_level_scheduling=True
-        "scheduler_t_max": 10,
-        "scheduler_eta_min": 1e-5,  # Non-zero minimum
-        "step_level_scheduling": True,  # Step per batch for finer granularity
+        "scheduler_t_max": 20,
+        "scheduler_eta_min": 1e-6,  # Lower minimum
+        "step_level_scheduling": True,
     }
 
     # Device - Support Mac Silicon MPS

@@ -378,16 +378,51 @@ def vae_loss(
     Returns:
         Tuple of (total_loss, reconstruction_loss, kl_loss)
     """
+    # Debug: Check input ranges
+    logger.debug(
+        f"Input ranges - target: [{target.min():.4f}, {target.max():.4f}], "
+        f"reconstructed: [{reconstructed.min():.4f}, {reconstructed.max():.4f}]"
+    )
+    logger.debug(
+        f"Mu range: [{mu.min():.4f}, {mu.max():.4f}], "
+        f"Logvar range: [{logvar.min():.4f}, {logvar.max():.4f}]"
+    )
+
     # Reconstruction loss (MSE for consistency with AE, handles range mismatch)
     # Convert target from [-1, 1] to [0, 1] for comparison with sigmoid output
     target_normalized = (target + 1) / 2
+    target_normalized = torch.clamp(target_normalized, 0, 1)  # Ensure valid range
     recon_loss = F.mse_loss(reconstructed, target_normalized, reduction="sum")
 
-    # KL divergence loss
-    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    # Debug: Check reconstruction loss
+    if torch.isnan(recon_loss):
+        logger.error(
+            f"❌ NaN in reconstruction loss! Target norm range: "
+            f"[{target_normalized.min():.4f}, {target_normalized.max():.4f}]"
+        )
+
+    # KL divergence loss with numerical stability
+    # Clamp logvar to prevent overflow in exp()
+    logvar_clamped = torch.clamp(logvar, min=-10, max=10)
+    kl_loss = -0.5 * torch.sum(1 + logvar_clamped - mu.pow(2) - logvar_clamped.exp())
+
+    # Debug: Check KL loss
+    if torch.isnan(kl_loss):
+        logger.error(
+            f"❌ NaN in KL loss! Logvar range: [{logvar.min():.4f}, "
+            f"{logvar.max():.4f}], clamped range: [{logvar_clamped.min():.4f}, "
+            f"{logvar_clamped.max():.4f}]"
+        )
 
     # Total loss
     total_loss = recon_loss + beta * kl_loss
+
+    # Debug: Check total loss
+    if torch.isnan(total_loss):
+        logger.error(
+            f"❌ NaN in total loss! Recon: {recon_loss.item():.4f}, "
+            f"KL: {kl_loss.item():.4f}, Beta: {beta}"
+        )
 
     return total_loss, recon_loss, kl_loss
 
@@ -425,7 +460,7 @@ def create_vae(
     if device is not None:
         model = model.to(device)
 
-    # Initialize weights
+    # Initialize weights with more conservative initialization for stability
     def init_weights(m):
         if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
             nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -435,7 +470,8 @@ def create_vae(
             nn.init.constant_(m.weight, 1)
             nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.Linear):
-            nn.init.kaiming_normal_(m.weight)
+            # More conservative initialization for linear layers
+            nn.init.normal_(m.weight, mean=0.0, std=0.02)
             nn.init.constant_(m.bias, 0)
 
     model.apply(init_weights)
