@@ -678,7 +678,7 @@ def main():
 
     # Configuration - Original 512x512 resolution with stability fixes
     config = {
-        "batch_size": 16,  # Smaller batch size for 512x512 images
+        "batch_size": 32,  # Smaller batch size for 512x512 images
         "image_size": 512,  # Back to original resolution
         "latent_dim": 512,  # Back to original latent dimension
         "hidden_dims": [64, 128, 256, 512],  # Back to original capacity
