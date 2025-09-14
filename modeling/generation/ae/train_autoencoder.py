@@ -386,7 +386,6 @@ class AutoEncoderTrainer:
     def train(
         self,
         num_epochs: int,
-        save_every: int = 10,
         validate_every: int = 1,
         log_reconstructions_every: int = 5,
     ) -> None:
@@ -395,7 +394,6 @@ class AutoEncoderTrainer:
 
         Args:
             num_epochs: Number of epochs to train
-            save_every: Save checkpoint every N epochs
             validate_every: Validate every N epochs
             log_reconstructions_every: Log reconstructions every N epochs
         """
@@ -433,13 +431,15 @@ class AutoEncoderTrainer:
                 if self.scheduler is not None and not self.step_level_scheduling:
                     self.scheduler.step()
 
-            # Save checkpoint
-            if (epoch + 1) % save_every == 0:
-                self.save_checkpoint(epoch + 1)
+            # Note: Checkpoint saving removed - model will only be saved after training completion
 
             # Log reconstructions to wandb
             if (epoch + 1) % log_reconstructions_every == 0:
                 self.log_reconstructions(epoch=epoch + 1)
+
+        # Save final model after training completion
+        self.save_checkpoint(self.current_epoch, is_best=False)
+        logger.info(f"Saved final model after training completion (epoch {self.current_epoch})")
 
         # Log final training history
         self.log_training_history()
@@ -542,7 +542,6 @@ def main():
     # Train
     trainer.train(
         num_epochs=config["num_epochs"],
-        save_every=10,
         validate_every=1,
         log_reconstructions_every=5,
     )
