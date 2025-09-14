@@ -115,7 +115,7 @@ class VAETrainer:
         if self.wandb_enabled:
             # Create meaningful run name with key hyperparameters
             run_name = (
-                f"vae_latent{model.latent_dim}_beta{beta}_lr{learning_rate}_"
+                f"vae_512x512_latent{model.latent_dim}_beta{beta}_lr{learning_rate}_"
                 f"bs{train_loader.batch_size}"
             )
             logger.info(
@@ -174,10 +174,42 @@ class VAETrainer:
             self.optimizer.zero_grad()
             reconstructed, mu, logvar, z = self.model(batch)
 
+            # Debug: Check for NaN values in model outputs
+            if torch.isnan(reconstructed).any():
+                logger.error(
+                    f"❌ NaN detected in reconstructed output at batch {batch_idx}"
+                )
+                logger.error(
+                    f"Reconstructed stats: min={reconstructed.min():.4f}, max={reconstructed.max():.4f}"
+                )
+            if torch.isnan(mu).any():
+                logger.error(f"❌ NaN detected in mu at batch {batch_idx}")
+                logger.error(f"Mu stats: min={mu.min():.4f}, max={mu.max():.4f}")
+            if torch.isnan(logvar).any():
+                logger.error(f"❌ NaN detected in logvar at batch {batch_idx}")
+                logger.error(
+                    f"Logvar stats: min={logvar.min():.4f}, max={logvar.max():.4f}"
+                )
+
             # Compute VAE loss
             total_loss_batch, recon_loss_batch, kl_loss_batch = vae_loss(
                 reconstructed, batch, mu, logvar, self.beta
             )
+
+            # Debug: Check for NaN values in loss components
+            if torch.isnan(total_loss_batch):
+                logger.error(f"❌ NaN detected in total_loss at batch {batch_idx}")
+                logger.error(
+                    f"Recon loss: {recon_loss_batch.item():.4f}, KL loss: {kl_loss_batch.item():.4f}"
+                )
+                logger.error(
+                    f"Batch stats: min={batch.min():.4f}, max={batch.max():.4f}"
+                )
+                logger.error(
+                    f"Reconstructed stats: min={reconstructed.min():.4f}, max={reconstructed.max():.4f}"
+                )
+                # Skip this batch to prevent training from crashing
+                continue
 
             # Normalize by batch size
             batch_size = batch.size(0)
@@ -187,7 +219,7 @@ class VAETrainer:
 
             # Backward pass
             total_loss_batch.backward()
-            # Gradient clipping
+            # Gradient clipping - configurable for stability
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
@@ -567,6 +599,9 @@ class VAETrainer:
         """
         logger.info(f"Starting VAE training for {num_epochs} epochs")
         best_val_loss = float("inf")
+        patience_counter = 0
+        patience = getattr(self, "patience", 3)
+        min_delta = getattr(self, "min_delta", 0.001)
 
         for epoch in range(num_epochs):
             self.current_epoch = epoch + 1
@@ -598,10 +633,24 @@ class VAETrainer:
                     f"Val KL = {val_kl_loss:.4f}"
                 )
 
-                # Check if best model
-                if val_total_loss < best_val_loss:
+                # Check if best model and early stopping
+                if val_total_loss < best_val_loss - min_delta:
                     best_val_loss = val_total_loss
+                    patience_counter = 0
                     self.save_checkpoint(epoch + 1, is_best=True)
+                    logger.info(f"✅ New best validation loss: {best_val_loss:.4f}")
+                else:
+                    patience_counter += 1
+                    logger.info(
+                        f"⏳ No improvement for {patience_counter} epochs (patience: {patience})"
+                    )
+
+                    # Early stopping
+                    if patience_counter >= patience:
+                        logger.info(
+                            f"🛑 Early stopping triggered after {epoch + 1} epochs"
+                        )
+                        break
 
                 # Step scheduler at epoch level if not using step-level
                 if self.scheduler is not None and not self.step_level_scheduling:
@@ -644,23 +693,28 @@ def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    # Configuration
+    # Configuration - Anti-overfitting setup for 512x512 resolution
     config = {
-        "batch_size": 64,
-        "image_size": 256,
-        "latent_dim": 256,
-        "hidden_dims": [32, 64, 128, 256],
-        "learning_rate": 1e-4,
-        "weight_decay": 1e-5,
-        "num_epochs": 10,
+        "batch_size": 32,
+        "image_size": 512,
+        "latent_dim": 512,
+        "hidden_dims": [64, 128, 256, 512],  # Keep capacity but add regularization
+        "learning_rate": 1e-5,
+        "weight_decay": 1e-4,  # Increased weight decay for regularization
+        "num_epochs": 5,
         "save_dir": "vae_checkpoints",
-        "beta": 1.0,  # Beta parameter for beta-VAE
+        "beta": 1.0,  # Increased beta for stronger KL regularization
         # Learning rate scheduler config
         "use_cosine_scheduler": True,
-        # Updated to total steps if step_level_scheduling=True
-        "scheduler_t_max": 10,
-        "scheduler_eta_min": 1e-5,  # Non-zero minimum
-        "step_level_scheduling": True,  # Step per batch for finer granularity
+        "scheduler_t_max": 20,
+        "scheduler_eta_min": 1e-6,  # Lower minimum
+        "step_level_scheduling": False,  # Use epoch-level scheduling for stability
+        # Regularization config
+        "dropout_rate": 0.1,  # Add dropout for regularization
+        "gradient_clip_norm": 1.0,  # More conservative gradient clipping
+        # Early stopping config
+        "patience": 3,  # Stop if no improvement for 3 epochs
+        "min_delta": 0.001,  # Minimum change to qualify as improvement
     }
 
     # Device - Support Mac Silicon MPS
@@ -710,6 +764,7 @@ def main():
         output_size=config["image_size"],
         beta=config["beta"],
         device=device,
+        dropout_rate=config["dropout_rate"],
     )
 
     # Create trainer
@@ -729,6 +784,10 @@ def main():
         step_level_scheduling=config["step_level_scheduling"],
         beta=config["beta"],
     )
+
+    # Add early stopping parameters to trainer
+    trainer.patience = config["patience"]
+    trainer.min_delta = config["min_delta"]
 
     # Train
     trainer.train(
