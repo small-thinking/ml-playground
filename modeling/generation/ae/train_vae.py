@@ -356,11 +356,7 @@ class VAETrainer:
             "beta": self.beta,
         }
 
-        # Save regular checkpoint
-        checkpoint_path = os.path.join(self.save_dir, f"checkpoint_epoch_{epoch}.pt")
-        torch.save(checkpoint, checkpoint_path)
-
-        # Save best model
+        # Save best model only
         if is_best:
             best_path = os.path.join(self.save_dir, "best_model.pt")
             torch.save(checkpoint, best_path)
@@ -664,7 +660,7 @@ class VAETrainer:
                 if self.scheduler is not None and not self.step_level_scheduling:
                     self.scheduler.step()
 
-            # Note: Checkpoint saving removed - model will only be saved after training completion
+            # Note: Only best model is saved, no intermediate checkpoints
 
             # Log reconstructions to wandb
             if (epoch + 1) % log_reconstructions_every == 0:
@@ -674,9 +670,7 @@ class VAETrainer:
             if (epoch + 1) % log_generated_every == 0:
                 self.log_generated_samples(epoch=epoch + 1)
 
-        # Save final model after training completion
-        self.save_checkpoint(self.current_epoch, is_best=False)
-        logger.info(f"Saved final model after training completion (epoch {self.current_epoch})")
+        # Note: Only best model is saved during training, no final model saving
 
         # Log final training history
         self.log_training_history()
@@ -693,28 +687,28 @@ def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    # Configuration - Anti-overfitting setup for 512x512 resolution
+    # Configuration - Reduced size to prevent overfitting with <100k images
     config = {
         "batch_size": 32,
         "image_size": 512,
-        "latent_dim": 512,
-        "hidden_dims": [64, 128, 256, 512],  # Keep capacity but add regularization
-        "learning_rate": 1e-5,
-        "weight_decay": 1e-4,  # Increased weight decay for regularization
-        "num_epochs": 5,
+        "latent_dim": 64,  # Reduced from 512 to 64 (8x smaller)
+        "hidden_dims": [32, 64, 128],  # Much smaller channels to reduce parameters
+        "learning_rate": 1e-4,  # Slightly higher LR for smaller model
+        "weight_decay": 1e-4,  # Weight decay for regularization
+        "num_epochs": 10,  # More epochs since model is smaller
         "save_dir": "vae_checkpoints",
-        "beta": 1.0,  # Increased beta for stronger KL regularization
+        "beta": 1.0,  # Beta for KL regularization
         # Learning rate scheduler config
         "use_cosine_scheduler": True,
-        "scheduler_t_max": 20,
-        "scheduler_eta_min": 1e-6,  # Lower minimum
-        "step_level_scheduling": False,  # Use epoch-level scheduling for stability
+        "scheduler_t_max": 30,  # Adjusted for more epochs
+        "scheduler_eta_min": 1e-6,
+        "step_level_scheduling": False,
         # Regularization config
-        "dropout_rate": 0.1,  # Add dropout for regularization
-        "gradient_clip_norm": 1.0,  # More conservative gradient clipping
+        "dropout_rate": 0.3,  # Higher dropout for better regularization
+        "gradient_clip_norm": 1.0,
         # Early stopping config
-        "patience": 3,  # Stop if no improvement for 3 epochs
-        "min_delta": 0.001,  # Minimum change to qualify as improvement
+        "patience": 5,  # More patience for smaller model
+        "min_delta": 0.001,
     }
 
     # Device - Support Mac Silicon MPS
@@ -765,6 +759,28 @@ def main():
         beta=config["beta"],
         device=device,
         dropout_rate=config["dropout_rate"],
+    )
+
+    # Calculate and log model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # Detailed parameter breakdown
+    encoder_params = sum(p.numel() for p in model.encoder.parameters())
+    decoder_params = sum(p.numel() for p in model.decoder.parameters())
+
+    logger.info(f"Model created with {total_params:,} total parameters")
+    logger.info(f"Trainable parameters: {trainable_params:,}")
+    logger.info(f"Encoder parameters: {encoder_params:,}")
+    logger.info(f"Decoder parameters: {decoder_params:,}")
+    logger.info(
+        f"Model size: {total_params * 4 / 1024 / 1024:.2f} MB (assuming float32)"
+    )
+
+    # Log model architecture details
+    logger.info(
+        f"Architecture: {config['image_size']}x{config['image_size']} -> "
+        f"latent_dim={config['latent_dim']}, hidden_dims={config['hidden_dims']}"
     )
 
     # Create trainer
