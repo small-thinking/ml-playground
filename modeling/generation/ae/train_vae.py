@@ -219,8 +219,8 @@ class VAETrainer:
 
             # Backward pass
             total_loss_batch.backward()
-            # Gradient clipping - more aggressive for stability
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+            # Gradient clipping - configurable for stability
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
             # Step scheduler after each batch if step-level scheduling enabled
@@ -599,6 +599,9 @@ class VAETrainer:
         """
         logger.info(f"Starting VAE training for {num_epochs} epochs")
         best_val_loss = float("inf")
+        patience_counter = 0
+        patience = getattr(self, "patience", 3)
+        min_delta = getattr(self, "min_delta", 0.001)
 
         for epoch in range(num_epochs):
             self.current_epoch = epoch + 1
@@ -630,10 +633,24 @@ class VAETrainer:
                     f"Val KL = {val_kl_loss:.4f}"
                 )
 
-                # Check if best model
-                if val_total_loss < best_val_loss:
+                # Check if best model and early stopping
+                if val_total_loss < best_val_loss - min_delta:
                     best_val_loss = val_total_loss
+                    patience_counter = 0
                     self.save_checkpoint(epoch + 1, is_best=True)
+                    logger.info(f"✅ New best validation loss: {best_val_loss:.4f}")
+                else:
+                    patience_counter += 1
+                    logger.info(
+                        f"⏳ No improvement for {patience_counter} epochs (patience: {patience})"
+                    )
+
+                    # Early stopping
+                    if patience_counter >= patience:
+                        logger.info(
+                            f"🛑 Early stopping triggered after {epoch + 1} epochs"
+                        )
+                        break
 
                 # Step scheduler at epoch level if not using step-level
                 if self.scheduler is not None and not self.step_level_scheduling:
@@ -676,22 +693,28 @@ def main():
     # Setup logging
     logging.basicConfig(level=logging.INFO)
 
-    # Configuration - Original 512x512 resolution with stability fixes
+    # Configuration - Anti-overfitting setup for 512x512 resolution
     config = {
-        "batch_size": 32,  # Smaller batch size for 512x512 images
-        "image_size": 512,  # Back to original resolution
-        "latent_dim": 512,  # Back to original latent dimension
-        "hidden_dims": [64, 128, 256, 512],  # Back to original capacity
-        "learning_rate": 3e-5,  # Slightly reduced for stability
-        "weight_decay": 1e-5,
+        "batch_size": 32,
+        "image_size": 512,
+        "latent_dim": 512,
+        "hidden_dims": [64, 128, 256, 512],  # Keep capacity but add regularization
+        "learning_rate": 1e-5,
+        "weight_decay": 1e-4,  # Increased weight decay for regularization
         "num_epochs": 5,
         "save_dir": "vae_checkpoints",
-        "beta": 0.1,  # Keep low beta for stability
+        "beta": 1.0,  # Increased beta for stronger KL regularization
         # Learning rate scheduler config
         "use_cosine_scheduler": True,
         "scheduler_t_max": 20,
         "scheduler_eta_min": 1e-6,  # Lower minimum
-        "step_level_scheduling": True,
+        "step_level_scheduling": False,  # Use epoch-level scheduling for stability
+        # Regularization config
+        "dropout_rate": 0.1,  # Add dropout for regularization
+        "gradient_clip_norm": 1.0,  # More conservative gradient clipping
+        # Early stopping config
+        "patience": 3,  # Stop if no improvement for 3 epochs
+        "min_delta": 0.001,  # Minimum change to qualify as improvement
     }
 
     # Device - Support Mac Silicon MPS
@@ -741,6 +764,7 @@ def main():
         output_size=config["image_size"],
         beta=config["beta"],
         device=device,
+        dropout_rate=config["dropout_rate"],
     )
 
     # Create trainer
@@ -760,6 +784,10 @@ def main():
         step_level_scheduling=config["step_level_scheduling"],
         beta=config["beta"],
     )
+
+    # Add early stopping parameters to trainer
+    trainer.patience = config["patience"]
+    trainer.min_delta = config["min_delta"]
 
     # Train
     trainer.train(

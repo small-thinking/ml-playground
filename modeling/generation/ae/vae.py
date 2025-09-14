@@ -1,4 +1,4 @@
-"""Variational Auto-Encoder (VAE) model implementation for image generation and reconstruction."""
+"""Variational Auto-Encoder (VAE) model implementation for image generation."""
 
 import torch
 import torch.nn as nn
@@ -18,6 +18,7 @@ class VAEEncoder(nn.Module):
         latent_dim: int = 128,
         hidden_dims: list = [32, 64, 128, 256],
         input_size: int = 64,
+        dropout_rate: float = 0.0,
     ) -> None:
         """
         Initialize VAE encoder.
@@ -27,9 +28,11 @@ class VAEEncoder(nn.Module):
             latent_dim: Dimension of latent space
             hidden_dims: List of hidden dimensions for each layer
             input_size: Input image size (assumes square images)
+            dropout_rate: Dropout rate for regularization
         """
         super().__init__()
         self.latent_dim = latent_dim
+        self.dropout_rate = dropout_rate
 
         # Build encoder layers
         layers = []
@@ -60,6 +63,12 @@ class VAEEncoder(nn.Module):
         self.fc_mu = nn.Linear(self.flatten_size, latent_dim)
         self.fc_logvar = nn.Linear(self.flatten_size, latent_dim)
 
+        # Dropout for regularization
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate)
+        else:
+            self.dropout = None
+
     def _get_flatten_size(self, input_channels: int, input_size: int = 64) -> int:
         """Calculate the flattened size after convolutions."""
         with torch.no_grad():
@@ -80,6 +89,10 @@ class VAEEncoder(nn.Module):
         x = self.encoder(x)
         x = x.view(x.size(0), -1)  # Flatten
 
+        # Apply dropout if enabled
+        if self.dropout is not None:
+            x = self.dropout(x)
+
         mu = self.fc_mu(x)
         logvar = self.fc_logvar(x)
 
@@ -95,6 +108,7 @@ class VAEDecoder(nn.Module):
         output_channels: int = 3,
         hidden_dims: list = [256, 128, 64, 32],
         output_size: int = 64,
+        dropout_rate: float = 0.0,
     ) -> None:
         """
         Initialize VAE decoder.
@@ -104,10 +118,12 @@ class VAEDecoder(nn.Module):
             output_channels: Number of output channels (3 for RGB)
             hidden_dims: List of hidden dimensions for each layer
             output_size: Target output image size
+            dropout_rate: Dropout rate for regularization
         """
         super().__init__()
         self.output_size = output_size
         self.hidden_dims = hidden_dims
+        self.dropout_rate = dropout_rate
 
         # Calculate the size needed for the first linear layer
         self.flatten_size = self._get_flatten_size(
@@ -116,6 +132,12 @@ class VAEDecoder(nn.Module):
 
         # Initial linear layer
         self.fc = nn.Linear(latent_dim, self.flatten_size)
+
+        # Dropout for regularization
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate)
+        else:
+            self.dropout = None
 
         # Build decoder layers (reverse order of encoder)
         layers = []
@@ -177,6 +199,11 @@ class VAEDecoder(nn.Module):
             Reconstructed tensor of shape (batch_size, channels, height, width)
         """
         x = self.fc(z)
+
+        # Apply dropout if enabled
+        if self.dropout is not None:
+            x = self.dropout(x)
+
         # Reshape to start decoder with the last hidden dimension
         batch_size = x.size(0)
         # Calculate the spatial size after encoder convolutions
@@ -206,6 +233,7 @@ class VariationalAutoEncoder(nn.Module):
         hidden_dims: list = [32, 64, 128, 256],
         output_size: int = 64,
         beta: float = 1.0,
+        dropout_rate: float = 0.0,
     ) -> None:
         """
         Initialize Variational Auto-Encoder.
@@ -216,6 +244,7 @@ class VariationalAutoEncoder(nn.Module):
             hidden_dims: List of hidden dimensions for encoder/decoder
             output_size: Target output image size
             beta: Beta parameter for beta-VAE (controls KL divergence weight)
+            dropout_rate: Dropout rate for regularization
         """
         super().__init__()
         self.latent_dim = latent_dim
@@ -229,6 +258,7 @@ class VariationalAutoEncoder(nn.Module):
             latent_dim=latent_dim,
             hidden_dims=hidden_dims,
             input_size=output_size,
+            dropout_rate=dropout_rate,
         )
 
         self.decoder = VAEDecoder(
@@ -236,6 +266,7 @@ class VariationalAutoEncoder(nn.Module):
             output_channels=input_channels,
             hidden_dims=decoder_hidden_dims,
             output_size=output_size,
+            dropout_rate=dropout_rate,
         )
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -434,6 +465,7 @@ def create_vae(
     output_size: int = 64,
     beta: float = 1.0,
     device: Optional[torch.device] = None,
+    dropout_rate: float = 0.0,
 ) -> VariationalAutoEncoder:
     """
     Create and initialize VAE model.
@@ -445,6 +477,7 @@ def create_vae(
         output_size: Target output image size
         beta: Beta parameter for beta-VAE
         device: Device to move model to
+        dropout_rate: Dropout rate for regularization
 
     Returns:
         Initialized VAE model
@@ -455,6 +488,7 @@ def create_vae(
         hidden_dims=hidden_dims,
         output_size=output_size,
         beta=beta,
+        dropout_rate=dropout_rate,
     )
 
     if device is not None:
