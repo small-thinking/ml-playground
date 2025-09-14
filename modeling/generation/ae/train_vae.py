@@ -187,6 +187,8 @@ class VAETrainer:
 
             # Backward pass
             total_loss_batch.backward()
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
             # Step scheduler after each batch if step-level scheduling enabled
@@ -646,9 +648,9 @@ def main():
     config = {
         "batch_size": 64,
         "image_size": 256,
-        "latent_dim": 128,
+        "latent_dim": 256,
         "hidden_dims": [32, 64, 128, 256],
-        "learning_rate": 1e-3,
+        "learning_rate": 1e-4,
         "weight_decay": 1e-5,
         "num_epochs": 10,
         "save_dir": "vae_checkpoints",
