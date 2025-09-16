@@ -80,23 +80,54 @@ else
         # Install Docker using the official script
         curl -fsSL https://get.docker.com | sh
         
-        # Add current user to docker group
-        echo "Adding user to docker group..."
-        sudo usermod -aG docker $USER
+        # Add current user to docker group (skip if running as root)
+        if [ "$(id -u)" -eq 0 ]; then
+            echo "Running as root - skipping user group configuration"
+        else
+            echo "Adding user to docker group..."
+            if command -v sudo >/dev/null 2>&1; then
+                sudo usermod -aG docker $USER
+            else
+                echo "⚠ sudo not available - user group configuration skipped"
+                echo "You may need to manually add user to docker group after setup"
+            fi
+        fi
         
-        # Start and enable Docker service
-        echo "Starting Docker service..."
-        sudo systemctl start docker
-        sudo systemctl enable docker
+        # Start and enable Docker service (skip if running in container)
+        if [ "$(id -u)" -eq 0 ] && [ -f /.dockerenv ]; then
+            echo "Running in Docker container - skipping systemctl commands"
+            echo "Docker daemon should already be running in container"
+        else
+            echo "Starting Docker service..."
+            if command -v sudo >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+                sudo systemctl start docker
+                sudo systemctl enable docker
+            else
+                echo "⚠ systemctl not available - Docker service management skipped"
+                echo "Docker may need to be started manually"
+            fi
+        fi
         
         # Install nvidia-docker2 for GPU support
         echo "Installing nvidia-docker2 for GPU support..."
-        distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-        curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-        curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-        sudo apt-get update
-        sudo apt-get install -y nvidia-docker2
-        sudo systemctl restart docker
+        if [ "$(id -u)" -eq 0 ] && [ -f /.dockerenv ]; then
+            echo "Running in Docker container - skipping nvidia-docker2 installation"
+            echo "GPU support should be handled by the host Docker daemon"
+        else
+            distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+            if command -v sudo >/dev/null 2>&1; then
+                curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+                curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+                sudo apt-get update
+                sudo apt-get install -y nvidia-docker2
+                if command -v systemctl >/dev/null 2>&1; then
+                    sudo systemctl restart docker
+                fi
+            else
+                echo "⚠ sudo not available - nvidia-docker2 installation skipped"
+                echo "GPU support may not be available"
+            fi
+        fi
         
         # Verify Docker installation
         echo "Verifying Docker installation..."
@@ -107,21 +138,40 @@ else
             
             # Test Docker with hello-world
             echo "Testing Docker with hello-world..."
-            if sudo docker run hello-world >/dev/null 2>&1; then
-                echo "✓ Docker test successful"
+            if [ "$(id -u)" -eq 0 ]; then
+                # Running as root, no need for sudo
+                if docker run hello-world >/dev/null 2>&1; then
+                    echo "✓ Docker test successful"
+                else
+                    echo "⚠ Docker test failed, but installation appears complete"
+                fi
             else
-                echo "⚠ Docker test failed, but installation appears complete"
+                # Not root, try with sudo if available
+                if command -v sudo >/dev/null 2>&1; then
+                    if sudo docker run hello-world >/dev/null 2>&1; then
+                        echo "✓ Docker test successful"
+                    else
+                        echo "⚠ Docker test failed, but installation appears complete"
+                    fi
+                else
+                    echo "⚠ Cannot test Docker without sudo, but installation appears complete"
+                fi
             fi
             
             echo ""
-            echo "⚠ IMPORTANT: Docker group membership requires re-login"
-            echo "You may need to:"
-            echo "1. Log out and back in, OR"
-            echo "2. Run: newgrp docker, OR" 
-            echo "3. Restart your SSH session"
-            echo ""
-            echo "After re-login, verify with: docker --version"
-            echo "Then re-run this script with the same --docker flag"
+            if [ "$(id -u)" -eq 0 ] && [ -f /.dockerenv ]; then
+                echo "✓ Running as root in Docker container - no group membership needed"
+                echo "Docker is ready to use immediately"
+            else
+                echo "⚠ IMPORTANT: Docker group membership requires re-login"
+                echo "You may need to:"
+                echo "1. Log out and back in, OR"
+                echo "2. Run: newgrp docker, OR" 
+                echo "3. Restart your SSH session"
+                echo ""
+                echo "After re-login, verify with: docker --version"
+                echo "Then re-run this script with the same --docker flag"
+            fi
             echo ""
             
             # Set DOCKER_MODE to true since we just installed it

@@ -167,9 +167,10 @@ The `setup_env.sh` script now automatically installs Docker when the `--docker` 
 
 ### Important notes:
 
-- **Re-login required**: After installation, you need to log out and back in (or restart SSH session) for group membership to take effect
-- **Sudo access**: Installation requires sudo privileges
+- **Re-login required**: After installation, you need to log out and back in (or restart SSH session) for group membership to take effect (not needed when running as root in container)
+- **Sudo access**: Installation requires sudo privileges (not needed when running as root)
 - **Network access**: Requires internet connection to download Docker
+- **Container support**: Automatically detects and handles Docker-in-Docker scenarios
 
 ## Prerequisites
 
