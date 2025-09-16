@@ -156,16 +156,72 @@ After setup:
    docker exec -it verl-container bash
    ```
 
-2. **Login to Hugging Face:**
+2. **Validate VERL installation:**
+
+   ```bash
+   # Quick validation (built into setup)
+   python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
+   
+   # Comprehensive validation
+   python3 /app/modeling/validate_verl.py
+   ```
+
+3. **Login to Hugging Face:**
 
    ```bash
    huggingface-cli login
    ```
 
-3. **Start training:**
+4. **Start training:**
    ```bash
    # Your VERL training commands here
    ```
+
+## VERL Installation Validation
+
+After installing VERL, you can validate the installation using the provided validation script:
+
+### Quick Validation
+```bash
+python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
+```
+
+### Comprehensive Validation
+```bash
+python3 /app/modeling/validate_verl.py
+```
+
+The validation script checks:
+- ✓ VERL core module import
+- ✓ VERL version information
+- ✓ Key VERL modules (trainer, models, data, utils)
+- ✓ Required dependencies (torch, transformers, datasets, etc.)
+- ✓ GPU availability and CUDA support
+- ✓ Basic VERL functionality
+
+### Expected Output
+```
+=== VERL Installation Validation ===
+
+✓ VERL core imported successfully (version: 0.2.0)
+✓ VERL version: 0.2.0
+
+=== Checking VERL Modules ===
+✓ VERLTrainer imported successfully
+✓ VERLModel imported successfully
+✓ VERL Data utilities imported successfully
+✓ VERL utilities imported successfully
+
+=== Checking Dependencies ===
+✓ PyTorch imported successfully (version: 2.1.0)
+✓ Hugging Face Transformers imported successfully (version: 4.36.0)
+...
+
+=== Validation Summary ===
+✓ VERL installation validation PASSED!
+✓ All core modules are available
+✓ Ready for VERL training!
+```
 
 ## Benefits of Docker Setup
 
@@ -174,3 +230,4 @@ After setup:
 - **Isolation**: No conflicts with host system packages
 - **Reproducibility**: Easy to share exact environment
 - **Easy Cleanup**: Remove container to clean up completely
+- **Built-in Validation**: Automatic installation verification

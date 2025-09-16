@@ -81,7 +81,44 @@ if [ "$DOCKER_MODE" = true ]; then
     echo "=== [Step 3.1] Installing VERL ==="
     pip3 install verl
     
-    echo "=== [Step 3.2] Setting up Megatron (optional) ==="
+    echo "=== [Step 3.2] Validating VERL Installation ==="
+    python3 -c "
+import sys
+try:
+    import verl
+    print('✓ VERL imported successfully')
+    print(f'✓ VERL version: {verl.__version__}')
+    
+    # Test basic functionality
+    from verl import __version__
+    print('✓ VERL version check passed')
+    
+    # Check if key modules are available
+    try:
+        from verl.trainer import VERLTrainer
+        print('✓ VERLTrainer module available')
+    except ImportError as e:
+        print(f'⚠ VERLTrainer import warning: {e}')
+    
+    try:
+        from verl.models import VERLModel
+        print('✓ VERLModel module available')
+    except ImportError as e:
+        print(f'⚠ VERLModel import warning: {e}')
+    
+    print('✓ VERL installation validation completed successfully!')
+    
+except ImportError as e:
+    print(f'✗ VERL import failed: {e}')
+    print('✗ VERL installation validation failed!')
+    sys.exit(1)
+except Exception as e:
+    print(f'✗ VERL validation error: {e}')
+    print('✗ VERL installation validation failed!')
+    sys.exit(1)
+"
+    
+    echo "=== [Step 3.3] Setting up Megatron (optional) ==="
     echo "To set up Megatron for training, run:"
     echo "  cd .."
     echo "  git clone -b core_v0.4.0 https://github.com/NVIDIA/Megatron-LM.git"
