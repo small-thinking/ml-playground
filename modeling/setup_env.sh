@@ -7,11 +7,13 @@ usage() {
     echo "Options:"
     echo "  -e, --email EMAIL    Email address for SSH key generation (required)"
     echo "  -d, --docker         Setup for Docker environment (skip system packages)"
+    echo "  -s, --skip-verl      Skip VERL installation (Docker mode only)"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 --email user@example.com          # Setup with SSH key generation"
-    echo "  $0 -e user@example.com -d            # Docker setup"
+    echo "  $0 -e user@example.com -d            # Docker setup with VERL"
+    echo "  $0 -e user@example.com -d -s         # Docker setup without VERL"
     echo "  $0 -e user@example.com               # Short form"
     exit 1
 }
@@ -19,6 +21,7 @@ usage() {
 # Parse command line arguments
 EMAIL=""
 DOCKER_MODE=false
+SKIP_VERL=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -e|--email)
@@ -27,6 +30,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -d|--docker)
             DOCKER_MODE=true
+            shift
+            ;;
+        -s|--skip-verl)
+            SKIP_VERL=true
             shift
             ;;
         -h|--help)
@@ -76,12 +83,18 @@ echo "=== [Step 3] Setting up Python environment ==="
 pip3 install --upgrade pip
 pip3 install virtualenv ipython
 
-# Install VERL if in Docker mode
-if [ "$DOCKER_MODE" = true ]; then
-    echo "=== [Step 3.1] Installing VERL ==="
+# Install project requirements
+pip install -r requirements.txt
+
+echo "=== [Step 4] Installing Hugging Face CLI ==="
+pip install huggingface_hub[cli]
+
+# Install VERL if in Docker mode (moved to later step)
+if [ "$DOCKER_MODE" = true ] && [ "$SKIP_VERL" = false ]; then
+    echo "=== [Step 5] Installing VERL ==="
     pip3 install verl
     
-    echo "=== [Step 3.2] Validating VERL Installation ==="
+    echo "=== [Step 5.1] Validating VERL Installation ==="
     python3 -c "
 import sys
 try:
@@ -118,7 +131,7 @@ except Exception as e:
     sys.exit(1)
 "
     
-    echo "=== [Step 3.3] Setting up Megatron (optional) ==="
+    echo "=== [Step 5.2] Setting up Megatron (optional) ==="
     echo "To set up Megatron for training, run:"
     echo "  cd .."
     echo "  git clone -b core_v0.4.0 https://github.com/NVIDIA/Megatron-LM.git"
@@ -126,22 +139,21 @@ except Exception as e:
     echo "  cd Megatron-LM && git apply megatron_v4.patch"
     echo "  pip3 install -e ."
     echo "  export PYTHONPATH=\$PYTHONPATH:\$(pwd)"
+elif [ "$DOCKER_MODE" = true ] && [ "$SKIP_VERL" = true ]; then
+    echo "=== [Step 5] Skipping VERL Installation ==="
+    echo "VERL installation skipped. To install VERL later, run:"
+    echo "  pip3 install verl"
+    echo "  python3 /app/modeling/validate_verl.py"
 fi
 
-# Install project requirements
-pip install -r requirements.txt
-
-echo "=== [Step 3.5] Installing Hugging Face CLI ==="
-pip install huggingface_hub[cli]
-
-echo "=== [Step 4] Installing oh-my-bash ==="
+echo "=== [Step 6] Installing oh-my-bash ==="
 if [ ! -d "$HOME/.oh-my-bash" ]; then
   git clone https://github.com/ohmybash/oh-my-bash.git ~/.oh-my-bash
   cp ~/.oh-my-bash/templates/bashrc.osh-template ~/.bashrc
   sed -i 's/^OSH_THEME=.*/OSH_THEME="font"/' ~/.bashrc
 fi
 
-echo "=== [Step 5] Configuring Git ==="
+echo "=== [Step 7] Configuring Git ==="
 # Replace the values below with your identity if needed
 git config --global user.name "Yexi Jiang"
 git config --global user.email "2237303+yxjiang@users.noreply.github.com"
@@ -149,7 +161,7 @@ git config --global init.defaultBranch main
 git config --global core.editor vim
 git config --global color.ui auto
 
-echo "=== [Step 6] Setting up SSH ==="
+echo "=== [Step 8] Setting up SSH ==="
 # Create SSH directory and set permissions
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
@@ -173,15 +185,15 @@ echo "3. Copy the public key above and paste it"
 echo ""
 
 if [ "$DOCKER_MODE" = false ]; then
-    echo "=== [Step 7] Install Ollama ==="
+    echo "=== [Step 9] Install Ollama ==="
     curl -fsSL https://ollama.com/install.sh | sh
     ollama serve &
 else
-    echo "=== [Step 7] Skipping Ollama installation (Docker mode) ==="
+    echo "=== [Step 9] Skipping Ollama installation (Docker mode) ==="
     echo "Ollama can be installed separately if needed"
 fi
 
-echo "=== [Step 8] Setting up workspace directories ==="
+echo "=== [Step 10] Setting up workspace directories ==="
 # Create workspace directories (use /workspace for Docker, ~/workspace for local)
 if [ "$DOCKER_MODE" = true ]; then
     WORKSPACE_BASE="/workspace"
@@ -224,9 +236,15 @@ if [ "$DOCKER_MODE" = true ]; then
     echo "Docker setup complete! Next steps:"
     echo "1. Login to Hugging Face: huggingface-cli login"
     echo "2. Add your SSH key to GitHub/GitLab (see instructions above)"
-    echo "3. For VERL training, use the provided Docker commands:"
+    if [ "$SKIP_VERL" = true ]; then
+        echo "3. Install VERL when ready: pip3 install verl"
+        echo "4. Validate VERL: python3 /app/modeling/validate_verl.py"
+    else
+        echo "3. VERL is already installed and validated!"
+    fi
+    echo "5. For VERL training, use the provided Docker commands:"
     echo "   - Example: docker run --runtime=nvidia -it --rm --shm-size=\"10g\" --cap-add=SYS_ADMIN verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3"
-    echo "4. Mount your workspace: -v $WORKSPACE_BASE:/workspace"
+    echo "6. Mount your workspace: -v $WORKSPACE_BASE:/workspace"
 else
     echo "Next steps:"
     echo "1. Login to Hugging Face: huggingface-cli login"

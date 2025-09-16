@@ -9,12 +9,14 @@ usage() {
     echo "  -i, --image IMAGE    VERL Docker image (default: verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3)"
     echo "  -w, --workspace DIR  Local workspace directory (default: ./workspace)"
     echo "  -n, --name NAME      Container name (default: verl-container)"
+    echo "  -s, --skip-verl      Skip VERL installation during setup"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 --email user@example.com"
     echo "  $0 -e user@example.com -w /path/to/workspace"
     echo "  $0 -e user@example.com -i verlai/verl:latest"
+    echo "  $0 -e user@example.com -s  # Skip VERL installation"
     exit 1
 }
 
@@ -23,6 +25,7 @@ EMAIL=""
 VERL_IMAGE="verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3"
 WORKSPACE_DIR="./workspace"
 CONTAINER_NAME="verl-container"
+SKIP_VERL=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -42,6 +45,10 @@ while [[ $# -gt 0 ]]; do
         -n|--name)
             CONTAINER_NAME="$2"
             shift 2
+            ;;
+        -s|--skip-verl)
+            SKIP_VERL=true
+            shift
             ;;
         -h|--help)
             usage
@@ -113,10 +120,17 @@ echo "Container ID: $(docker ps -q -f name=$CONTAINER_NAME)"
 echo ""
 
 echo "=== Setting up environment inside container ==="
-docker exec "$CONTAINER_NAME" bash -c "
-    cd /app/modeling && 
-    bash setup_env.sh --email '$EMAIL' --docker
-"
+if [ "$SKIP_VERL" = true ]; then
+    docker exec "$CONTAINER_NAME" bash -c "
+        cd /app/modeling && 
+        bash setup_env.sh --email '$EMAIL' --docker --skip-verl
+    "
+else
+    docker exec "$CONTAINER_NAME" bash -c "
+        cd /app/modeling && 
+        bash setup_env.sh --email '$EMAIL' --docker
+    "
+fi
 
 echo ""
 echo "=== Setup Complete! ==="

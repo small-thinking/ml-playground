@@ -13,6 +13,11 @@ cd modeling
 ./docker_setup.sh --email your-email@example.com
 ```
 
+**Skip VERL installation** (useful for basic environment setup first):
+```bash
+./docker_setup.sh --email your-email@example.com --skip-verl
+```
+
 ### Option 2: Manual Setup
 
 1. **Pull the VERL Docker image:**
@@ -36,6 +41,11 @@ cd modeling
    cd /app/modeling
    bash setup_env.sh --email your-email@example.com --docker
    ```
+   
+   **Skip VERL installation:**
+   ```bash
+   bash setup_env.sh --email your-email@example.com --docker --skip-verl
+   ```
 
 ## Updated setup_env.sh Features
 
@@ -44,7 +54,8 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 ### Key Changes:
 
 - **Docker Mode**: Skip system package installation (handled by Docker image)
-- **VERL Installation**: Automatically install VERL when in Docker mode
+- **VERL Installation**: Automatically install VERL when in Docker mode (moved to Step 5)
+- **Skip VERL Option**: Option to skip VERL installation for basic environment setup
 - **Workspace Paths**: Use `/workspace` for Docker, `~/workspace` for local
 - **Environment Variables**: Add VERL-specific CUDA and NCCL settings
 - **Megatron Setup**: Provide instructions for optional Megatron installation
@@ -55,8 +66,11 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 # Local setup (original behavior)
 bash setup_env.sh --email your-email@example.com
 
-# Docker setup (new)
+# Docker setup with VERL
 bash setup_env.sh --email your-email@example.com --docker
+
+# Docker setup without VERL (basic environment only)
+bash setup_env.sh --email your-email@example.com --docker --skip-verl
 ```
 
 ## Docker Setup Script Options
@@ -71,6 +85,7 @@ Options:
   -i, --image IMAGE    VERL Docker image (default: verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3)
   -w, --workspace DIR  Local workspace directory (default: ./workspace)
   -n, --name NAME      Container name (default: verl-container)
+  -s, --skip-verl      Skip VERL installation during setup
   -h, --help          Show this help message
 ```
 
@@ -161,7 +176,7 @@ After setup:
    ```bash
    # Quick validation (built into setup)
    python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
-   
+
    # Comprehensive validation
    python3 /app/modeling/validate_verl.py
    ```
@@ -182,16 +197,19 @@ After setup:
 After installing VERL, you can validate the installation using the provided validation script:
 
 ### Quick Validation
+
 ```bash
 python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
 ```
 
 ### Comprehensive Validation
+
 ```bash
 python3 /app/modeling/validate_verl.py
 ```
 
 The validation script checks:
+
 - ✓ VERL core module import
 - ✓ VERL version information
 - ✓ Key VERL modules (trainer, models, data, utils)
@@ -200,6 +218,7 @@ The validation script checks:
 - ✓ Basic VERL functionality
 
 ### Expected Output
+
 ```
 === VERL Installation Validation ===
 
