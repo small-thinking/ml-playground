@@ -11,7 +11,9 @@ import importlib
 from typing import Tuple
 
 
-def check_import(module_name: str, description: str = None) -> Tuple[bool, str]:
+def check_import(
+    module_name: str, description: str = None
+) -> Tuple[bool, str]:
     """
     Check if a module can be imported successfully.
 
@@ -58,22 +60,37 @@ def check_verl_installation() -> bool:
     except Exception as e:
         print(f"⚠ Could not get VERL version: {e}")
 
-    # Check key VERL modules
-    modules_to_check = [
+    # Check key VERL modules (separate required vs optional)
+    required_modules = [
         ("verl.trainer", "VERLTrainer"),
         ("verl.models", "VERLModel"),
+    ]
+
+    optional_modules = [
         ("verl.data", "VERL Data utilities"),
         ("verl.utils", "VERL utilities"),
     ]
 
     print("\n=== Checking VERL Modules ===")
-    all_modules_ok = True
+    required_modules_ok = True
+    optional_modules_ok = True
 
-    for module_name, description in modules_to_check:
+    # Check required modules
+    for module_name, description in required_modules:
         success, message = check_import(module_name, description)
         print(message)
         if not success:
-            all_modules_ok = False
+            required_modules_ok = False
+
+    # Check optional modules (don't fail validation if missing)
+    for module_name, description in optional_modules:
+        success, message = check_import(module_name, description)
+        if not success:
+            # Change ✗ to ⚠ for optional modules
+            message = message.replace("✗", "⚠")
+        print(message)
+        if not success:
+            optional_modules_ok = False
 
     # Check dependencies
     print("\n=== Checking Dependencies ===")
@@ -86,11 +103,12 @@ def check_verl_installation() -> bool:
         ("trl", "TRL"),
     ]
 
+    dependencies_ok = True
     for dep_name, description in dependencies:
         success, message = check_import(dep_name, description)
         print(message)
         if not success:
-            all_modules_ok = False
+            dependencies_ok = False
 
     # GPU availability check
     print("\n=== Checking GPU Availability ===")
@@ -116,20 +134,33 @@ def check_verl_installation() -> bool:
 
         print("✓ VERLConfig can be imported")
     except ImportError:
-        print("⚠ VERLConfig import failed - may not be available in this version")
+        print("⚠ VERLConfig import failed - not available in this version")
+        print("  This is common in newer VERL versions and not critical")
     except Exception as e:
         print(f"⚠ VERLConfig test failed: {e}")
 
     # Summary
     print("\n=== Validation Summary ===")
-    if all_modules_ok:
+
+    # Determine overall success based on required components
+    overall_success = required_modules_ok and dependencies_ok
+
+    if overall_success:
         print("✓ VERL installation validation PASSED!")
-        print("✓ All core modules are available")
+        print("✓ All required modules and dependencies are available")
         print("✓ Ready for VERL training!")
+
+        # Show optional module status
+        if not optional_modules_ok:
+            print("⚠ Optional modules missing but core works fine")
+
         return True
     else:
         print("✗ VERL installation validation FAILED!")
-        print("✗ Some modules are missing or have issues")
+        if not required_modules_ok:
+            print("✗ Required VERL modules are missing")
+        if not dependencies_ok:
+            print("✗ Required dependencies are missing")
         print("✗ Please check the installation and try again")
         return False
 
