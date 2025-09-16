@@ -6,18 +6,19 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
     echo "  -e, --email EMAIL    Email address for SSH key generation (required)"
-    echo "  -d, --docker         Setup for Docker environment (auto-detects if Docker available)"
+    echo "  -d, --docker         Setup for Docker environment (auto-installs Docker if not available)"
     echo "  -s, --skip-verl      Skip VERL installation (Docker mode only)"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 --email user@example.com          # Auto-detect environment and setup"
-    echo "  $0 -e user@example.com -d            # Force Docker setup (if available)"
+    echo "  $0 -e user@example.com -d            # Force Docker setup (auto-installs if needed)"
     echo "  $0 -e user@example.com -d -s         # Docker setup without VERL"
     echo "  $0 -e user@example.com               # Short form"
     echo ""
     echo "Features:"
     echo "  • Auto-detects Docker availability and remote/local environment"
+    echo "  • Auto-installs Docker with GPU support when --docker flag is used"
     echo "  • Preserves existing SSH keys (won't overwrite)"
     echo "  • Provides environment-specific guidance and next steps"
     exit 1
@@ -71,10 +72,67 @@ if command -v docker >/dev/null 2>&1; then
     DOCKER_AVAILABLE=true
     echo "✓ Docker detected and available"
 else
-    echo "⚠ Docker not found - will use local installation mode"
+    echo "⚠ Docker not found"
     if [ "$DOCKER_MODE" = true ]; then
-        echo "Note: --docker flag specified but Docker not available, switching to local mode"
-        DOCKER_MODE=false
+        echo "=== Installing Docker (--docker flag specified) ==="
+        echo "Installing Docker on this system..."
+        
+        # Install Docker using the official script
+        curl -fsSL https://get.docker.com | sh
+        
+        # Add current user to docker group
+        echo "Adding user to docker group..."
+        sudo usermod -aG docker $USER
+        
+        # Start and enable Docker service
+        echo "Starting Docker service..."
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # Install nvidia-docker2 for GPU support
+        echo "Installing nvidia-docker2 for GPU support..."
+        distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+        curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+        curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+        sudo apt-get update
+        sudo apt-get install -y nvidia-docker2
+        sudo systemctl restart docker
+        
+        # Verify Docker installation
+        echo "Verifying Docker installation..."
+        if command -v docker >/dev/null 2>&1; then
+            DOCKER_AVAILABLE=true
+            echo "✓ Docker installed successfully"
+            echo "✓ Docker version: $(docker --version)"
+            
+            # Test Docker with hello-world
+            echo "Testing Docker with hello-world..."
+            if sudo docker run hello-world >/dev/null 2>&1; then
+                echo "✓ Docker test successful"
+            else
+                echo "⚠ Docker test failed, but installation appears complete"
+            fi
+            
+            echo ""
+            echo "⚠ IMPORTANT: Docker group membership requires re-login"
+            echo "You may need to:"
+            echo "1. Log out and back in, OR"
+            echo "2. Run: newgrp docker, OR" 
+            echo "3. Restart your SSH session"
+            echo ""
+            echo "After re-login, verify with: docker --version"
+            echo "Then re-run this script with the same --docker flag"
+            echo ""
+            
+            # Set DOCKER_MODE to true since we just installed it
+            DOCKER_MODE=true
+        else
+            echo "✗ Docker installation failed"
+            echo "Falling back to local installation mode"
+            DOCKER_MODE=false
+        fi
+    else
+        echo "Will use local installation mode"
     fi
 fi
 
@@ -88,7 +146,7 @@ elif [ -n "$TMUX" ] || [ -n "$TERM_PROGRAM" ]; then
 fi
 
 # Provide environment-specific guidance
-if [ "$ENVIRONMENT_TYPE" = "remote" ] && [ "$DOCKER_AVAILABLE" = false ]; then
+if [ "$ENVIRONMENT_TYPE" = "remote" ] && [ "$DOCKER_AVAILABLE" = false ] && [ "$DOCKER_MODE" = false ]; then
     echo ""
     echo "=== Remote VM Setup Detected ==="
     echo "You're running on a remote VM without Docker. This setup will:"
@@ -97,7 +155,7 @@ if [ "$ENVIRONMENT_TYPE" = "remote" ] && [ "$DOCKER_AVAILABLE" = false ]; then
     echo "• Configure SSH keys and Git"
     echo ""
     echo "For Docker-based setup, you can:"
-    echo "1. Install Docker on this VM: curl -fsSL https://get.docker.com | sh"
+    echo "1. Re-run with --docker flag: $0 --email $EMAIL --docker"
     echo "2. Run Docker commands from your local machine"
     echo "3. Continue with this local installation (recommended for VMs)"
     echo ""
@@ -314,9 +372,9 @@ else
         echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
         echo ""
         echo "4. To use Docker on this VM later:"
-        echo "   - Install Docker: curl -fsSL https://get.docker.com | sh"
-        echo "   - Add user to docker group: sudo usermod -aG docker \$USER"
-        echo "   - Log out and back in, then run: ./docker_setup.sh --email $EMAIL"
+        echo "   - Run: $0 --email $EMAIL --docker (auto-installs Docker)"
+        echo "   - Or manually: curl -fsSL https://get.docker.com | sh"
+        echo "   - Then: ./docker_setup.sh --email $EMAIL"
     else
         echo "3. Start training:"
         echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"

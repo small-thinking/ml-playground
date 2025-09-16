@@ -14,7 +14,8 @@ bash setup_env.sh --email your-email@example.com
 ```
 
 **What it detects:**
-- ✓ Docker availability (switches to local mode if Docker not found)
+
+- ✓ Docker availability (auto-installs Docker if --docker flag used and Docker not found)
 - ✓ Remote vs local environment (SSH session detection)
 - ✓ Existing SSH keys (preserves them, won't overwrite)
 - ✓ Provides environment-specific guidance
@@ -72,6 +73,7 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 ### Key Changes:
 
 - **Auto-Detection**: Automatically detects Docker availability and environment type
+- **Auto-Installation**: Automatically installs Docker with GPU support when --docker flag is used
 - **Docker Mode**: Skip system package installation (handled by Docker image)
 - **VERL Installation**: Automatically install VERL when in Docker mode (moved to Step 5)
 - **Skip VERL Option**: Option to skip VERL installation for basic environment setup
@@ -87,10 +89,10 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 # Local setup (original behavior)
 bash setup_env.sh --email your-email@example.com
 
-# Docker setup with VERL
+# Docker setup with VERL (auto-installs Docker if needed)
 bash setup_env.sh --email your-email@example.com --docker
 
-# Docker setup without VERL (basic environment only)
+# Docker setup without VERL (basic environment only, auto-installs Docker if needed)
 bash setup_env.sh --email your-email@example.com --docker --skip-verl
 ```
 
@@ -144,11 +146,37 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 ```
 
+## Auto-Installation Feature
+
+The `setup_env.sh` script now automatically installs Docker when the `--docker` flag is used but Docker is not available:
+
+### What it installs:
+
+- **Docker Engine**: Latest stable version
+- **nvidia-docker2**: GPU support for Docker containers
+- **User permissions**: Adds current user to docker group
+- **Service configuration**: Starts and enables Docker service
+
+### Installation process:
+
+1. Downloads and installs Docker using official script
+2. Adds user to docker group for permission management
+3. Installs nvidia-docker2 for GPU acceleration
+4. Configures and starts Docker service
+5. Verifies installation with hello-world test
+
+### Important notes:
+
+- **Re-login required**: After installation, you need to log out and back in (or restart SSH session) for group membership to take effect
+- **Sudo access**: Installation requires sudo privileges
+- **Network access**: Requires internet connection to download Docker
+
 ## Prerequisites
 
-1. **Docker**: Install Docker with NVIDIA support
-2. **nvidia-docker2**: For GPU acceleration
+1. **Docker**: Install Docker with NVIDIA support (or use auto-installation)
+2. **nvidia-docker2**: For GPU acceleration (auto-installed with --docker flag)
 3. **NVIDIA Drivers**: Compatible with your GPU
+4. **Sudo access**: Required for Docker installation
 
 ## Troubleshooting
 
@@ -166,10 +194,19 @@ sudo systemctl restart docker
 ### Permission Issues
 
 ```bash
-# Add user to docker group
+# Add user to docker group (auto-handled by setup script)
 sudo usermod -aG docker $USER
 # Log out and back in
 ```
+
+### Docker Not Found After Auto-Installation
+
+If you still get "docker: command not found" after running with `--docker` flag:
+
+1. **Check if installation completed**: Look for "✓ Docker installed successfully" message
+2. **Re-login required**: Log out and back in to activate docker group membership
+3. **Verify manually**: Run `docker --version` after re-login
+4. **Re-run setup**: Run the setup script again with the same `--docker` flag
 
 ### Container Won't Start
 
