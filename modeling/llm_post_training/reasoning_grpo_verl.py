@@ -42,18 +42,47 @@ from typing import List, Optional
 from datasets import load_dataset
 from peft import LoraConfig
 
-# VERL imports
+# VERL imports - try different import paths for different VERL versions
+VERL_AVAILABLE = False
+VERL_TRAINER_AVAILABLE = False
+
 try:
-    from verl.trainer.config.hybrid_entrypoint import HybridEngineEntrypointConfig
-    from verl.trainer.config.algorithm import AlgoConfig
-    from verl.trainer.config.config import CriticConfig
-    from omegaconf import DictConfig
+    # Try the main VERL import first
+    import verl
 
     VERL_AVAILABLE = True
+    print(f"✅ VERL {verl.__version__} imported successfully")
+
+    # Try to import trainer components
+    try:
+        from verl.trainer.config.hybrid_entrypoint import HybridEngineEntrypointConfig
+        from verl.trainer.config.algorithm import AlgoConfig
+        from verl.trainer.config.config import CriticConfig
+        from omegaconf import DictConfig
+
+        VERL_TRAINER_AVAILABLE = True
+        print("✅ VERL trainer config components imported")
+    except ImportError as e:
+        print(f"⚠ VERL trainer config import failed: {e}")
+
+    # Try to import trainer class
+    try:
+        from verl.trainer.trainer import Trainer
+
+        print("✅ VERL Trainer class imported")
+    except ImportError as e:
+        print(f"⚠ VERL Trainer import failed: {e}")
+        # Try alternative import paths
+        try:
+            from verl.trainer import Trainer
+
+            print("✅ VERL Trainer imported from alternative path")
+        except ImportError:
+            print("⚠ VERL Trainer not available in any path")
+
 except ImportError as e:
-    print(f"⚠ VERL import failed: {e}")
+    print(f"❌ VERL import failed: {e}")
     print("Please ensure VERL is properly installed: pip install verl")
-    VERL_AVAILABLE = False
 
 
 class ReasoningGRPOTrainerVERL:
@@ -101,10 +130,34 @@ class ReasoningGRPOTrainerVERL:
         self.index = {}
         self.step_counter = 0
 
-        # Setup workspace directories
-        self.workspace_dir = os.environ.get(
-            "WORKSPACE_DIR", os.path.expanduser("~/verl_workspace")
-        )
+        # Setup workspace directories - prioritize remote VM paths
+        # Check common remote VM workspace locations
+        possible_workspace_dirs = [
+            os.environ.get("WORKSPACE_DIR"),
+            "/root/workspace",  # Common remote VM path
+            "/workspace",  # Alternative remote VM path
+            os.path.expanduser("~/verl_workspace"),  # Local fallback
+            os.path.expanduser("~/workspace"),  # Local fallback
+        ]
+
+        self.workspace_dir = None
+        for workspace_dir in possible_workspace_dirs:
+            if workspace_dir and os.path.exists(workspace_dir):
+                try:
+                    # Test if we can write to this directory
+                    test_file = os.path.join(workspace_dir, ".test_write")
+                    with open(test_file, "w") as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    self.workspace_dir = workspace_dir
+                    break
+                except (OSError, PermissionError):
+                    continue
+
+        # If no writable directory found, use home directory
+        if not self.workspace_dir:
+            self.workspace_dir = os.path.expanduser("~/verl_workspace")
+            print(f"⚠️  Using fallback workspace directory: {self.workspace_dir}")
         self.models_dir = os.path.join(self.workspace_dir, "models")
         self.data_dir = os.path.join(self.workspace_dir, "data")
         self.cache_dir = os.path.join(self.workspace_dir, "cache")
@@ -588,25 +641,77 @@ class ReasoningGRPOTrainerVERL:
         if lora_config:
             print("🔧 LoRA configuration available")
 
-        # Start training using VERL main function
+        # Start training using VERL trainer
         print("🚀 Starting VERL GRPO training...")
-        from verl.trainer.main_ppo import main
 
-        # Note: The reward function will need to be handled separately
-        # as OmegaConf cannot serialize Python functions
-        print("⚠️  Note: Reward function needs to be configured separately in VERL")
-        print("   The current script structure may need adjustment for the remote VM")
-
-        # For now, let's just print the config to see if it's valid
+        # Print configuration details
         print("📋 VERL Configuration created successfully!")
         print(f"   Algorithm: {verl_config.algorithm.adv_estimator}")
         print(f"   Model: {verl_config.critic.model.get('path', 'Not set')}")
         print(f"   Output dir: {verl_config.trainer.output_dir}")
+        print(f"   Max steps: {verl_config.trainer.max_steps}")
+        print(f"   Batch size: " f"{verl_config.trainer.per_device_train_batch_size}")
+        print(
+            f"   Gradient accumulation: "
+            f"{verl_config.trainer.gradient_accumulation_steps}"
+        )
 
-        # Uncomment the line below when ready to run training
-        # main(verl_config)
+        # Run the actual VERL training
+        try:
+            print("🔄 Starting actual VERL training...")
 
-        print("✅ VERL GRPO training completed successfully!")
+            if not VERL_TRAINER_AVAILABLE:
+                print("❌ VERL trainer components not available")
+                print("Falling back to configuration-only mode")
+                print("📋 VERL Configuration created successfully!")
+                print(f"   Algorithm: {verl_config.algorithm.adv_estimator}")
+                print(f"   Model: {verl_config.critic.model.get('path', 'Not set')}")
+                print(f"   Output dir: {verl_config.trainer.output_dir}")
+                print("⚠️  Note: Actual training requires proper VERL trainer setup")
+                return
+
+            # Try to create VERL trainer with proper configuration
+            try:
+                trainer = Trainer(
+                    config=verl_config,
+                    reward_fn=self.reward_function,
+                    train_dataset=self.dataset,
+                )
+
+                # Start training
+                print("🚀 Starting VERL trainer...")
+                trainer.train()
+                print("✅ VERL GRPO training completed successfully!")
+
+            except Exception as trainer_error:
+                print(f"⚠️  VERL Trainer creation failed: {trainer_error}")
+                print("This might be due to API changes in VERL version")
+                print("Falling back to configuration validation mode")
+
+                # Fallback: just validate the configuration
+                print("📋 VERL Configuration validation:")
+                print(f"   Algorithm: {verl_config.algorithm.adv_estimator}")
+                print(f"   Model: {verl_config.critic.model.get('path', 'Not set')}")
+                print(f"   Output dir: {verl_config.trainer.output_dir}")
+                print(f"   Max steps: {verl_config.trainer.max_steps}")
+                print(
+                    f"   Batch size: {verl_config.trainer.per_device_train_batch_size}"
+                )
+                print(
+                    "⚠️  Note: Training requires proper VERL trainer setup on remote VM"
+                )
+
+        except Exception as e:
+            print(f"❌ VERL training setup failed: {e}")
+            print(
+                "This might be due to missing reward function integration "
+                "or dataset configuration."
+            )
+            print(f"Error details: {str(e)}")
+            print(
+                "💡 Suggestion: Check VERL installation and API compatibility on remote VM"
+            )
+            raise
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -673,6 +778,8 @@ def main():
     """Main entry point for the VERL training script."""
     if not VERL_AVAILABLE:
         print("❌ VERL is not available. Please install it with: pip install verl")
+        print("💡 Suggestion: Use the TRL-based implementation instead:")
+        print("   python reasoning_grpo.py --model-size 1.5B --use-lora")
         return
 
     # Parse command-line arguments
