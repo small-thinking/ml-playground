@@ -11,9 +11,7 @@ import importlib
 from typing import Tuple
 
 
-def check_import(
-    module_name: str, description: str = None
-) -> Tuple[bool, str]:
+def check_import(module_name: str, description: str = None) -> Tuple[bool, str]:
     """
     Check if a module can be imported successfully.
 
@@ -26,7 +24,7 @@ def check_import(
     """
     try:
         module = importlib.import_module(module_name)
-        version = getattr(module, '__version__', 'unknown')
+        version = getattr(module, "__version__", "unknown")
         desc = description or module_name
         return True, f"✓ {desc} imported successfully (version: {version})"
     except ImportError as e:
@@ -55,6 +53,7 @@ def check_verl_installation() -> bool:
     # Get VERL version
     try:
         import verl
+
         print(f"✓ VERL version: {verl.__version__}")
     except Exception as e:
         print(f"⚠ Could not get VERL version: {e}")
@@ -97,6 +96,7 @@ def check_verl_installation() -> bool:
     print("\n=== Checking GPU Availability ===")
     try:
         import torch
+
         if torch.cuda.is_available():
             gpu_count = torch.cuda.device_count()
             current_device = torch.cuda.current_device()
@@ -113,11 +113,10 @@ def check_verl_installation() -> bool:
     try:
         # Try to create a basic VERL configuration
         from verl.config import VERLConfig  # noqa: F401
+
         print("✓ VERLConfig can be imported")
     except ImportError:
-        print(
-            "⚠ VERLConfig import failed - may not be available in this version"
-        )
+        print("⚠ VERLConfig import failed - may not be available in this version")
     except Exception as e:
         print(f"⚠ VERLConfig test failed: {e}")
 
