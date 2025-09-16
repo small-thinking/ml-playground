@@ -11,9 +11,7 @@ import importlib
 from typing import Tuple
 
 
-def check_import(
-    module_name: str, description: str = None
-) -> Tuple[bool, str]:
+def check_import(module_name: str, description: str = None) -> Tuple[bool, str]:
     """
     Check if a module can be imported successfully.
 
