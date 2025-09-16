@@ -6,15 +6,20 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
     echo "  -e, --email EMAIL    Email address for SSH key generation (required)"
-    echo "  -d, --docker         Setup for Docker environment (skip system packages)"
+    echo "  -d, --docker         Setup for Docker environment (auto-detects if Docker available)"
     echo "  -s, --skip-verl      Skip VERL installation (Docker mode only)"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 --email user@example.com          # Setup with SSH key generation"
-    echo "  $0 -e user@example.com -d            # Docker setup with VERL"
+    echo "  $0 --email user@example.com          # Auto-detect environment and setup"
+    echo "  $0 -e user@example.com -d            # Force Docker setup (if available)"
     echo "  $0 -e user@example.com -d -s         # Docker setup without VERL"
     echo "  $0 -e user@example.com               # Short form"
+    echo ""
+    echo "Features:"
+    echo "  • Auto-detects Docker availability and remote/local environment"
+    echo "  • Preserves existing SSH keys (won't overwrite)"
+    echo "  • Provides environment-specific guidance and next steps"
     exit 1
 }
 
@@ -58,6 +63,44 @@ if [[ ! "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
     echo "Error: Invalid email format: $EMAIL"
     echo "Please provide a valid email address"
     exit 1
+fi
+
+# Check if Docker is available
+DOCKER_AVAILABLE=false
+if command -v docker >/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+    echo "✓ Docker detected and available"
+else
+    echo "⚠ Docker not found - will use local installation mode"
+    if [ "$DOCKER_MODE" = true ]; then
+        echo "Note: --docker flag specified but Docker not available, switching to local mode"
+        DOCKER_MODE=false
+    fi
+fi
+
+# Detect environment type
+ENVIRONMENT_TYPE="local"
+if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
+    ENVIRONMENT_TYPE="remote"
+    echo "✓ Remote environment detected (SSH session)"
+elif [ -n "$TMUX" ] || [ -n "$TERM_PROGRAM" ]; then
+    echo "✓ Local environment detected"
+fi
+
+# Provide environment-specific guidance
+if [ "$ENVIRONMENT_TYPE" = "remote" ] && [ "$DOCKER_AVAILABLE" = false ]; then
+    echo ""
+    echo "=== Remote VM Setup Detected ==="
+    echo "You're running on a remote VM without Docker. This setup will:"
+    echo "• Install packages locally on the VM"
+    echo "• Set up Python environment directly"
+    echo "• Configure SSH keys and Git"
+    echo ""
+    echo "For Docker-based setup, you can:"
+    echo "1. Install Docker on this VM: curl -fsSL https://get.docker.com | sh"
+    echo "2. Run Docker commands from your local machine"
+    echo "3. Continue with this local installation (recommended for VMs)"
+    echo ""
 fi
 
 if [ "$DOCKER_MODE" = true ]; then
@@ -166,23 +209,38 @@ echo "=== [Step 8] Setting up SSH ==="
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 
-echo "Generating SSH key with email: $EMAIL"
-# Generate SSH key non-interactively
-ssh-keygen -t ed25519 -C "$EMAIL" -f ~/.ssh/id_ed25519 -N ""
-chmod 600 ~/.ssh/id_ed25519
-chmod 644 ~/.ssh/id_ed25519.pub
+# Check if SSH key already exists
+if [ -f ~/.ssh/id_ed25519 ] && [ -f ~/.ssh/id_ed25519.pub ]; then
+    echo "✓ SSH key already exists, skipping generation"
+    echo "Existing public key:"
+    echo "----------------------------------------"
+    cat ~/.ssh/id_ed25519.pub
+    echo "----------------------------------------"
+    echo ""
+    echo "If you need to add this key to GitHub/GitLab:"
+    echo "1. Go to GitHub Settings > SSH and GPG keys"
+    echo "2. Click 'New SSH key'"
+    echo "3. Copy the public key above and paste it"
+    echo ""
+else
+    echo "Generating SSH key with email: $EMAIL"
+    # Generate SSH key non-interactively
+    ssh-keygen -t ed25519 -C "$EMAIL" -f ~/.ssh/id_ed25519 -N ""
+    chmod 600 ~/.ssh/id_ed25519
+    chmod 644 ~/.ssh/id_ed25519.pub
 
-echo "SSH key generated successfully!"
-echo "Public key (add this to GitHub/GitLab):"
-echo "----------------------------------------"
-cat ~/.ssh/id_ed25519.pub
-echo "----------------------------------------"
-echo ""
-echo "To add this key to GitHub:"
-echo "1. Go to GitHub Settings > SSH and GPG keys"
-echo "2. Click 'New SSH key'"
-echo "3. Copy the public key above and paste it"
-echo ""
+    echo "SSH key generated successfully!"
+    echo "Public key (add this to GitHub/GitLab):"
+    echo "----------------------------------------"
+    cat ~/.ssh/id_ed25519.pub
+    echo "----------------------------------------"
+    echo ""
+    echo "To add this key to GitHub:"
+    echo "1. Go to GitHub Settings > SSH and GPG keys"
+    echo "2. Click 'New SSH key'"
+    echo "3. Copy the public key above and paste it"
+    echo ""
+fi
 
 if [ "$DOCKER_MODE" = false ]; then
     echo "=== [Step 9] Install Ollama ==="
@@ -246,10 +304,22 @@ if [ "$DOCKER_MODE" = true ]; then
     echo "   - Example: docker run --runtime=nvidia -it --rm --shm-size=\"10g\" --cap-add=SYS_ADMIN verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3"
     echo "6. Mount your workspace: -v $WORKSPACE_BASE:/workspace"
 else
-    echo "Next steps:"
+    echo "Setup complete! Next steps:"
     echo "1. Login to Hugging Face: huggingface-cli login"
     echo "2. Add your SSH key to GitHub/GitLab (see instructions above)"
-    echo "3. Start training:"
-    echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"
-    echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
+    
+    if [ "$ENVIRONMENT_TYPE" = "remote" ]; then
+        echo "3. For remote VM training:"
+        echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"
+        echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
+        echo ""
+        echo "4. To use Docker on this VM later:"
+        echo "   - Install Docker: curl -fsSL https://get.docker.com | sh"
+        echo "   - Add user to docker group: sudo usermod -aG docker \$USER"
+        echo "   - Log out and back in, then run: ./docker_setup.sh --email $EMAIL"
+    else
+        echo "3. Start training:"
+        echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"
+        echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
+    fi
 fi

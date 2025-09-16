@@ -4,6 +4,21 @@ This guide explains how to set up and use VERL with Docker for your ML playgroun
 
 ## Quick Start
 
+### Option 0: Auto-Detection Setup (Recommended for Remote VMs)
+
+The script now automatically detects your environment and adapts accordingly:
+
+```bash
+cd modeling
+bash setup_env.sh --email your-email@example.com
+```
+
+**What it detects:**
+- ✓ Docker availability (switches to local mode if Docker not found)
+- ✓ Remote vs local environment (SSH session detection)
+- ✓ Existing SSH keys (preserves them, won't overwrite)
+- ✓ Provides environment-specific guidance
+
 ### Option 1: Automated Setup (Recommended)
 
 Use the provided `docker_setup.sh` script for automated setup:
@@ -14,6 +29,7 @@ cd modeling
 ```
 
 **Skip VERL installation** (useful for basic environment setup first):
+
 ```bash
 ./docker_setup.sh --email your-email@example.com --skip-verl
 ```
@@ -37,12 +53,14 @@ cd modeling
    ```
 
 3. **Setup environment inside container:**
+
    ```bash
    cd /app/modeling
    bash setup_env.sh --email your-email@example.com --docker
    ```
-   
+
    **Skip VERL installation:**
+
    ```bash
    bash setup_env.sh --email your-email@example.com --docker --skip-verl
    ```
@@ -53,9 +71,12 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 
 ### Key Changes:
 
+- **Auto-Detection**: Automatically detects Docker availability and environment type
 - **Docker Mode**: Skip system package installation (handled by Docker image)
 - **VERL Installation**: Automatically install VERL when in Docker mode (moved to Step 5)
 - **Skip VERL Option**: Option to skip VERL installation for basic environment setup
+- **SSH Key Preservation**: Won't overwrite existing SSH keys
+- **Remote VM Support**: Detects remote environments and provides appropriate guidance
 - **Workspace Paths**: Use `/workspace` for Docker, `~/workspace` for local
 - **Environment Variables**: Add VERL-specific CUDA and NCCL settings
 - **Megatron Setup**: Provide instructions for optional Megatron installation
