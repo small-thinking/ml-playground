@@ -1,164 +1,284 @@
-# VERL-based GRPO Training
+# VERL-based GRPO Training for Reasoning Tasks
 
-This directory now includes a VERL-based implementation of GRPO (Generative Reward-Powered Optimization) training for reasoning tasks.
+This directory contains a VERL (Versatile Reinforcement Learning) implementation of GRPO (Group Relative Policy Optimization) for training language models on reasoning tasks.
+
+## Overview
+
+The VERL implementation provides several advantages over the traditional TRL-based approach:
+
+- **Better Scalability**: VERL is designed for distributed training and can handle larger models more efficiently
+- **Improved Performance**: Optimized for multi-GPU and multi-node training scenarios
+- **Flexible Architecture**: Supports different backends (FSDP, Megatron-LM) and worker configurations
+- **Advanced Features**: Built-in support for fault tolerance, checkpointing, and resource management
 
 ## Files
 
-- **`reasoning_grpo_verl.py`**: VERL-based GRPO training script (with built-in validation)
-- **`reasoning_grpo.py`**: Original TRL-based GRPO training script (for comparison)
+- `reasoning_grpo_verl_clean.py`: Main VERL GRPO training script
+- `reasoning_grpo.py`: Original TRL-based implementation for comparison
+- `requirements_verl.txt`: VERL-specific dependencies
+- `README_VERL_GRPO.md`: This documentation
 
-## Key Differences: VERL vs TRL
+## Key Differences from TRL Implementation
 
-| Feature              | TRL Implementation          | VERL Implementation            |
-| -------------------- | --------------------------- | ------------------------------ |
-| **Library**          | `trl.GRPOTrainer`           | `verl.GRPOTrainer`             |
-| **Configuration**    | `GRPOConfig` (TRL)          | `GRPOConfig` (VERL)            |
-| **Reward Functions** | Multiple separate functions | Single unified reward function |
-| **GRPO Parameters**  | Standard TRL parameters     | VERL-specific GRPO parameters  |
-| **Model Wrapper**    | Direct model usage          | VERL model wrapper support     |
+### 1. Reward Function Architecture
+
+**TRL Version:**
+
+```python
+# Multiple separate reward functions
+reward_funcs = [
+    self.match_format_func,
+    self.penalize_short_think_func,
+    self.check_answer_func,
+]
+```
+
+**VERL Version:**
+
+```python
+# Single unified reward manager
+class ReasoningRewardManager:
+    def compute_reward(self, completions, ground_truth, **kwargs):
+        # Combines all reward components internally
+        format_score = self._compute_format_reward(completion)
+        thinking_score = self._compute_thinking_reward(completion)
+        answer_score = self._compute_answer_reward(completion, gt)
+        return format_score + thinking_score + answer_score
+```
+
+### 2. Configuration Management
+
+**TRL Version:**
+
+```python
+# Simple configuration object
+config = GRPOConfig(
+    output_dir=output_dir,
+    learning_rate=self.learning_rate,
+    # ... other parameters
+)
+```
+
+**VERL Version:**
+
+```python
+# Comprehensive configuration with nested structure
+config = {
+    "trainer": {"type": "grpo", "n_gpus_per_node": 1, ...},
+    "actor_rollout_ref": {
+        "actor": {"strategy": "fsdp", "model": {...}, ...},
+        "rollout": {"temperature": 1.0, "num_generations": 8, ...}
+    },
+    "critic": {"strategy": "fsdp", "model": {...}, ...},
+    "data": {"train_path": dataset_path, "batch_size": 4, ...},
+    "grpo": {"cliprange": 0.2, "gamma": 0.99, ...}
+}
+```
+
+### 3. Worker and Resource Management
+
+**TRL Version:**
+
+```python
+# Simple trainer initialization
+trainer = GRPOTrainer(
+    model=self.model_name,
+    reward_funcs=reward_funcs,
+    args=training_args,
+    train_dataset=self.dataset,
+    peft_config=lora_config,
+)
+```
+
+**VERL Version:**
+
+```python
+# Complex worker setup with resource pools
+role_worker_mapping = {
+    Role.ActorRollout: ActorRolloutRefWorker,
+    Role.Critic: CriticWorker,
+    Role.RefPolicy: ActorRolloutRefWorker
+}
+
+resource_pool_spec = {
+    'global_pool': [config.trainer.n_gpus_per_node] * config.trainer.nnodes
+}
+
+trainer = RayGRPOTrainer(
+    config=config,
+    tokenizer=tokenizer,
+    role_worker_mapping=role_worker_mapping,
+    resource_pool_manager=resource_pool_manager,
+    ray_worker_group_cls=ray_worker_group_cls,
+    reward_fn=reward_fn,
+    val_reward_fn=val_reward_fn,
+)
+```
+
+## Installation
+
+1. Install VERL and dependencies:
+
+```bash
+pip install -r requirements_verl.txt
+```
+
+2. Install VERL framework:
+
+```bash
+pip install verl
+```
 
 ## Usage
 
-### 1. Basic VERL GRPO Training
+### Basic Training
 
 ```bash
-# Basic training with LoRA (recommended)
-python reasoning_grpo_verl.py --model-size 3B --use-lora
+python reasoning_grpo_verl_clean.py
+```
 
-# Full model training
-python reasoning_grpo_verl.py --model-size 3B
+### With LoRA
 
-# Custom configuration
-python reasoning_grpo_verl.py \
+```bash
+python reasoning_grpo_verl_clean.py --use-lora
+```
+
+### Custom Configuration
+
+```bash
+python reasoning_grpo_verl_clean.py \
     --model-size 1.5B \
-    --use-lora \
     --max-steps 1000 \
     --batch-size 8 \
     --learning-rate 2e-5
 ```
 
-### 2. Compare with TRL Implementation
+### With Hugging Face Token
 
 ```bash
-# Run TRL version
-python reasoning_grpo.py --model-size 3B --use-lora
-
-# Run VERL version
-python reasoning_grpo_verl.py --model-size 3B --use-lora
-
-# Compare outputs in /workspace/models/
+python reasoning_grpo_verl_clean.py --hf-token your_token_here
 ```
 
-## VERL-Specific Features
+## Configuration Options
 
-### 1. Unified Reward Function
+| Parameter                       | Description                             | Default |
+| ------------------------------- | --------------------------------------- | ------- |
+| `--model-size`                  | Model size ("0.5B", "1.5B", "3B", "4B") | "4B"    |
+| `--use-lora`                    | Enable LoRA fine-tuning                 | False   |
+| `--disable-wandb`               | Disable wandb logging                   | False   |
+| `--max-steps`                   | Maximum training steps                  | 500     |
+| `--batch-size`                  | Training batch size                     | 4       |
+| `--learning-rate`               | Learning rate                           | 1e-5    |
+| `--gradient-accumulation-steps` | Gradient accumulation steps             | 16      |
+| `--hf-token`                    | Hugging Face token                      | None    |
 
-The VERL implementation uses a single reward function that combines:
+## Architecture Components
 
-- **Format compliance**: Ensures proper `<think></think><answer></answer>` structure
-- **Thinking quality**: Rewards detailed reasoning (penalizes short responses)
-- **Answer correctness**: Rewards correct answers with partial matching
+### 1. ReasoningRewardManager
 
-### 2. VERL GRPO Configuration
+- **Purpose**: Computes reward scores for reasoning completions
+- **Components**:
+  - Format compliance checking
+  - Thinking quality assessment
+  - Answer correctness evaluation
+- **Integration**: Compatible with VERL's reward system
 
-```python
-# VERL-specific GRPO parameters
-actor_rollout={
-    'ref': {
-        'rollout': {'n': 4},  # Number of samples per prompt
-        'actor': {
-            'ppo_mini_batch_size': 16,
-            'ppo_epochs': 4,
-            'clip_ratio': 0.2,
-            'use_kl_loss': True,
-            'kl_loss_coef': 0.001,
-            'kl_loss_type': 'k1',
-            'loss_agg_mode': 'token-mean'
-        }
-    }
-},
-data={'train_batch_size': batch_size * gradient_accumulation_steps},
-algorithm={'adv_estimator': 'grpo'}
-```
+### 2. ReasoningGRPOVERLTrainer
 
-### 3. Enhanced Logging
+- **Purpose**: Main trainer class for VERL GRPO training
+- **Features**:
+  - Dataset preparation and preprocessing
+  - VERL configuration management
+  - Worker and resource setup
+  - Training orchestration
 
-- **VERL-specific debug logs**: `debug_logs/verl_grpo_debug_*.txt`
-- **Reward breakdown**: Shows format, thinking, and answer rewards separately
-- **VERL version tracking**: Displays VERL version in logs
+### 3. VERL Configuration
 
-## Model Output Locations
+- **Trainer**: Defines training parameters and resource allocation
+- **Actor/Rollout**: Model configuration and generation parameters
+- **Critic**: Value function model setup
+- **Data**: Dataset paths and batch configuration
+- **GRPO**: Algorithm-specific hyperparameters
 
-- **VERL Models**: `/workspace/models/{model-name}-LoRA-VERL-GRPO/`
-- **TRL Models**: `/workspace/models/{model-name}-LoRA-GRPO/`
+## Performance Considerations
 
-## Prerequisites
+### Memory Optimization
 
-1. **VERL Installation**: `pip install verl`
-2. **Hugging Face Token**: For gated models (Llama, etc.)
-3. **GPU Support**: CUDA-compatible GPU recommended
+- **FSDP Strategy**: Enables efficient memory usage across GPUs
+- **LoRA Support**: Reduces memory footprint for fine-tuning
+- **Gradient Accumulation**: Allows larger effective batch sizes
+
+### Scalability
+
+- **Multi-GPU Support**: Built-in support for distributed training
+- **Resource Pools**: Flexible GPU allocation and management
+- **Ray Integration**: Enables multi-node training scenarios
+
+## Debugging and Monitoring
+
+### Debug Logging
+
+- **Location**: `debug_logs/verl_grpo_debug_YYYYMMDD_HHMMSS.txt`
+- **Content**: Detailed reward breakdowns and sample completions
+- **Frequency**: Configurable via `num_examine` parameter
+
+### Wandb Integration
+
+- **Project**: `verl-reasoning-grpo`
+- **Metrics**: Training loss, reward scores, and model performance
+- **Tags**: `["reasoning", "grpo", "verl"]`
 
 ## Troubleshooting
 
-### VERL Import Errors
+### Common Issues
 
-```bash
-# Check VERL installation
-python -c "import verl; print(verl.__version__)"
+1. **Import Errors**: Ensure VERL is properly installed
 
-# Reinstall if needed
-pip install verl
-```
+   ```bash
+   pip install verl
+   ```
 
-### Configuration Issues
+2. **CUDA Memory Issues**: Reduce batch size or enable LoRA
 
-```bash
-# Test with minimal configuration (built-in validation will catch issues)
-python reasoning_grpo_verl.py --model-size 0.5B --use-lora --max-steps 1
-```
+   ```bash
+   python reasoning_grpo_verl_clean.py --batch-size 2 --use-lora
+   ```
 
-### Memory Issues
+3. **Dataset Loading Issues**: Check internet connection and HF token
+   ```bash
+   python reasoning_grpo_verl_clean.py --hf-token your_token_here
+   ```
 
-```bash
-# Use smaller model and LoRA
-python reasoning_grpo_verl.py --model-size 0.5B --use-lora --batch-size 1
-```
+### Performance Tuning
 
-## Performance Comparison
+1. **Increase Batch Size**: For better GPU utilization
+2. **Enable LoRA**: For memory-efficient fine-tuning
+3. **Adjust Learning Rate**: Based on model size and dataset
+4. **Optimize Gradient Accumulation**: Balance memory and training speed
 
-| Metric             | TRL GRPO | VERL GRPO                   |
-| ------------------ | -------- | --------------------------- |
-| **Memory Usage**   | Standard | Optimized                   |
-| **Training Speed** | Baseline | Potentially faster          |
-| **Convergence**    | Good     | May differ                  |
-| **Stability**      | Stable   | VERL-specific optimizations |
+## Comparison with TRL Implementation
 
-## Next Steps
+| Aspect                  | TRL Version        | VERL Version           |
+| ----------------------- | ------------------ | ---------------------- |
+| **Scalability**         | Single GPU focused | Multi-GPU/Multi-node   |
+| **Memory Usage**        | Higher             | Optimized with FSDP    |
+| **Configuration**       | Simple             | Comprehensive          |
+| **Worker Management**   | Automatic          | Explicit control       |
+| **Resource Allocation** | Basic              | Advanced pooling       |
+| **Fault Tolerance**     | Limited            | Built-in support       |
+| **Performance**         | Good               | Better for large scale |
 
-1. **Run both implementations** on the same dataset
-2. **Compare performance metrics** (convergence, final rewards)
-3. **Benchmark memory usage** and training speed
-4. **Evaluate output quality** on reasoning tasks
+## Future Enhancements
 
-## Example Training Pipeline
+1. **Multi-Modal Support**: Extend to image reasoning tasks
+2. **Advanced Algorithms**: Implement other RL algorithms (PPO, DPO)
+3. **Custom Reward Models**: Support for learned reward functions
+4. **Hyperparameter Optimization**: Automated tuning capabilities
+5. **Model Serving**: Integration with inference servers
 
-```bash
-# 1. Login to Hugging Face
-huggingface-cli login
+## References
 
-# 2. Run VERL GRPO training (built-in validation)
-python reasoning_grpo_verl.py \
-    --model-size 3B \
-    --use-lora \
-    --max-steps 500 \
-    --batch-size 4
-
-# 3. Compare with TRL version
-python reasoning_grpo.py \
-    --model-size 3B \
-    --use-lora \
-    --max-steps 500 \
-    --batch-size 4
-
-# 4. Analyze results in /workspace/models/
-```
+- [VERL Documentation](https://verl.readthedocs.io/)
+- [GRPO Paper](https://arxiv.org/abs/2406.05930)
+- [VERL GitHub Repository](https://github.com/volcengine/verl)
+- [Original TRL Implementation](./reasoning_grpo.py)
