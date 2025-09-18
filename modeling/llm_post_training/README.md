@@ -51,12 +51,50 @@ python compare_base_vs_sft.py \
     --sft-model /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
 ```
 
+### Interactive Chat Mode
+
+```bash
+# Chat with a base model
+python chat_mode.py --model-path meta-llama/Llama-3.2-3B
+
+# Chat with an SFT model
+python chat_mode.py --model-path /workspace/models/Llama-3.2-3B-LoRA-SFT
+
+# Chat with custom parameters
+python chat_mode.py \
+    --model-path meta-llama/Llama-3.2-3B \
+    --temperature 0.8 \
+    --max-length 512 \
+    --use-4bit
+
+# Single prompt test
+python chat_mode.py \
+    --model-path meta-llama/Llama-3.2-3B \
+    --prompt "Write a haiku about machine learning"
+```
+
+### Model Management
+
+```bash
+# List available models
+python model_utils.py --directory ./models
+
+# Validate a model
+python model_utils.py --validate /path/to/model
+
+# Get model size info
+python model_utils.py --size-info /path/to/model
+```
+
 ## Key Features
 
 - **LoRA Support**: Efficient fine-tuning with PEFT
 - **Base Models**: SFT uses base models to show clear transformation
 - **Workspace Management**: Organized storage in `/workspace/{models,data,cache}`
 - **Comparison Tools**: Side-by-side base vs SFT model comparison
+- **Interactive Chat**: Real-time chat interface for any trained model
+- **Model Management**: Utilities for discovering and validating models
+- **Quantization Support**: 4-bit and 8-bit quantization for memory efficiency
 
 ## Prerequisites
 
