@@ -72,11 +72,41 @@ class ChatInterface:
         elif use_8bit:
             self.quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
+    def check_model_directory(self) -> Dict[str, bool]:
+        """Check what files exist in the model directory."""
+        if not os.path.exists(self.model_path):
+            return {}
+
+        required_files = [
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "tokenizer.model",
+            "special_tokens_map.json",
+            "vocab.json",
+            "merges.txt",
+        ]
+
+        file_status = {}
+        for file in required_files:
+            file_path = os.path.join(self.model_path, file)
+            file_status[file] = os.path.exists(file_path)
+
+        return file_status
+
     def detect_model_type(self) -> str:
         """Detect if the model is a base model, SFT model, or LoRA model."""
         if os.path.exists(self.model_path):
+            # Check directory structure first
+            file_status = self.check_model_directory()
+            print("📁 Model directory contents:")
+            for file, exists in file_status.items():
+                status = "✅" if exists else "❌"
+                print(f"   {status} {file}")
+
             # Local path - check for LoRA adapter
-            if os.path.exists(os.path.join(self.model_path, "adapter_config.json")):
+            adapter_config_path = os.path.join(self.model_path, "adapter_config.json")
+            if os.path.exists(adapter_config_path):
                 return "lora"
             elif os.path.exists(os.path.join(self.model_path, "config.json")):
                 return "sft"
@@ -90,12 +120,48 @@ class ChatInterface:
         """Load the model and tokenizer."""
         print(f"🔄 Loading model from: {self.model_path}")
 
-        # Load tokenizer
+        # Load tokenizer with error handling
         print("📝 Loading tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_path,
-            trust_remote_code=self.trust_remote_code,
-        )
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_path,
+                trust_remote_code=self.trust_remote_code,
+            )
+        except Exception as e:
+            print(f"⚠️  Tokenizer loading failed: {e}")
+            print("🔄 Attempting to load tokenizer with additional parameters...")
+            try:
+                # Try loading with explicit parameters for Llama models
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=self.trust_remote_code,
+                    use_fast=False,  # Use slow tokenizer as fallback
+                    legacy=False,  # Use new tokenizer behavior
+                )
+            except Exception as e2:
+                print(f"❌ Tokenizer loading failed again: {e2}")
+                print("🔄 Attempting to load from HuggingFace Hub...")
+                try:
+                    # Try loading the tokenizer from HuggingFace Hub instead
+                    model_name = "meta-llama/Llama-3.2-3B"
+                    print(f"📦 Loading tokenizer from Hub: {model_name}")
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        model_name,
+                        trust_remote_code=self.trust_remote_code,
+                    )
+                except Exception as e3:
+                    print(f"❌ All tokenizer loading attempts failed: {e3}")
+                    print(
+                        "🔄 Attempting to use HuggingFace Hub model for both "
+                        "tokenizer and model..."
+                    )
+                    # If all else fails, use the HuggingFace Hub model
+                    self.model_path = "meta-llama/Llama-3.2-3B"
+                    print(f"📦 Switching to Hub model: {self.model_path}")
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_path,
+                        trust_remote_code=self.trust_remote_code,
+                    )
 
         # Set pad token if not present
         if self.tokenizer.pad_token is None:
