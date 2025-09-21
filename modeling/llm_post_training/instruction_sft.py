@@ -244,8 +244,8 @@ def main(args):
         fp16=False,
         bf16=torch.cuda.is_available(),
         logging_steps=10,
-        save_steps=min(10000, max_steps),
-        save_total_limit=1,
+        save_steps=max_steps + 1,  # Disable intermediate saves
+        save_total_limit=0,  # Don't save any intermediate checkpoints
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=(
             f"{model_path.split('/')[-1]}-SFT" if not args.disable_wandb else None
@@ -264,7 +264,7 @@ def main(args):
     print("🚀 Starting training...")
     trainer.train()
 
-    # Save final model
+    # Save final model (no intermediate checkpoints saved during training)
     print("💾 Saving final model...")
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
