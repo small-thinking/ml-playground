@@ -5,7 +5,15 @@ DPO (Direct Preference Optimization) Training Script
 This script implements DPO training for preference learning using configurable
 datasets and base models. It supports both full fine-tuning and LoRA training.
 
-The script can use any base model, including:
+Dataset Format:
+The script expects datasets with 'chosen' and 'rejected' columns, where each
+contains conversation format with 'role' and 'content' fields:
+- chosen: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+- rejected: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+
+The script automatically converts this to DPO format (prompt/chosen/rejected).
+
+Base Models:
 - Hugging Face model names (e.g., meta-llama/Llama-3.2-3B)
 - Local model directories (e.g., ./models/Llama-3.2-3B-LoRA-SFT)
 - SFT-tuned models from previous training runs
@@ -17,7 +25,7 @@ Usage Examples:
     
     # Using local SFT-tuned model
     python dpo_training.py --dataset tech-tao/gang-jing_contrarian_dpo_data \
-        --base-model ./models/Llama-3.2-3B-Full-SFT
+        --base-model ./models/Llama-3.2-3B-Full-SFT --use-lora
 """
 
 import os
@@ -67,8 +75,8 @@ def load_dpo_dataset(dataset_name: str, max_samples: Optional[int] = None) -> Da
         print(f"❌ Error loading dataset: {e}")
         raise
 
-    # Validate dataset format
-    required_columns = ["prompt", "chosen", "rejected"]
+    # Validate dataset format - check for chosen/rejected columns
+    required_columns = ["chosen", "rejected"]
     missing_columns = [
         col for col in required_columns if col not in dataset.column_names
     ]
@@ -84,15 +92,70 @@ def load_dpo_dataset(dataset_name: str, max_samples: Optional[int] = None) -> Da
     if len(dataset) > 0:
         example = dataset[0]
         print("📊 Example data format:")
-        print(f"   - Prompt: {example['prompt'][:100]}...")
-        print(f"   - Chosen: {example['chosen'][:100]}...")
-        print(f"   - Rejected: {example['rejected'][:100]}...")
+        
+        # Show chosen conversation format
+        if isinstance(example['chosen'], list) and len(example['chosen']) > 0:
+            chosen_user = next((msg for msg in example['chosen'] if msg.get('role') == 'user'), {})
+            chosen_assistant = next((msg for msg in example['chosen'] if msg.get('role') == 'assistant'), {})
+            print(f"   - Chosen User: {chosen_user.get('content', '')[:100]}...")
+            print(f"   - Chosen Assistant: {chosen_assistant.get('content', '')[:100]}...")
+        else:
+            print(f"   - Chosen: {str(example['chosen'])[:100]}...")
+        
+        # Show rejected conversation format
+        if isinstance(example['rejected'], list) and len(example['rejected']) > 0:
+            rejected_user = next((msg for msg in example['rejected'] if msg.get('role') == 'user'), {})
+            rejected_assistant = next((msg for msg in example['rejected'] if msg.get('role') == 'assistant'), {})
+            print(f"   - Rejected User: {rejected_user.get('content', '')[:100]}...")
+            print(f"   - Rejected Assistant: {rejected_assistant.get('content', '')[:100]}...")
+        else:
+            print(f"   - Rejected: {str(example['rejected'])[:100]}...")
 
     if max_samples and len(dataset) > max_samples:
         print(f"📊 Limiting dataset to {max_samples} samples for testing")
         dataset = dataset.select(range(max_samples))
 
     return dataset
+
+
+def preprocess_dpo_dataset(dataset: Dataset) -> Dataset:
+    """
+    Preprocess the dataset to convert conversation format to DPO format.
+    
+    Args:
+        dataset: Dataset with chosen/rejected conversation format
+        
+    Returns:
+        Dataset with prompt/chosen/rejected format for DPO training
+    """
+    def convert_conversation_to_dpo(example):
+        # Extract user message from chosen conversation (should be the same in both)
+        chosen_user = next((msg for msg in example['chosen'] if msg.get('role') == 'user'), {})
+        chosen_assistant = next((msg for msg in example['chosen'] if msg.get('role') == 'assistant'), {})
+        rejected_assistant = next((msg for msg in example['rejected'] if msg.get('role') == 'assistant'), {})
+        
+        return {
+            'prompt': chosen_user.get('content', ''),
+            'chosen': chosen_assistant.get('content', ''),
+            'rejected': rejected_assistant.get('content', '')
+        }
+    
+    print("🔄 Converting conversation format to DPO format...")
+    processed_dataset = dataset.map(convert_conversation_to_dpo, remove_columns=dataset.column_names)
+    
+    print(f"📊 Preprocessed dataset:")
+    print(f"   - Total samples: {len(processed_dataset)}")
+    print(f"   - Columns: {processed_dataset.column_names}")
+    
+    # Show example of processed format
+    if len(processed_dataset) > 0:
+        example = processed_dataset[0]
+        print("📊 Processed example:")
+        print(f"   - Prompt: {example['prompt'][:100]}...")
+        print(f"   - Chosen: {example['chosen'][:100]}...")
+        print(f"   - Rejected: {example['rejected'][:100]}...")
+    
+    return processed_dataset
 
 
 def prepare_model_and_tokenizer(
@@ -224,6 +287,9 @@ def main(args):
 
     # Load dataset
     dataset = load_dpo_dataset(args.dataset, args.max_samples)
+    
+    # Preprocess dataset to convert conversation format to DPO format
+    dataset = preprocess_dpo_dataset(dataset)
 
     # Prepare model and tokenizer
     model, tokenizer = prepare_model_and_tokenizer(model_path, args.use_lora)
