@@ -19,7 +19,8 @@ Usage:
 
     # Continue SFT from local checkpoint
     python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \
-        --dataset-name tech-tao/gang-jing_contrarian_sft_data
+        --dataset-name tech-tao/gang-jing_contrarian_sft_data \
+        --dataset-format messages
 
     # Continue SFT from Hugging Face model
     python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
@@ -231,7 +232,7 @@ def main(args):
         )
     training_args = TrainingArguments(
         output_dir=output_dir,
-        num_train_epochs=1,
+        num_train_epochs=args.num_epochs,
         per_device_train_batch_size=args.batch_size,
         warmup_steps=max(100, int(0.05 * max_steps)),
         max_steps=max_steps,
@@ -288,6 +289,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
     parser.add_argument("--max-steps", type=int, default=10000)
+    parser.add_argument(
+        "--num-epochs", type=int, default=1, help="Number of training epochs"
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument(
