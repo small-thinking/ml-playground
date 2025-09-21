@@ -18,7 +18,8 @@ Usage:
         --dataset-name HuggingFaceH4/ultrachat_200k
 
     # Continue SFT from local checkpoint
-    python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT
+    python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \
+        --dataset-name tech-tao/gang-jing_contrarian_sft_data
 
     # Continue SFT from Hugging Face model
     python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
