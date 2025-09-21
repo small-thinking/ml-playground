@@ -3,6 +3,7 @@
 Examples of post-training techniques for Large Language Models:
 
 - **SFT**: Supervised Fine-Tuning for instruction following
+- **DPO**: Direct Preference Optimization for preference learning
 - **GRPO**: Generative Reward-Powered Optimization for reasoning tasks
 
 ## Quick Start
@@ -18,15 +19,17 @@ huggingface-cli login
 
 # Train models
 python instruction_sft.py --model-size 3B --use-lora   # SFT
+python dpo_training.py --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora  # DPO
 python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
 ```
 
 ## Models & Datasets
 
-| Training | Models                           | Dataset        | Purpose                            |
-| -------- | -------------------------------- | -------------- | ---------------------------------- |
-| **SFT**  | Base models (not instruct-tuned) | Alpaca         | Instruction following              |
-| **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning | Reasoning with structured thinking |
+| Training | Models                           | Dataset             | Purpose                            |
+| -------- | -------------------------------- | ------------------- | ---------------------------------- |
+| **SFT**  | Base models (not instruct-tuned) | Alpaca              | Instruction following              |
+| **DPO**  | Any base/SFT model               | Preference datasets | Preference learning                |
+| **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning      | Reasoning with structured thinking |
 
 ## Usage
 
@@ -34,6 +37,25 @@ python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
 
 ```bash
 python instruction_sft.py --model-size 3B --use-lora --max-steps 2000
+```
+
+### DPO Training
+
+```bash
+# Train with predefined model size
+python dpo_training.py --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora
+
+# Train with custom base model (including SFT-tuned models)
+python dpo_training.py --dataset tech-tao/gang-jing_contrarian_dpo_data --base-model ./models/Llama-3.2-3B-LoRA-SFT --use-lora
+
+# Train with custom parameters
+python dpo_training.py \
+    --dataset tech-tao/yizhipian_yizhipian_dpo_data \
+    --base-model meta-llama/Llama-3.2-3B \
+    --use-lora \
+    --beta 0.1 \
+    --learning-rate 5e-6 \
+    --max-steps 1000
 ```
 
 ### GRPO Training
@@ -90,6 +112,8 @@ python model_utils.py --size-info /path/to/model
 
 - **LoRA Support**: Efficient fine-tuning with PEFT
 - **Base Models**: SFT uses base models to show clear transformation
+- **Configurable Datasets**: DPO supports any Hugging Face preference dataset
+- **Flexible Base Models**: DPO can use any base model or SFT-tuned model
 - **Workspace Management**: Organized storage in `/workspace/{models,data,cache}`
 - **Comparison Tools**: Side-by-side base vs SFT model comparison
 - **Interactive Chat**: Real-time chat interface for any trained model
