@@ -2,12 +2,20 @@
 SFT (Supervised Fine-Tuning) Training Script for Instruction Following
 
 This script implements SFT training for improving instruction-following
-capabilities using the Alpaca dataset. Supports both initial training
-and continuing from a previous SFT model.
+capabilities. Supports both Alpaca dataset format and custom messages format.
+Supports both initial training and continuing from a previous SFT model.
 
 Usage:
-    # Initial SFT training from base model
+    # Initial SFT training from base model with default Alpaca dataset
     python instruction_sft.py --model-size 3B --use-lora
+
+    # SFT training with custom Alpaca format dataset from HF
+    python instruction_sft.py --model-size 3B --dataset-format alpaca \
+        --dataset-name microsoft/orca-math-word-problems-200k
+
+    # SFT training with custom messages format dataset from HF
+    python instruction_sft.py --model-size 3B --dataset-format messages \
+        --dataset-name HuggingFaceH4/ultrachat_200k
 
     # Continue SFT from local checkpoint
     python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT
@@ -46,7 +54,7 @@ def get_model_name(model_size: str) -> str:
 
 
 def format_instruction(example: Dict[str, Any]) -> Dict[str, str]:
-    """Format instruction following examples."""
+    """Format instruction following examples from Alpaca format."""
     # Create the instruction-following format, which is the
     # foundation of SFT. The model is trained on this structured format to
     # learn how to follow instructions.
@@ -64,6 +72,25 @@ def format_instruction(example: Dict[str, Any]) -> Dict[str, str]:
             f"### Response:\n{example['output']}"
         )
     }
+
+
+def format_messages(example: Dict[str, Any]) -> Dict[str, str]:
+    """Format conversation examples from messages format."""
+    messages = example["messages"]
+
+    # Build the conversation text
+    conversation_parts = []
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+
+        if role == "user":
+            conversation_parts.append(f"### Instruction:\n{content}")
+        elif role == "assistant":
+            conversation_parts.append(f"### Response:\n{content}")
+        # Skip other roles (system, etc.) for now
+
+    return {"text": "\n\n".join(conversation_parts)}
 
 
 def tokenize_function(
@@ -111,7 +138,7 @@ def main(args):
     else:
         if not args.model_size:
             raise ValueError(
-                "Either --model-size or --checkpoint-path must be specified"
+                "Either --model-size or --checkpoint-path must be " "specified"
             )
         model_path = get_model_name(args.model_size)
         print(f"🚀 Starting SFT training for {model_path}")
@@ -150,11 +177,25 @@ def main(args):
         model.print_trainable_parameters()
 
     # Load and prepare dataset
-    print("📊 Loading and preparing Alpaca dataset...")
-    dataset = load_dataset("tatsu-lab/alpaca", split="train")
+    if args.dataset_format == "alpaca":
+        dataset_name = args.dataset_name or "tatsu-lab/alpaca"
+        print(f"📊 Loading Alpaca format dataset: {dataset_name}")
+        dataset = load_dataset(dataset_name, split="train")
+        format_function = format_instruction
+    elif args.dataset_format == "messages":
+        if not args.dataset_name:
+            raise ValueError(
+                "--dataset-name must be specified when using messages format"
+            )
+        print(f"📊 Loading messages format dataset: {args.dataset_name}")
+        dataset = load_dataset(args.dataset_name, split="train")
+        format_function = format_messages
+    else:
+        raise ValueError(f"Unsupported dataset format: {args.dataset_format}")
     print(f"📊 Dataset size: {len(dataset)} samples")
+    print(f"📊 Dataset columns: {dataset.column_names}")
 
-    dataset = dataset.map(format_instruction, remove_columns=dataset.column_names)
+    dataset = dataset.map(format_function, remove_columns=dataset.column_names)
     dataset = dataset.map(
         lambda x: tokenize_function(x, tokenizer),
         batched=True,
@@ -264,11 +305,32 @@ if __name__ == "__main__":
             "(HF model name or local folder)"
         ),
     )
+    parser.add_argument(
+        "--dataset-format",
+        type=str,
+        default="alpaca",
+        choices=["alpaca", "messages"],
+        help=(
+            "Dataset format: 'alpaca' for Alpaca format or 'messages' "
+            "for messages format"
+        ),
+    )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help=(
+            "Hugging Face dataset name (optional for alpaca format, "
+            "required for messages format)"
+        ),
+    )
     args = parser.parse_args()
 
     # Validation
     if args.checkpoint_path and args.use_lora:
         print("⚠️  Warning: Continue training with LoRA is not fully " "supported yet.")
         print("   Consider using full fine-tuning for continue training.")
+    if args.dataset_format == "messages" and not args.dataset_name:
+        raise ValueError("--dataset-name is required when using messages format")
 
     main(args)
