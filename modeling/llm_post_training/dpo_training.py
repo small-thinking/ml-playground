@@ -92,22 +92,35 @@ def load_dpo_dataset(dataset_name: str, max_samples: Optional[int] = None) -> Da
     if len(dataset) > 0:
         example = dataset[0]
         print("📊 Example data format:")
-        
+
         # Show chosen conversation format
-        if isinstance(example['chosen'], list) and len(example['chosen']) > 0:
-            chosen_user = next((msg for msg in example['chosen'] if msg.get('role') == 'user'), {})
-            chosen_assistant = next((msg for msg in example['chosen'] if msg.get('role') == 'assistant'), {})
+        if isinstance(example["chosen"], list) and len(example["chosen"]) > 0:
+            chosen_user = next(
+                (msg for msg in example["chosen"] if msg.get("role") == "user"), {}
+            )
+            chosen_assistant = next(
+                (msg for msg in example["chosen"] if msg.get("role") == "assistant"), {}
+            )
             print(f"   - Chosen User: {chosen_user.get('content', '')[:100]}...")
-            print(f"   - Chosen Assistant: {chosen_assistant.get('content', '')[:100]}...")
+            print(
+                f"   - Chosen Assistant: {chosen_assistant.get('content', '')[:100]}..."
+            )
         else:
             print(f"   - Chosen: {str(example['chosen'])[:100]}...")
-        
+
         # Show rejected conversation format
-        if isinstance(example['rejected'], list) and len(example['rejected']) > 0:
-            rejected_user = next((msg for msg in example['rejected'] if msg.get('role') == 'user'), {})
-            rejected_assistant = next((msg for msg in example['rejected'] if msg.get('role') == 'assistant'), {})
+        if isinstance(example["rejected"], list) and len(example["rejected"]) > 0:
+            rejected_user = next(
+                (msg for msg in example["rejected"] if msg.get("role") == "user"), {}
+            )
+            rejected_assistant = next(
+                (msg for msg in example["rejected"] if msg.get("role") == "assistant"),
+                {},
+            )
             print(f"   - Rejected User: {rejected_user.get('content', '')[:100]}...")
-            print(f"   - Rejected Assistant: {rejected_assistant.get('content', '')[:100]}...")
+            print(
+                f"   - Rejected Assistant: {rejected_assistant.get('content', '')[:100]}..."
+            )
         else:
             print(f"   - Rejected: {str(example['rejected'])[:100]}...")
 
@@ -121,32 +134,41 @@ def load_dpo_dataset(dataset_name: str, max_samples: Optional[int] = None) -> Da
 def preprocess_dpo_dataset(dataset: Dataset) -> Dataset:
     """
     Preprocess the dataset to convert conversation format to DPO format.
-    
+
     Args:
         dataset: Dataset with chosen/rejected conversation format
-        
+
     Returns:
         Dataset with prompt/chosen/rejected format for DPO training
     """
+
     def convert_conversation_to_dpo(example):
         # Extract user message from chosen conversation (should be the same in both)
-        chosen_user = next((msg for msg in example['chosen'] if msg.get('role') == 'user'), {})
-        chosen_assistant = next((msg for msg in example['chosen'] if msg.get('role') == 'assistant'), {})
-        rejected_assistant = next((msg for msg in example['rejected'] if msg.get('role') == 'assistant'), {})
-        
+        chosen_user = next(
+            (msg for msg in example["chosen"] if msg.get("role") == "user"), {}
+        )
+        chosen_assistant = next(
+            (msg for msg in example["chosen"] if msg.get("role") == "assistant"), {}
+        )
+        rejected_assistant = next(
+            (msg for msg in example["rejected"] if msg.get("role") == "assistant"), {}
+        )
+
         return {
-            'prompt': chosen_user.get('content', ''),
-            'chosen': chosen_assistant.get('content', ''),
-            'rejected': rejected_assistant.get('content', '')
+            "prompt": chosen_user.get("content", ""),
+            "chosen": chosen_assistant.get("content", ""),
+            "rejected": rejected_assistant.get("content", ""),
         }
-    
+
     print("🔄 Converting conversation format to DPO format...")
-    processed_dataset = dataset.map(convert_conversation_to_dpo, remove_columns=dataset.column_names)
-    
+    processed_dataset = dataset.map(
+        convert_conversation_to_dpo, remove_columns=dataset.column_names
+    )
+
     print(f"📊 Preprocessed dataset:")
     print(f"   - Total samples: {len(processed_dataset)}")
     print(f"   - Columns: {processed_dataset.column_names}")
-    
+
     # Show example of processed format
     if len(processed_dataset) > 0:
         example = processed_dataset[0]
@@ -154,7 +176,7 @@ def preprocess_dpo_dataset(dataset: Dataset) -> Dataset:
         print(f"   - Prompt: {example['prompt'][:100]}...")
         print(f"   - Chosen: {example['chosen'][:100]}...")
         print(f"   - Rejected: {example['rejected'][:100]}...")
-    
+
     return processed_dataset
 
 
@@ -287,7 +309,7 @@ def main(args):
 
     # Load dataset
     dataset = load_dpo_dataset(args.dataset, args.max_samples)
-    
+
     # Preprocess dataset to convert conversation format to DPO format
     dataset = preprocess_dpo_dataset(dataset)
 
