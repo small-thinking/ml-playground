@@ -311,6 +311,7 @@ git config --global user.email "2237303+yxjiang@users.noreply.github.com"
 git config --global init.defaultBranch main
 git config --global core.editor vim
 git config --global color.ui auto
+git config --global credential.helper store
 
 echo "=== [Step 8] Setting up SSH ==="
 # Create SSH directory and set permissions
