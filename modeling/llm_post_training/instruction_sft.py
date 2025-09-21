@@ -2,10 +2,18 @@
 SFT (Supervised Fine-Tuning) Training Script for Instruction Following
 
 This script implements SFT training for improving instruction-following
-capabilities using the Alpaca dataset.
+capabilities using the Alpaca dataset. Supports both initial training
+and continuing from a previous SFT model.
 
 Usage:
+    # Initial SFT training from base model
     python instruction_sft.py --model-size 3B --use-lora
+
+    # Continue SFT from local checkpoint
+    python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT
+
+    # Continue SFT from Hugging Face model
+    python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
 """
 
 import os
@@ -96,16 +104,25 @@ def main(args):
     if args.hf_token:
         os.environ["HUGGINGFACE_HUB_TOKEN"] = args.hf_token
 
-    model_name = get_model_name(args.model_size)
-    print(f"🚀 Starting SFT training for {model_name}")
+    # Determine model path for loading
+    if args.checkpoint_path:
+        model_path = args.checkpoint_path
+        print(f"🔄 Continuing SFT training from: {model_path}")
+    else:
+        if not args.model_size:
+            raise ValueError(
+                "Either --model-size or --checkpoint-path must be specified"
+            )
+        model_path = get_model_name(args.model_size)
+        print(f"🚀 Starting SFT training for {model_path}")
 
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        model_path,
         torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
@@ -157,10 +174,19 @@ def main(args):
     print(f"   - Using max_steps: {max_steps}")
 
     # Training arguments
-    output_dir = (
-        f"./models/{model_name.split('/')[-1]}-"
-        f"{'LoRA' if args.use_lora else 'Full'}-SFT"
-    )
+    if args.checkpoint_path:
+        # For continue training, use checkpoint name in output directory
+        checkpoint_name = args.checkpoint_path.split("/")[-1]
+        output_dir = (
+            f"./models/{checkpoint_name}-"
+            f"{'LoRA' if args.use_lora else 'Full'}-Continue-SFT"
+        )
+    else:
+        # For initial training, use base model name
+        output_dir = (
+            f"./models/{model_path.split('/')[-1]}-"
+            f"{'LoRA' if args.use_lora else 'Full'}-SFT"
+        )
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=1,
@@ -179,7 +205,7 @@ def main(args):
         save_total_limit=1,
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=(
-            f"{model_name.split('/')[-1]}-SFT" if not args.disable_wandb else None
+            f"{model_path.split('/')[-1]}-SFT" if not args.disable_wandb else None
         ),
     )
 
@@ -210,8 +236,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-size",
         type=str,
-        default="3B",
+        default=None,
         choices=["0.5B", "1.5B", "3B", "8B"],
+        help=(
+            "Model size for initial training "
+            "(not needed when using --checkpoint-path)"
+        ),
     )
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--disable-wandb", action="store_true")
@@ -225,5 +255,20 @@ if __name__ == "__main__":
         help="Number of gradient accumulation steps",
     )
     parser.add_argument("--hf-token", type=str, default=None)
+    parser.add_argument(
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        help=(
+            "Path to previous SFT model to continue training from "
+            "(HF model name or local folder)"
+        ),
+    )
     args = parser.parse_args()
+
+    # Validation
+    if args.checkpoint_path and args.use_lora:
+        print("⚠️  Warning: Continue training with LoRA is not fully " "supported yet.")
+        print("   Consider using full fine-tuning for continue training.")
+
     main(args)
