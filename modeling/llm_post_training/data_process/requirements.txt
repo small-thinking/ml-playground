@@ -1,0 +1,16 @@
+# Knowledge Distillation System Requirements
+
+# Core dependencies
+openai>=1.0.0
+pyyaml>=6.0
+jinja2>=3.0.0
+pandas>=1.5.0
+
+# Optional dependencies for different providers
+# anthropic>=0.7.0  # Uncomment if using Anthropic
+# google-generativeai>=0.3.0  # Uncomment if using Google AI
+
+# Development dependencies
+pytest>=7.0.0
+black>=22.0.0
+flake8>=5.0.0
