@@ -1,0 +1,88 @@
+task_name: "qa_generation"
+description: "Generate question-answer pairs from text content"
+
+input_format:
+  text: "string"  # Source text to generate Q&A from
+  context: "string"  # Optional additional context
+  question_type: "string"  # Type of questions to generate
+
+output_format:
+  question: "string"  # Generated question
+  answer: "string"  # Generated answer
+  difficulty: "string"  # Difficulty level
+
+prompts:
+  factual_qa:
+    description: "Generate factual question-answer pairs"
+    variables: ["text", "context"]
+    template: |
+      Generate factual question-answer pairs from the following text. Focus on key facts, definitions, and important details.
+      
+      Text: {{ text }}
+      {% if context %}Additional Context: {{ context }}{% endif %}
+      
+      Create 3-5 factual questions that:
+      - Test understanding of key concepts
+      - Cover important facts and details
+      - Have clear, concise answers
+      - Vary in difficulty (easy to medium)
+      
+      Format your response as:
+      Question 1: [question]
+      Answer 1: [answer]
+      Difficulty: [easy/medium/hard]
+      
+      Question 2: [question]
+      Answer 2: [answer]
+      Difficulty: [easy/medium/hard]
+      
+      [Continue for all questions...]
+
+  analytical_qa:
+    description: "Generate analytical question-answer pairs"
+    variables: ["text", "question_type"]
+    template: |
+      Generate analytical question-answer pairs that require deeper thinking and analysis.
+      
+      Text: {{ text }}
+      Question Type: {{ question_type or "analytical" }}
+      
+      Create 2-3 analytical questions that:
+      - Require critical thinking
+      - Ask for comparisons, analysis, or synthesis
+      - Have detailed, well-reasoned answers
+      - Test higher-order thinking skills
+      
+      Format your response as:
+      Question 1: [analytical question]
+      Answer 1: [detailed analytical answer]
+      Difficulty: [medium/hard]
+      
+      [Continue for all questions...]
+
+  application_qa:
+    description: "Generate application-based question-answer pairs"
+    variables: ["text", "context"]
+    template: |
+      Generate application-based questions that ask how to apply concepts from the text.
+      
+      Text: {{ text }}
+      {% if context %}Context: {{ context }}{% endif %}
+      
+      Create 2-3 application questions that:
+      - Ask how to apply concepts in practice
+      - Require problem-solving skills
+      - Have step-by-step answers
+      - Connect theory to real-world scenarios
+      
+      Format your response as:
+      Question 1: [application question]
+      Answer 1: [step-by-step application answer]
+      Difficulty: [medium/hard]
+      
+      [Continue for all questions...]
+
+metadata:
+  version: "1.0"
+  author: "Knowledge Distillation System"
+  created: "2024-01-01"

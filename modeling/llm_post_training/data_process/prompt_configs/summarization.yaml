@@ -1,0 +1,108 @@
+task_name: "summarization"
+description: "Generate summaries and abstractive content from source text"
+
+input_format:
+  text: "string"  # Source text to summarize
+  length: "string"  # Desired summary length (short/medium/long)
+  focus: "string"  # Optional focus area for summary
+
+output_format:
+  summary: "string"  # Generated summary
+  key_points: "list"  # List of key points
+  length: "string"  # Actual summary length
+
+prompts:
+  extractive_summary:
+    description: "Generate extractive summary by selecting key sentences"
+    variables: ["text", "length"]
+    template: |
+      Create an extractive summary by selecting the most important sentences from the text.
+      
+      Text: {{ text }}
+      Desired Length: {{ length or "medium" }}
+      
+      Guidelines:
+      - For "short": Select 2-3 most important sentences
+      - For "medium": Select 4-6 key sentences
+      - For "long": Select 7-10 important sentences
+      
+      Focus on sentences that:
+      - Contain main ideas and key concepts
+      - Provide essential information
+      - Are clear and well-written
+      - Cover different aspects of the topic
+      
+      Format your response as:
+      Summary: [selected sentences combined into coherent summary]
+      Key Points:
+      1. [first key point]
+      2. [second key point]
+      3. [third key point]
+      [Continue as needed...]
+      Length: [short/medium/long]
+
+  abstractive_summary:
+    description: "Generate abstractive summary by paraphrasing and synthesizing"
+    variables: ["text", "length", "focus"]
+    template: |
+      Create an abstractive summary by paraphrasing and synthesizing the main ideas.
+      
+      Text: {{ text }}
+      Desired Length: {{ length or "medium" }}
+      {% if focus %}Focus Area: {{ focus }}{% endif %}
+      
+      Guidelines:
+      - Paraphrase the main ideas in your own words
+      - Synthesize information from multiple parts of the text
+      - Maintain the original meaning and tone
+      - Create a coherent, flowing summary
+      
+      {% if focus %}Pay special attention to: {{ focus }}{% endif %}
+      
+      Format your response as:
+      Summary: [coherent abstractive summary]
+      Key Points:
+      1. [synthesized key point]
+      2. [synthesized key point]
+      3. [synthesized key point]
+      [Continue as needed...]
+      Length: [short/medium/long]
+
+  bullet_point_summary:
+    description: "Generate structured bullet-point summary"
+    variables: ["text", "focus"]
+    template: |
+      Create a structured bullet-point summary of the text.
+      
+      Text: {{ text }}
+      {% if focus %}Focus Area: {{ focus }}{% endif %}
+      
+      Structure your summary with:
+      - Main topic/theme
+      - Key concepts and ideas
+      - Important details and examples
+      - Conclusions or implications
+      
+      {% if focus %}Emphasize aspects related to: {{ focus }}{% endif %}
+      
+      Format your response as:
+      Main Topic: [brief topic statement]
+      
+      Key Concepts:
+      • [concept 1]
+      • [concept 2]
+      • [concept 3]
+      
+      Important Details:
+      • [detail 1]
+      • [detail 2]
+      • [detail 3]
+      
+      Conclusions:
+      • [conclusion 1]
+      • [conclusion 2]
+
+metadata:
+  version: "1.0"
+  author: "Knowledge Distillation System"
+  created: "2024-01-01"
