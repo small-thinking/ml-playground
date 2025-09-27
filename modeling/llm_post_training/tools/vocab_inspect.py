@@ -5,7 +5,10 @@ Vocabulary Inspector for HuggingFace Models
 Inspect model vocabularies and find similar tokens.
 
 Usage:
-    python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B --query "dog" --top-k 5
+    python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B \\
+        --query "dog" --top-k 5
+    python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B --tokenize "Hello, world!"
+    python vocab_inspect.py --model-path distilbert-base-uncased --tokenize "The quick brown fox"
 """
 
 import argparse
@@ -41,7 +44,8 @@ class VocabularyInspector:
         Load the tokenizer and optionally the model for embeddings.
 
         Args:
-            load_embeddings: Whether to load the model for embedding computation
+            load_embeddings: Whether to load the model for embedding
+            computation
         """
         print(f"Loading model from: {self.model_path}")
 
@@ -83,7 +87,7 @@ class VocabularyInspector:
         """
         if self.model is None:
             raise ValueError(
-                "Model not loaded. Call load_model(load_embeddings=True) first."
+                "Model not loaded. Call load_model(load_embeddings=True) " "first."
             )
 
         # Tokenize and get embeddings
@@ -216,7 +220,8 @@ class VocabularyInspector:
 
         Args:
             limit: Maximum number of tokens to return
-            pattern: Optional pattern to filter tokens (substring match)
+            pattern: Optional pattern to filter tokens (substring
+                match)
 
         Returns:
             List of tokens
@@ -258,6 +263,62 @@ class VocabularyInspector:
 
         return info
 
+    def tokenize_query(self, query: str) -> List[Dict]:
+        """
+        Tokenize an input query and return detailed information about
+        each token.
+
+        Args:
+            query: Input text to tokenize
+
+        Returns:
+            List of dictionaries containing token information
+        """
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call load_model() first.")
+
+        # Tokenize the input
+        tokens = self.tokenizer.tokenize(query)
+
+        # Get token IDs
+        token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+
+        # Get detailed info for each token
+        token_info_list = []
+        for i, (token, token_id) in enumerate(zip(tokens, token_ids)):
+            # Get basic token info
+            basic_info = self.get_token_info(token)
+
+            # Add additional tokenization info
+            token_info = {
+                "position": i,
+                "token": token,
+                "token_id": token_id,
+                "length": len(token),
+                "is_special": token.startswith("<") and token.endswith(">"),
+                "is_punctuation": token in ".,!?;:()[]{}",
+                "is_digit": token.isdigit(),
+                "is_alpha": token.isalpha(),
+                "is_whitespace": token.isspace(),
+                "is_subword": token.startswith("##") or token.startswith("▁"),
+                "is_unknown": token == self.tokenizer.unk_token,
+                "is_padding": token == self.tokenizer.pad_token,
+                "is_separator": token
+                in [
+                    self.tokenizer.sep_token,
+                    self.tokenizer.eos_token,
+                    self.tokenizer.bos_token,
+                ],
+            }
+
+            # Add any errors from basic info
+            if "error" in basic_info:
+                token_info["error"] = basic_info["error"]
+
+            token_info_list.append(token_info)
+
+        return token_info_list
+
 
 def main():
     """Main function for command-line interface."""
@@ -280,6 +341,7 @@ def main():
     )
     parser.add_argument("--limit", type=int, help="Limit number of tokens to list")
     parser.add_argument("--pattern", help="Pattern to filter tokens when listing")
+    parser.add_argument("--tokenize", help="Text to tokenize and analyze")
     parser.add_argument(
         "--device",
         default="auto",
@@ -297,14 +359,73 @@ def main():
     tool.load_model(load_embeddings=not args.no_embeddings)
 
     # Handle different operations
-    if args.query:
+    if args.tokenize:
+        print(f"\nTokenizing: '{args.tokenize}'")
+        print("=" * 60)
+
+        try:
+            token_info_list = tool.tokenize_query(args.tokenize)
+
+            # Print header
+            print(
+                f"{'Pos':<4} {'Token':<20} {'ID':<8} {'Len':<4} "
+                f"{'Type':<12} {'Flags'}"
+            )
+            print("-" * 60)
+            for token_info in token_info_list:
+                # Determine token type
+                token_type = "unknown"
+                if token_info["is_special"]:
+                    token_type = "special"
+                elif token_info["is_punctuation"]:
+                    token_type = "punctuation"
+                elif token_info["is_digit"]:
+                    token_type = "digit"
+                elif token_info["is_alpha"]:
+                    token_type = "alpha"
+                elif token_info["is_whitespace"]:
+                    token_type = "whitespace"
+                elif token_info["is_subword"]:
+                    token_type = "subword"
+
+                # Build flags string
+                flags = []
+                if token_info["is_unknown"]:
+                    flags.append("UNK")
+                if token_info["is_padding"]:
+                    flags.append("PAD")
+                if token_info["is_separator"]:
+                    flags.append("SEP")
+                if token_info["is_subword"]:
+                    flags.append("SUB")
+
+                flags_str = ",".join(flags) if flags else ""
+
+                # Format token for display (handle special characters)
+                display_token = repr(token_info["token"])[1:-1]
+
+                print(
+                    f"{token_info['position']:<4} {display_token:<20} "
+                    f"{token_info['token_id']:<8} {token_info['length']:<4} "
+                    f"{token_type:<12} {flags_str}"
+                )
+
+            print(f"\nTotal tokens: {len(token_info_list)}")
+
+        except Exception as e:
+            print(f"Error tokenizing: {e}")
+
+    elif args.query:
         print(f"\nSimilar to '{args.query}':")
 
         # Show query token info compactly
         query_info = tool.get_token_info(args.query)
         if "error" not in query_info:
             print(
-                f"Query: {args.query} (id:{query_info['token_id']}, len:{query_info['length']}, alpha:{query_info['is_alpha']})"
+                f"Query: {args.query} "
+                f"(id:{query_info['token_id']}, "
+                f"len:{query_info['length']}, "
+                f"alpha:{query_info['is_alpha']})"
             )
 
         similar_tokens = tool.find_similar_tokens(
@@ -315,20 +436,23 @@ def main():
             token_info = tool.get_token_info(token)
             if "error" not in token_info:
                 print(
-                    f"{i:2d}. {token:<15} {score:.3f} (id:{token_info['token_id']}, len:{token_info['length']}, alpha:{token_info['is_alpha']})"
+                    f"{i:2d}. {token:<15} {score:.3f} "
+                    f"(id:{token_info['token_id']}, "
+                    f"len:{token_info['length']}, "
+                    f"alpha:{token_info['is_alpha']})"
                 )
             else:
                 print(f"{i:2d}. {token:<15} {score:.3f} (error)")
 
     elif args.list_tokens:
-        print(f"\nTokens:")
+        print("\nTokens:")
         tokens = tool.list_tokens(limit=args.limit, pattern=args.pattern)
         for i, token in enumerate(tokens, 1):
             print(f"{i:3d}. {token}")
         print(f"({len(tokens)} tokens)")
 
     else:
-        print("No operation specified. Use --query or --list-tokens")
+        print("No operation specified. Use --tokenize, --query, or " "--list-tokens")
 
 
 if __name__ == "__main__":
