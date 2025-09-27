@@ -10,7 +10,7 @@ Usage:
     python chat_mode.py --model-path meta-llama/Llama-3.2-3B
 
     # Load an SFT model
-    python chat_mode.py --model-path /workspace/models/Llama-3.2-3B-LoRA-SFT
+    python chat_mode.py --model-path ./models/Llama-3.2-3B-Full-SFT
 
     # Load with custom generation parameters
     python chat_mode.py --model-path meta-llama/Llama-3.2-3B --temperature 0.8 --max-length 512
@@ -149,6 +149,8 @@ class ChatInterface:
                         model_name,
                         trust_remote_code=self.trust_remote_code,
                     )
+                    # Update model path to use Hub model for consistency
+                    self.model_path = model_name
                 except Exception as e3:
                     print(f"❌ All tokenizer loading attempts failed: {e3}")
                     print(
@@ -183,15 +185,38 @@ class ChatInterface:
         print("🤖 Loading standard model...")
 
         # Determine dtype based on device
-        torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
-            torch_dtype=torch_dtype,
-            device_map="auto" if self.device == "cuda" else None,
-            trust_remote_code=self.trust_remote_code,
-            quantization_config=self.quantization_config,
-        )
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_path,
+                dtype=dtype,
+                device_map="auto" if self.device == "cuda" else None,
+                trust_remote_code=self.trust_remote_code,
+                quantization_config=self.quantization_config,
+            )
+        except Exception as e:
+            print(f"❌ Model loading failed: {e}")
+            print("🔄 Attempting to load base model from HuggingFace Hub...")
+            try:
+                # Fallback to base model from Hub
+                fallback_model = "meta-llama/Llama-3.2-3B"
+                print(f"📦 Loading fallback model: {fallback_model}")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    fallback_model,
+                    dtype=dtype,
+                    device_map="auto" if self.device == "cuda" else None,
+                    trust_remote_code=self.trust_remote_code,
+                    quantization_config=self.quantization_config,
+                )
+                # Update model path for consistency
+                self.model_path = fallback_model
+                print("✅ Successfully loaded fallback model from Hub")
+            except Exception as e2:
+                print(f"❌ Fallback model loading also failed: {e2}")
+                raise RuntimeError(
+                    f"Unable to load model from {self.model_path} or fallback model"
+                )
 
     def _load_lora_model(self) -> None:
         """Load a LoRA model with base model."""
@@ -211,10 +236,10 @@ class ChatInterface:
         print(f"📦 Loading base model: {base_model_name}")
 
         # Load base model
-        torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
         base_model = AutoModelForCausalLM.from_pretrained(
             base_model_name,
-            torch_dtype=torch_dtype,
+            dtype=dtype,
             device_map="auto" if self.device == "cuda" else None,
             trust_remote_code=self.trust_remote_code,
             quantization_config=self.quantization_config,
