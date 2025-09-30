@@ -26,6 +26,10 @@ Usage Examples:
     # Using local SFT-tuned model
     python dpo_training.py --dataset tech-tao/gang-jing_contrarian_dpo_data \
         --base-model ./models/Llama-3.2-3B-Full-SFT --use-lora
+    
+    # Using predefined model size
+    python dpo_training.py --dataset tech-tao/yizhipian_yizhipian_dpo_data \
+        --model-size 3B --use-lora
 """
 
 import os
@@ -165,7 +169,7 @@ def preprocess_dpo_dataset(dataset: Dataset) -> Dataset:
         convert_conversation_to_dpo, remove_columns=dataset.column_names
     )
 
-    print(f"📊 Preprocessed dataset:")
+    print("📊 Preprocessed dataset:")
     print(f"   - Total samples: {len(processed_dataset)}")
     print(f"   - Columns: {processed_dataset.column_names}")
 
@@ -385,7 +389,7 @@ if __name__ == "__main__":
         "--base-model",
         type=str,
         default=None,
-        help=("Path to base model (local directory or " "Hugging Face model name)"),
+        help=("Path to base model (local directory or Hugging Face model name)"),
     )
     parser.add_argument(
         "--model-size",
@@ -445,7 +449,6 @@ if __name__ == "__main__":
         default=None,
         help="Hugging Face token for private datasets",
     )
-
     args = parser.parse_args()
 
     # Validate arguments
