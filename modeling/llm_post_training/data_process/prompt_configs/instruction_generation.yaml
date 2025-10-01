@@ -1,0 +1,77 @@
+task_name: "instruction_generation"
+description: "Generate instruction-following training data from raw text"
+
+input_format:
+  text: "string"  # Raw text to generate instructions from
+  domain: "string"  # Optional domain context
+  difficulty: "string"  # Optional difficulty level
+
+output_format:
+  instruction: "string"  # Generated instruction
+  input: "string"  # Optional input context
+  output: "string"  # Expected output
+
+prompts:
+  basic_instruction:
+    description: "Generate basic instruction-following examples"
+    variables: ["text", "domain"]
+    template: |
+      Given the following text, generate a clear instruction that would help someone understand or work with this content.
+      
+      Text: {{ text }}
+      {% if domain %}Domain: {{ domain }}{% endif %}
+      
+      Please provide:
+      1. A clear, actionable instruction
+      2. Any necessary input context (if applicable)
+      3. The expected output format
+      
+      Format your response as:
+      Instruction: [your instruction here]
+      Input: [input context if needed, otherwise "None"]
+      Output: [expected output format]
+
+  creative_task:
+    description: "Generate creative tasks from text content"
+    variables: ["text", "difficulty"]
+    template: |
+      Create a creative task based on the following text. The task should be engaging and educational.
+      
+      Text: {{ text }}
+      Difficulty Level: {{ difficulty or "intermediate" }}
+      
+      Generate a creative task that:
+      - Is appropriate for the difficulty level
+      - Encourages critical thinking
+      - Is engaging and fun
+      - Has clear success criteria
+      
+      Format your response as:
+      Instruction: [creative task description]
+      Input: [any required input or context]
+      Output: [expected output format and criteria]
+
+  analysis_prompt:
+    description: "Generate analytical tasks from text"
+    variables: ["text", "domain"]
+    template: |
+      Create an analytical task that helps users understand the deeper meaning or structure of this text.
+      
+      Text: {{ text }}
+      {% if domain %}Domain: {{ domain }}{% endif %}
+      
+      Design an analysis task that requires:
+      - Critical thinking
+      - Pattern recognition
+      - Synthesis of information
+      - Clear reasoning
+      
+      Format your response as:
+      Instruction: [analysis task description]
+      Input: [text to analyze and any additional context]
+      Output: [expected analysis format and key points to cover]
+
+metadata:
+  version: "1.0"
+  author: "Knowledge Distillation System"
+  created: "2024-01-01"
