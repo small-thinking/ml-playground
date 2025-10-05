@@ -7,23 +7,29 @@ Supports both initial training and continuing from a previous SFT model.
 
 Usage:
     # Initial SFT training from base model with default Alpaca dataset
-    python instruction_sft.py --model-size 3B --use-lora
+    python instruction_sft.py --model-size 4B --use-lora
 
     # SFT training with custom Alpaca format dataset from HF
-    python instruction_sft.py --model-size 3B --dataset-format alpaca \
+    python instruction_sft.py --model-size 4B --dataset-format alpaca \
         --dataset-name microsoft/orca-math-word-problems-200k
 
     # SFT training with custom messages format dataset from HF
-    python instruction_sft.py --model-size 3B --dataset-format messages \
+    python instruction_sft.py --model-size 4B --dataset-format messages \
         --dataset-name HuggingFaceH4/ultrachat_200k
 
     # Continue SFT from local checkpoint
-    python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \
+    python instruction_sft.py \
+        --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \
         --dataset-name tech-tao/gang-jing_contrarian_sft_data \
         --dataset-format messages
 
     # Continue SFT from Hugging Face model
     python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
+
+    # SFT with custom column names (e.g., prompt/text format)
+    python instruction_sft.py --model-size 4B --dataset-format alpaca \
+        --dataset-name tech-tao/my-reasoning-traces-10k \
+        --instruction-col prompt --output-col text --output-suffix reasoning --num-epochs 3
 """
 
 import os
@@ -46,6 +52,7 @@ def get_model_name(model_size: str) -> str:
     """Get the model name based on size."""
     model_mapping = {
         "8B": "meta-llama/Llama-3.1-8B",
+        "4B": "Qwen/Qwen3-4B-Instruct-2507",
         "3B": "meta-llama/Llama-3.2-3B",
         "1.5B": "Qwen/Qwen2-1.5B",
         "0.5B": "Qwen/Qwen2-0.5B",
@@ -112,8 +119,8 @@ def tokenize_function(
     labels[labels == tokenizer.pad_token_id] = -100  # Mask padding tokens
 
     # Mask the instruction part of the input so that the model only
-    # learns to predict the response. This is done by setting the labels of the
-    # instruction tokens to -100, which is ignored by the loss function.
+    # learns to predict the response. This is done by setting the labels of
+    # the instruction tokens to -100, which is ignored by the loss function.
     for i, text in enumerate(examples["text"]):
         response_start_marker = "### Response:"
         marker_pos = text.find(response_start_marker)
@@ -197,6 +204,24 @@ def main(args):
     print(f"📊 Dataset size: {len(dataset)} samples")
     print(f"📊 Dataset columns: {dataset.column_names}")
 
+    # Rename columns to standard names if custom column names are provided
+    if args.dataset_format == "alpaca" and (
+        args.instruction_col != "instruction"
+        or args.input_col != "input"
+        or args.output_col != "output"
+    ):
+        # Create column mapping
+        column_mapping = {}
+        if args.instruction_col != "instruction":
+            column_mapping[args.instruction_col] = "instruction"
+        if args.input_col != "input":
+            column_mapping[args.input_col] = "input"
+        if args.output_col != "output":
+            column_mapping[args.output_col] = "output"
+
+        # Rename columns
+        dataset = dataset.rename_columns(column_mapping)
+
     dataset = dataset.map(format_function, remove_columns=dataset.column_names)
     dataset = dataset.map(
         lambda x: tokenize_function(x, tokenizer),
@@ -205,31 +230,40 @@ def main(args):
         desc="Tokenizing dataset",
     )
 
-    # Calculate max_steps based on dataset size
+    # Calculate max_steps based on dataset size and epochs
     effective_batch_size = args.batch_size * args.gradient_accumulation_steps
-    max_possible_steps = len(dataset) // effective_batch_size
-    max_steps = min(args.max_steps, max_possible_steps)
+    steps_per_epoch = len(dataset) // effective_batch_size
+    max_possible_steps = steps_per_epoch * args.num_epochs
+
+    # Use the smaller of: calculated steps for epochs, or user-specified max_steps
+    max_steps = min(max_possible_steps, args.max_steps)
 
     print("📊 Training configuration:")
     print(f"   - Dataset size: {len(dataset)} samples")
     print(f"   - Effective batch size: {effective_batch_size}")
-    print(f"   - Max possible steps: {max_possible_steps}")
+    print(f"   - Steps per epoch: {steps_per_epoch}")
+    print(f"   - Number of epochs: {args.num_epochs}")
+    print(f"   - Total steps for {args.num_epochs} epochs: {max_possible_steps}")
     print(f"   - Using max_steps: {max_steps}")
 
     # Training arguments
     if args.checkpoint_path:
         # For continue training, use checkpoint name in output directory
         checkpoint_name = args.checkpoint_path.split("/")[-1]
-        output_dir = (
-            f"./models/{checkpoint_name}-"
-            f"{'LoRA' if args.use_lora else 'Full'}-Continue-SFT"
+        base_name = (
+            f"{checkpoint_name}-{'LoRA' if args.use_lora else 'Full'}-" f"Continue-SFT"
         )
     else:
         # For initial training, use base model name
-        output_dir = (
-            f"./models/{model_path.split('/')[-1]}-"
-            f"{'LoRA' if args.use_lora else 'Full'}-SFT"
+        base_name = (
+            f"{model_path.split('/')[-1]}-" f"{'LoRA' if args.use_lora else 'Full'}-SFT"
         )
+
+    # Add custom suffix if provided
+    if args.output_suffix:
+        output_dir = f"./models/{base_name}-{args.output_suffix}"
+    else:
+        output_dir = f"./models/{base_name}"
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=args.num_epochs,
@@ -280,7 +314,7 @@ if __name__ == "__main__":
         "--model-size",
         type=str,
         default=None,
-        choices=["0.5B", "1.5B", "3B", "8B"],
+        choices=["0.5B", "1.5B", "3B", "4B", "8B"],
         help=(
             "Model size for initial training "
             "(not needed when using --checkpoint-path)"
@@ -316,8 +350,8 @@ if __name__ == "__main__":
         default="alpaca",
         choices=["alpaca", "messages"],
         help=(
-            "Dataset format: 'alpaca' for Alpaca format or 'messages' "
-            "for messages format"
+            "Dataset format: 'alpaca' for Alpaca format "
+            "(supports custom column names) or 'messages' for messages format"
         ),
     )
     parser.add_argument(
@@ -328,6 +362,30 @@ if __name__ == "__main__":
             "Hugging Face dataset name (optional for alpaca format, "
             "required for messages format)"
         ),
+    )
+    parser.add_argument(
+        "--instruction-col",
+        type=str,
+        default="instruction",
+        help="Column name for instruction/prompt (default: instruction)",
+    )
+    parser.add_argument(
+        "--input-col",
+        type=str,
+        default="input",
+        help="Column name for input (default: input)",
+    )
+    parser.add_argument(
+        "--output-col",
+        type=str,
+        default="output",
+        help="Column name for output/response (default: output)",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default=None,
+        help="Custom suffix for output directory (e.g., 'v2', 'experiment-1')",
     )
     args = parser.parse_args()
 
