@@ -18,12 +18,18 @@ Usage:
         --dataset-name HuggingFaceH4/ultrachat_200k
 
     # Continue SFT from local checkpoint
-    python instruction_sft.py --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \
-        --dataset-name tech-tao/gang-jing_contrarian_sft_data \
+    python instruction_sft.py \\
+        --checkpoint-path ./models/Llama-3.2-3B-Full-SFT \\
+        --dataset-name tech-tao/gang-jing_contrarian_sft_data \\
         --dataset-format messages
 
     # Continue SFT from Hugging Face model
     python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
+
+    # SFT with custom column names (e.g., prompt/text format)
+    python instruction_sft.py --model-size 3B --dataset-format alpaca \\
+        --dataset-name tech-tao/my-reasoning-traces-10k \\
+        --instruction-col prompt --output-col text
 """
 
 import os
@@ -197,6 +203,24 @@ def main(args):
     print(f"📊 Dataset size: {len(dataset)} samples")
     print(f"📊 Dataset columns: {dataset.column_names}")
 
+    # Rename columns to standard names if custom column names are provided
+    if args.dataset_format == "alpaca" and (
+        args.instruction_col != "instruction"
+        or args.input_col != "input"
+        or args.output_col != "output"
+    ):
+        # Create column mapping
+        column_mapping = {}
+        if args.instruction_col != "instruction":
+            column_mapping[args.instruction_col] = "instruction"
+        if args.input_col != "input":
+            column_mapping[args.input_col] = "input"
+        if args.output_col != "output":
+            column_mapping[args.output_col] = "output"
+
+        # Rename columns
+        dataset = dataset.rename_columns(column_mapping)
+
     dataset = dataset.map(format_function, remove_columns=dataset.column_names)
     dataset = dataset.map(
         lambda x: tokenize_function(x, tokenizer),
@@ -316,8 +340,8 @@ if __name__ == "__main__":
         default="alpaca",
         choices=["alpaca", "messages"],
         help=(
-            "Dataset format: 'alpaca' for Alpaca format or 'messages' "
-            "for messages format"
+            "Dataset format: 'alpaca' for Alpaca format "
+            "(supports custom column names) or 'messages' for messages format"
         ),
     )
     parser.add_argument(
@@ -328,6 +352,24 @@ if __name__ == "__main__":
             "Hugging Face dataset name (optional for alpaca format, "
             "required for messages format)"
         ),
+    )
+    parser.add_argument(
+        "--instruction-col",
+        type=str,
+        default="instruction",
+        help="Column name for instruction/prompt (default: instruction)",
+    )
+    parser.add_argument(
+        "--input-col",
+        type=str,
+        default="input",
+        help="Column name for input (default: input)",
+    )
+    parser.add_argument(
+        "--output-col",
+        type=str,
+        default="output",
+        help="Column name for output/response (default: output)",
     )
     args = parser.parse_args()
 

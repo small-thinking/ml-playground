@@ -26,7 +26,7 @@ Examples:
     python reasoning_grpo.py --use-lora
 
     # Custom configuration
-    python reasoning_grpo.py --model-size 1.5B --max-steps 1000 --batch-size 8
+    python reasoning_grpo.py --model-size 4B --batch-size 8
 
     # With Hugging Face token
     python reasoning_grpo.py --hf-token your_token_here
@@ -36,6 +36,7 @@ import re
 import random
 import os
 import argparse
+import gc
 from datetime import datetime
 from typing import List, Optional
 
@@ -57,6 +58,15 @@ class ReasoningGRPOTrainer:
         learning_rate: float = 1e-5,
         gradient_accumulation_steps: int = 16,
         hf_token: Optional[str] = None,
+        # Diversity control parameters
+        temperature: float = 1.0,
+        top_p: float = 0.9,
+        top_k: int = 50,
+        num_generations: int = 8,
+        repetition_penalty: float = 1.1,
+        # Memory optimization parameters
+        use_gradient_checkpointing: bool = True,
+        max_length: int = 512,
     ):
         """
         Initialize the trainer with model configuration.
@@ -70,6 +80,13 @@ class ReasoningGRPOTrainer:
             learning_rate: Learning rate for training
             gradient_accumulation_steps: Number of gradient accumulation steps
             hf_token: Hugging Face token for accessing gated repositories
+            temperature: Sampling temperature for generation diversity
+            top_p: Nucleus sampling parameter for diversity control
+            top_k: Top-k sampling parameter for diversity control
+            num_generations: Number of rollouts per prompt for diversity
+            repetition_penalty: Penalty for repetitive text generation
+            use_gradient_checkpointing: Enable gradient checkpointing to save memory
+            max_length: Maximum sequence length to limit memory usage
         """
         self.model_size = model_size
         self.use_lora = use_lora
@@ -79,6 +96,15 @@ class ReasoningGRPOTrainer:
         self.learning_rate = learning_rate
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.hf_token = hf_token
+        # Diversity control parameters
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.num_generations = num_generations
+        self.repetition_penalty = repetition_penalty
+        # Memory optimization parameters
+        self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.max_length = max_length
         self.model_name = self._get_model_name()
         self.dataset = None
         self.index = {}
@@ -146,6 +172,12 @@ class ReasoningGRPOTrainer:
                 "ground_truth": x["completion"],
             }
         )
+
+        # Memory optimization: Limit dataset size if too large
+        if len(self.dataset) > 1000:
+            print(f"📊 Dataset size: {len(self.dataset)} samples")
+            print("🧠 Memory optimization: Limiting dataset to 1000 samples")
+            self.dataset = self.dataset.select(range(1000))
 
         # Build index for easy lookup
         self._build_dataset_index()
@@ -466,6 +498,28 @@ class ReasoningGRPOTrainer:
 
         return debug_output
 
+    def _monitor_memory(self) -> None:
+        """Monitor and log memory usage."""
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+                print(
+                    f"🧠 GPU Memory: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
+                )
+
+                # Force garbage collection if memory usage is high
+                if allocated > 10:  # If using more than 10GB
+                    print(
+                        "🧹 High memory usage detected, running garbage collection..."
+                    )
+                    gc.collect()
+                    torch.cuda.empty_cache()
+        except ImportError:
+            pass  # torch not available
+
     def get_lora_config(self) -> Optional[LoraConfig]:
         """Get LoRA configuration if enabled."""
         if not self.use_lora:
@@ -496,18 +550,21 @@ class ReasoningGRPOTrainer:
         config_params = {
             "output_dir": output_dir,
             "learning_rate": self.learning_rate,
-            "temperature": 1.0,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "repetition_penalty": self.repetition_penalty,
             "warmup_ratio": 0.1,
             "lr_scheduler_type": "cosine",
             "logging_steps": 1,
             "per_device_train_batch_size": self.batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
-            "num_generations": 8,
-            "max_prompt_length": 768,
+            "num_generations": self.num_generations,
+            "max_prompt_length": min(self.max_length, 512),  # Reduce prompt length
             "max_steps": self.max_steps,
+            # Memory optimization settings (only supported parameters)
             "fp16": True,
-            "fp16_full_eval": False,
-            "fp16_opt_level": "O1",
+            "gradient_checkpointing": self.use_gradient_checkpointing,
         }
 
         # Add wandb configuration if enabled
@@ -540,6 +597,9 @@ class ReasoningGRPOTrainer:
 
         # Load and prepare dataset
         self.load_and_prepare_dataset()
+
+        # Monitor memory before training
+        self._monitor_memory()
 
         # Get configurations
         lora_config = self.get_lora_config()
@@ -623,6 +683,62 @@ def parse_arguments() -> argparse.Namespace:
         help="Hugging Face token for accessing gated repositories",
     )
 
+    # Diversity control parameters
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for generation diversity (higher = more diverse)",
+    )
+
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=0.9,
+        help="Nucleus sampling parameter for diversity control",
+    )
+
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=50,
+        help="Top-k sampling parameter for diversity control",
+    )
+
+    parser.add_argument(
+        "--num-generations",
+        type=int,
+        default=4,
+        help="Number of rollouts per prompt for diversity",
+    )
+
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.1,
+        help="Penalty for repetitive text generation",
+    )
+
+    # Memory optimization parameters
+    parser.add_argument(
+        "--disable-gradient-checkpointing",
+        action="store_true",
+        help="Disable gradient checkpointing (uses more memory but faster)",
+    )
+
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=512,
+        help="Maximum sequence length to limit memory usage",
+    )
+
+    parser.add_argument(
+        "--memory-efficient",
+        action="store_true",
+        help="Enable memory optimization settings (smaller batch, more accumulation)",
+    )
+
     return parser.parse_args()
 
 
@@ -643,7 +759,26 @@ def main():
     print(f"   Batch Size: {args.batch_size}")
     print(f"   Learning Rate: {args.learning_rate}")
     print(f"   Gradient Accumulation Steps: " f"{args.gradient_accumulation_steps}")
+    print("🎲 Diversity Controls:")
+    print(f"   Temperature: {args.temperature}")
+    print(f"   Top-p: {args.top_p}")
+    print(f"   Top-k: {args.top_k}")
+    print(f"   Num Generations: {args.num_generations}")
+    print(f"   Repetition Penalty: {args.repetition_penalty}")
     print("-" * 50)
+
+    # Apply memory-efficient settings if requested
+    if args.memory_efficient:
+        print("🧠 Memory-efficient mode enabled:")
+        print("   - Reducing batch size and increasing gradient accumulation")
+        print("   - Enabling gradient checkpointing")
+        print("   - Reducing sequence length")
+        args.batch_size = max(1, args.batch_size // 2)  # Halve batch size
+        args.gradient_accumulation_steps = (
+            args.gradient_accumulation_steps * 2
+        )  # Double accumulation
+        args.max_length = min(args.max_length, 256)  # Reduce max length
+        args.num_generations = min(args.num_generations, 2)  # Reduce generations
 
     # Create and run trainer
     trainer = ReasoningGRPOTrainer(
@@ -655,6 +790,15 @@ def main():
         learning_rate=args.learning_rate,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         hf_token=args.hf_token,
+        # Diversity control parameters
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        num_generations=args.num_generations,
+        repetition_penalty=args.repetition_penalty,
+        # Memory optimization parameters
+        use_gradient_checkpointing=not args.disable_gradient_checkpointing,
+        max_length=args.max_length,
     )
 
     trainer.train()
