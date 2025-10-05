@@ -29,7 +29,7 @@ Usage:
     # SFT with custom column names (e.g., prompt/text format)
     python instruction_sft.py --model-size 3B --dataset-format alpaca \\
         --dataset-name tech-tao/my-reasoning-traces-10k \\
-        --instruction-col prompt --output-col text
+        --instruction-col prompt --output-col text --output-suffix reasoning
 """
 
 import os
@@ -118,8 +118,8 @@ def tokenize_function(
     labels[labels == tokenizer.pad_token_id] = -100  # Mask padding tokens
 
     # Mask the instruction part of the input so that the model only
-    # learns to predict the response. This is done by setting the labels of the
-    # instruction tokens to -100, which is ignored by the loss function.
+    # learns to predict the response. This is done by setting the labels of
+    # the instruction tokens to -100, which is ignored by the loss function.
     for i, text in enumerate(examples["text"]):
         response_start_marker = "### Response:"
         marker_pos = text.find(response_start_marker)
@@ -244,16 +244,20 @@ def main(args):
     if args.checkpoint_path:
         # For continue training, use checkpoint name in output directory
         checkpoint_name = args.checkpoint_path.split("/")[-1]
-        output_dir = (
-            f"./models/{checkpoint_name}-"
-            f"{'LoRA' if args.use_lora else 'Full'}-Continue-SFT"
+        base_name = (
+            f"{checkpoint_name}-{'LoRA' if args.use_lora else 'Full'}-" f"Continue-SFT"
         )
     else:
         # For initial training, use base model name
-        output_dir = (
-            f"./models/{model_path.split('/')[-1]}-"
-            f"{'LoRA' if args.use_lora else 'Full'}-SFT"
+        base_name = (
+            f"{model_path.split('/')[-1]}-" f"{'LoRA' if args.use_lora else 'Full'}-SFT"
         )
+
+    # Add custom suffix if provided
+    if args.output_suffix:
+        output_dir = f"./models/{base_name}-{args.output_suffix}"
+    else:
+        output_dir = f"./models/{base_name}"
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=args.num_epochs,
@@ -370,6 +374,12 @@ if __name__ == "__main__":
         type=str,
         default="output",
         help="Column name for output/response (default: output)",
+    )
+    parser.add_argument(
+        "--output-suffix",
+        type=str,
+        default=None,
+        help="Custom suffix for output directory (e.g., 'v2', 'experiment-1')",
     )
     args = parser.parse_args()
 
