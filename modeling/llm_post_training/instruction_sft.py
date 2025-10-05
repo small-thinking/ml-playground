@@ -7,14 +7,14 @@ Supports both initial training and continuing from a previous SFT model.
 
 Usage:
     # Initial SFT training from base model with default Alpaca dataset
-    python instruction_sft.py --model-size 3B --use-lora
+    python instruction_sft.py --model-size 4B --use-lora
 
     # SFT training with custom Alpaca format dataset from HF
-    python instruction_sft.py --model-size 3B --dataset-format alpaca \
+    python instruction_sft.py --model-size 4B --dataset-format alpaca \
         --dataset-name microsoft/orca-math-word-problems-200k
 
     # SFT training with custom messages format dataset from HF
-    python instruction_sft.py --model-size 3B --dataset-format messages \
+    python instruction_sft.py --model-size 4B --dataset-format messages \
         --dataset-name HuggingFaceH4/ultrachat_200k
 
     # Continue SFT from local checkpoint
@@ -27,7 +27,7 @@ Usage:
     python instruction_sft.py --checkpoint-path microsoft/DialoGPT-medium
 
     # SFT with custom column names (e.g., prompt/text format)
-    python instruction_sft.py --model-size 3B --dataset-format alpaca \\
+    python instruction_sft.py --model-size 4B --dataset-format alpaca \\
         --dataset-name tech-tao/my-reasoning-traces-10k \\
         --instruction-col prompt --output-col text --output-suffix reasoning
 """
@@ -52,6 +52,7 @@ def get_model_name(model_size: str) -> str:
     """Get the model name based on size."""
     model_mapping = {
         "8B": "meta-llama/Llama-3.1-8B",
+        "4B": "Qwen/Qwen3-4B-Instruct-2507",
         "3B": "meta-llama/Llama-3.2-3B",
         "1.5B": "Qwen/Qwen2-1.5B",
         "0.5B": "Qwen/Qwen2-0.5B",
@@ -125,7 +126,9 @@ def tokenize_function(
         marker_pos = text.find(response_start_marker)
         if marker_pos != -1:
             prompt_part = text[:marker_pos]
-            prompt_tokens = tokenizer(prompt_part, add_special_tokens=True).input_ids
+            prompt_tokens = tokenizer(
+                prompt_part, add_special_tokens=True
+            ).input_ids
             response_start_token_idx = len(prompt_tokens)
             labels[i, :response_start_token_idx] = -100
 
@@ -152,13 +155,17 @@ def main(args):
         print(f"🚀 Starting SFT training for {model_path}")
 
     # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=True
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else torch.float32),
+        torch_dtype=(
+            torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        ),
         device_map="auto" if torch.cuda.is_available() else None,
         trust_remote_code=True,
     )
@@ -245,12 +252,14 @@ def main(args):
         # For continue training, use checkpoint name in output directory
         checkpoint_name = args.checkpoint_path.split("/")[-1]
         base_name = (
-            f"{checkpoint_name}-{'LoRA' if args.use_lora else 'Full'}-" f"Continue-SFT"
+            f"{checkpoint_name}-{'LoRA' if args.use_lora else 'Full'}-"
+            f"Continue-SFT"
         )
     else:
         # For initial training, use base model name
         base_name = (
-            f"{model_path.split('/')[-1]}-" f"{'LoRA' if args.use_lora else 'Full'}-SFT"
+            f"{model_path.split('/')[-1]}-"
+            f"{'LoRA' if args.use_lora else 'Full'}-SFT"
         )
 
     # Add custom suffix if provided
@@ -276,7 +285,8 @@ def main(args):
         save_total_limit=0,  # Don't save any intermediate checkpoints
         report_to="wandb" if not args.disable_wandb else "none",
         run_name=(
-            f"{model_path.split('/')[-1]}-SFT" if not args.disable_wandb else None
+            f"{model_path.split('/')[-1]}-SFT"
+            if not args.disable_wandb else None
         ),
     )
 
@@ -308,7 +318,7 @@ if __name__ == "__main__":
         "--model-size",
         type=str,
         default=None,
-        choices=["0.5B", "1.5B", "3B", "8B"],
+        choices=["0.5B", "1.5B", "3B", "4B", "8B"],
         help=(
             "Model size for initial training "
             "(not needed when using --checkpoint-path)"
@@ -385,9 +395,14 @@ if __name__ == "__main__":
 
     # Validation
     if args.checkpoint_path and args.use_lora:
-        print("⚠️  Warning: Continue training with LoRA is not fully " "supported yet.")
+        print(
+            "⚠️  Warning: Continue training with LoRA is not fully "
+            "supported yet."
+        )
         print("   Consider using full fine-tuning for continue training.")
     if args.dataset_format == "messages" and not args.dataset_name:
-        raise ValueError("--dataset-name is required when using messages format")
+        raise ValueError(
+            "--dataset-name is required when using messages format"
+        )
 
     main(args)
