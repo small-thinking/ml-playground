@@ -29,7 +29,7 @@ Usage:
     # SFT with custom column names (e.g., prompt/text format)
     python instruction_sft.py --model-size 4B --dataset-format alpaca \
         --dataset-name tech-tao/my-reasoning-traces-10k \
-        --instruction-col prompt --output-col text --output-suffix reasoning
+        --instruction-col prompt --output-col text --output-suffix reasoning --num-epochs 3
 """
 
 import os
@@ -230,15 +230,20 @@ def main(args):
         desc="Tokenizing dataset",
     )
 
-    # Calculate max_steps based on dataset size
+    # Calculate max_steps based on dataset size and epochs
     effective_batch_size = args.batch_size * args.gradient_accumulation_steps
-    max_possible_steps = len(dataset) // effective_batch_size
-    max_steps = min(args.max_steps, max_possible_steps)
+    steps_per_epoch = len(dataset) // effective_batch_size
+    max_possible_steps = steps_per_epoch * args.num_epochs
+
+    # Use the smaller of: calculated steps for epochs, or user-specified max_steps
+    max_steps = min(max_possible_steps, args.max_steps)
 
     print("📊 Training configuration:")
     print(f"   - Dataset size: {len(dataset)} samples")
     print(f"   - Effective batch size: {effective_batch_size}")
-    print(f"   - Max possible steps: {max_possible_steps}")
+    print(f"   - Steps per epoch: {steps_per_epoch}")
+    print(f"   - Number of epochs: {args.num_epochs}")
+    print(f"   - Total steps for {args.num_epochs} epochs: {max_possible_steps}")
     print(f"   - Using max_steps: {max_steps}")
 
     # Training arguments
