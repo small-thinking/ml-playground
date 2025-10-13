@@ -2,7 +2,12 @@
 GRPO Training Script for Reasoning Tasks
 
 This script implements GRPO (Generative Reward-Powered Optimization) training
-for improving reasoning capabilities on the mini-reasoning-dataset.
+for improving reasoning capabilities on the my-reasoning-traces-50k dataset.
+
+The dataset contains structured reasoning traces with:
+- Questions requiring reasoning
+- <think>reasoning process</think> tags
+- <answer>final result</answer> tags
 
 Usage:
     # Single GPU training
@@ -159,17 +164,19 @@ class ReasoningGRPOTrainer:
         return model_mapping[self.model_size]
 
     def load_and_prepare_dataset(self) -> None:
-        """Load and prepare the mini-reasoning-dataset."""
+        """Load and prepare the my-reasoning-traces-50k dataset."""
         # Load dataset from HuggingFace
         # Dataset: https://huggingface.co/datasets/tech-tao/
-        #          mini-reasoning-dataset
-        self.dataset = load_dataset("tech-tao/mini-reasoning-dataset", split="train")
+        #          my-reasoning-traces-50k
+        self.dataset = load_dataset("tech-tao/my-reasoning-traces-50k", split="train")
 
-        # Transform dataset with reasoning prompt template
+        # Transform dataset - the text field already contains the structured
+        # format with question, <think>reasoning</think>, and <answer>result</answer>
         self.dataset = self.dataset.map(
             lambda x: {
-                "prompt": self._create_reasoning_prompt(x["prompt"]),
-                "ground_truth": x["completion"],
+                "prompt": self._extract_question_from_text(x["text"]),
+                "ground_truth": self._extract_answer_from_text(x["text"]),
+                "full_text": x["text"],  # Keep full text for reference
             }
         )
 
@@ -181,6 +188,30 @@ class ReasoningGRPOTrainer:
 
         # Build index for easy lookup
         self._build_dataset_index()
+
+    def _extract_question_from_text(self, text: str) -> str:
+        """Extract the question part from the full text."""
+        # The question is everything before the first <think> tag
+        think_start = text.find(self.reasoning_start)
+        if think_start != -1:
+            question = text[:think_start].strip()
+        else:
+            # Fallback: use the full text if no <think> tag found
+            question = text.strip()
+        return question
+
+    def _extract_answer_from_text(self, text: str) -> str:
+        """Extract the answer from the <answer></answer> tags."""
+        answer_match = re.search(
+            rf"{self.answer_start}\s*(.+?)\s*{self.answer_end}",
+            text,
+            flags=re.DOTALL,
+        )
+        if answer_match:
+            return answer_match.group(1).strip()
+        else:
+            # Fallback: return empty string if no answer tags found
+            return ""
 
     def _create_reasoning_prompt(self, question: str) -> str:
         """Create the reasoning prompt template."""
