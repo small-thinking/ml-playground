@@ -72,6 +72,72 @@ class MultiHeadAttention(nn.Module):
         return self.w_o(attn_output)
 
 
+class GroupedQueryAttention(nn.Module):
+    """Grouped-query attention mechanism.
+
+    In GQA, query heads are grouped and each group shares key and value heads,
+    reducing memory usage and computational cost compared to MHA.
+    Supports both GQA (num_kv_heads > 1) and MQA (num_kv_heads = 1) variants.
+    """
+
+    def __init__(self, d_model, num_heads, num_kv_heads=None, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+
+        # If num_kv_heads is not specified, use 1 (grouped-query attention)
+        if num_kv_heads is None:
+            num_kv_heads = 1
+        assert d_model % num_kv_heads == 0
+        assert num_heads % num_kv_heads == 0
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads  # Same dimension as query heads
+        self.head_ratio = num_heads // num_kv_heads
+
+        # Query projection for all heads
+        self.w_q = nn.Linear(d_model, d_model)
+        # Key and value projections for fewer heads
+        self.w_k = nn.Linear(d_model, num_kv_heads * self.d_k)
+        self.w_v = nn.Linear(d_model, num_kv_heads * self.d_v)
+        # Output projection
+        self.w_o = nn.Linear(d_model, d_model)
+
+        self.attention = ScaledDotProductAttention(dropout)
+
+    def forward(self, q, k, v, mask=None):
+        # q, k, v: (batch_size, seq_len, d_model)
+        batch_size, seq_len = q.size(0), q.size(1)
+
+        # Linear projections
+        q = self.w_q(q)  # (batch_size, seq_len, d_model)
+        k = self.w_k(k)  # (batch_size, seq_len, num_kv_heads * d_k)
+        v = self.w_v(v)  # (batch_size, seq_len, num_kv_heads * d_v)
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.d_k).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.d_v).transpose(1, 2)
+
+        # Repeat k and v for each query head group
+        k = k.repeat_interleave(self.head_ratio, dim=1)
+        v = v.repeat_interleave(self.head_ratio, dim=1)
+
+        # Apply attention
+        attn_output = self.attention(q, k, v, mask)
+
+        # Concatenate heads
+        attn_output = (
+            attn_output.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, self.d_model)
+        )
+
+        return self.w_o(attn_output)
+
+
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding."""
 
