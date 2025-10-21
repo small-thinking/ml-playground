@@ -116,7 +116,12 @@ class ReasoningGRPOTrainer:
         self.step_counter = 0
 
         # Setup workspace directories
-        self.workspace_dir = os.environ.get("WORKSPACE_DIR", "/workspace")
+        self.workspace_dir = os.environ.get(
+            "WORKSPACE_DIR", os.path.expanduser("~/workspace")
+        )
+        # Ensure we use a writable directory
+        if not os.access(self.workspace_dir, os.W_OK):
+            self.workspace_dir = os.path.expanduser("~/workspace")
         self.models_dir = os.path.join(self.workspace_dir, "models")
         self.data_dir = os.path.join(self.workspace_dir, "data")
         self.cache_dir = os.path.join(self.workspace_dir, "cache")
