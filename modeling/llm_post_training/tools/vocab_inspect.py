@@ -7,8 +7,12 @@ Inspect model vocabularies and find similar tokens.
 Usage:
     python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B \\
         --query "dog" --top-k 5
-    python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B --tokenize "Hello, world!"
-    python vocab_inspect.py --model-path distilbert-base-uncased --tokenize "The quick brown fox"
+    python vocab_inspect.py --model-path meta-llama/Llama-3.2-3B \\
+        --tokenize "Hello, world!"
+    python vocab_inspect.py --model-path distilbert-base-uncased \\
+        --tokenize "The quick brown fox"
+    python vocab_inspect.py --model-path Qwen/Qwen2-0.5B-Instruct \\
+        --dump-vocab qwen_0.5b_vocab.json
 """
 
 import argparse
@@ -319,6 +323,55 @@ class VocabularyInspector:
 
         return token_info_list
 
+    def dump_vocabulary(self, output_file: str) -> None:
+        """
+        Dump the complete vocabulary to a JSON file.
+
+        Args:
+            output_file: Path to output JSON file
+        """
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call load_model() first.")
+
+        print(f"📝 Dumping vocabulary to: {output_file}")
+        print(f"📊 Total tokens: {len(self.vocab)}")
+
+        # Get all tokens with their IDs
+        vocab_items = sorted(self.vocab.items(), key=lambda x: x[1])  # Sort by ID
+
+        import json
+
+        vocab_data = {
+            "model_path": self.model_path,
+            "vocab_size": len(self.vocab),
+            "special_tokens": {
+                "unk_token": self.tokenizer.unk_token,
+                "pad_token": self.tokenizer.pad_token,
+                "bos_token": self.tokenizer.bos_token,
+                "eos_token": self.tokenizer.eos_token,
+                "sep_token": self.tokenizer.sep_token,
+            },
+            "vocabulary": [
+                {
+                    "token_id": token_id,
+                    "token": token,
+                    "length": len(token),
+                    "is_special": (token.startswith("<") and token.endswith(">")),
+                    "is_punctuation": token in ".,!?;:()[]{}",
+                    "is_digit": token.isdigit(),
+                    "is_alpha": token.isalpha(),
+                    "is_whitespace": token.isspace(),
+                    "is_subword": (token.startswith("##") or token.startswith("▁")),
+                }
+                for token, token_id in vocab_items
+            ],
+        }
+
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(vocab_data, f, indent=2, ensure_ascii=False)
+
+        print(f"✅ Vocabulary dumped successfully to {output_file}")
+
 
 def main():
     """Main function for command-line interface."""
@@ -351,6 +404,9 @@ def main():
     parser.add_argument(
         "--no-embeddings", action="store_true", help="Don't load model for embeddings"
     )
+    parser.add_argument(
+        "--dump-vocab", help="Dump vocabulary to JSON file (specify output file path)"
+    )
 
     args = parser.parse_args()
 
@@ -359,7 +415,16 @@ def main():
     tool.load_model(load_embeddings=not args.no_embeddings)
 
     # Handle different operations
-    if args.tokenize:
+    if args.dump_vocab:
+        print(f"\nDumping vocabulary to: {args.dump_vocab}")
+        print("=" * 60)
+
+        try:
+            tool.dump_vocabulary(args.dump_vocab)
+        except Exception as e:
+            print(f"Error dumping vocabulary: {e}")
+
+    elif args.tokenize:
         print(f"\nTokenizing: '{args.tokenize}'")
         print("=" * 60)
 
@@ -452,7 +517,10 @@ def main():
         print(f"({len(tokens)} tokens)")
 
     else:
-        print("No operation specified. Use --tokenize, --query, or " "--list-tokens")
+        print(
+            "No operation specified. Use --tokenize, --query, "
+            "--list-tokens, or --dump-vocab"
+        )
 
 
 if __name__ == "__main__":
