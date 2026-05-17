@@ -1,0 +1,4 @@
+interface:
+  display_name: "Branch First UV Workflow"
+  short_description: "Branch, update, and use uv before coding"
+  default_prompt: "Use $branch-first-uv-workflow before making code changes so the work starts from the latest remote default branch and uses the repo's uv environment when present."

@@ -3,7 +3,7 @@ Test script for attention and transformer implementations.
 """
 
 import torch
-from attention import (
+from modeling.basics.attention import (
     MultiHeadAttention,
     GroupedQueryAttention,
     SimpleTransformer,

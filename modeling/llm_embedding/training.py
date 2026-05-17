@@ -4,7 +4,7 @@ SimCSE Training Script
 
 Core training functionality for SimCSE embedding model.
 Usage:
-    uv run python modeling/llm_embedding/training.py
+    uv run -m modeling.llm_embedding.training
 """
 
 import torch

@@ -9,18 +9,16 @@ Examples of post-training techniques for Large Language Models:
 ## Quick Start
 
 ```bash
-# Setup environment
-chmod +x setup_env.sh
-./setup_env.sh --email your.email@example.com
-source ~/.bashrc
+# From repository root
+uv sync --extra dev
 
 # Login to Hugging Face
 huggingface-cli login
 
 # Train models
-python instruction_sft.py --model-size 3B --use-lora   # SFT
-python dpo_training.py --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora  # DPO
-python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
+uv run -m modeling.llm_post_training.instruction_sft --model-size 3B --use-lora
+uv run -m modeling.llm_post_training.dpo_training --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora
+uv run -m modeling.llm_post_training.reasoning_grpo --model-size 3B --use-lora
 ```
 
 ## Models & Datasets
@@ -36,20 +34,20 @@ python reasoning_grpo.py --model-size 3B --use-lora    # GRPO
 ### SFT Training
 
 ```bash
-python instruction_sft.py --model-size 3B --use-lora --max-steps 2000
+uv run -m modeling.llm_post_training.instruction_sft --model-size 3B --use-lora --max-steps 2000
 ```
 
 ### DPO Training
 
 ```bash
 # Train with predefined model size
-python dpo_training.py --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora
+uv run -m modeling.llm_post_training.dpo_training --dataset tech-tao/yizhipian_yizhipian_dpo_data --model-size 3B --use-lora
 
 # Train with custom base model (including SFT-tuned models)
-python dpo_training.py --dataset tech-tao/gang-jing_contrarian_dpo_data --base-model ./models/Llama-3.2-3B-LoRA-SFT --use-lora
+uv run -m modeling.llm_post_training.dpo_training --dataset tech-tao/gang-jing_contrarian_dpo_data --base-model ./models/Llama-3.2-3B-LoRA-SFT --use-lora
 
 # Train with custom parameters
-python dpo_training.py \
+uv run -m modeling.llm_post_training.dpo_training \
     --dataset tech-tao/yizhipian_yizhipian_dpo_data \
     --base-model meta-llama/Llama-3.2-3B \
     --use-lora \
@@ -61,14 +59,14 @@ python dpo_training.py \
 ### GRPO Training
 
 ```bash
-python reasoning_grpo.py --model-size 3B --use-lora --max-steps 1000
+uv run -m modeling.llm_post_training.reasoning_grpo --model-size 3B --use-lora --max-steps 1000
 ```
 
 ### Model Comparison (SFT)
 
 ```bash
 # Compare base vs SFT models
-python compare_base_vs_sft.py \
+uv run -m modeling.llm_post_training.compare_base_vs_sft \
     --base-model meta-llama/Llama-3.2-3B \
     --sft-model /workspace/models/Llama-3.2-3B-Base-LoRA-SFT
 ```
@@ -77,20 +75,20 @@ python compare_base_vs_sft.py \
 
 ```bash
 # Chat with a base model
-python chat_mode.py --model-path meta-llama/Llama-3.2-3B
+uv run -m modeling.llm_post_training.chat_mode --model-path meta-llama/Llama-3.2-3B
 
 # Chat with an SFT model
-python chat_mode.py --model-path /workspace/models/Llama-3.2-3B-LoRA-SFT
+uv run -m modeling.llm_post_training.chat_mode --model-path /workspace/models/Llama-3.2-3B-LoRA-SFT
 
 # Chat with custom parameters
-python chat_mode.py \
+uv run -m modeling.llm_post_training.chat_mode \
     --model-path meta-llama/Llama-3.2-3B \
     --temperature 0.8 \
     --max-length 512 \
     --use-4bit
 
 # Single prompt test
-python chat_mode.py \
+uv run -m modeling.llm_post_training.chat_mode \
     --model-path meta-llama/Llama-3.2-3B \
     --prompt "Write a haiku about machine learning"
 ```
@@ -99,13 +97,13 @@ python chat_mode.py \
 
 ```bash
 # List available models
-python model_utils.py --directory ./models
+uv run -m modeling.llm_post_training.model_utils --directory ./models
 
 # Validate a model
-python model_utils.py --validate /path/to/model
+uv run -m modeling.llm_post_training.model_utils --validate /path/to/model
 
 # Get model size info
-python model_utils.py --size-info /path/to/model
+uv run -m modeling.llm_post_training.model_utils --size-info /path/to/model
 ```
 
 ## Key Features

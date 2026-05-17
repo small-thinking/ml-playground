@@ -2,6 +2,24 @@
 
 A machine learning playground for experimenting with various ML models and techniques.
 
+## Python Environment
+
+This repo now uses a single `uv`-managed Python environment for everything under `modeling/` and `tests/`.
+
+```bash
+uv sync --extra dev
+```
+
+Run Python code through `uv run`, for example:
+
+```bash
+uv run pytest
+uv run -m modeling.llm_embedding.training
+uv run -m modeling.generation.ae.train_autoencoder
+```
+
+`scripts/` contains shell helpers and deployment utilities. `visualizations/` contains static web assets and is not part of the Python environment.
+
 ## 🎮 Web Demos
 
 Open any HTML file in `visualizations/` in your browser.

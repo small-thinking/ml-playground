@@ -1,16 +1,10 @@
 """Test script for auto-encoder implementation using pytest."""
 
-import sys
-from pathlib import Path
 import torch
 import matplotlib.pyplot as plt
 import pytest
 
-# Add the modeling directory to the Python path
-modeling_path = Path(__file__).parent.parent.parent.parent.parent / "modeling"
-sys.path.insert(0, str(modeling_path))
-
-from generation.ae.autoencoder import create_autoencoder
+from modeling.generation.ae.autoencoder import create_autoencoder
 
 
 class TestAutoencoder:

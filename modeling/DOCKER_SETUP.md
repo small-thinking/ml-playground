@@ -9,8 +9,7 @@ This guide explains how to set up and use VERL with Docker for your ML playgroun
 The script now automatically detects your environment and adapts accordingly:
 
 ```bash
-cd modeling
-bash setup_env.sh --email your-email@example.com
+bash modeling/setup_env.sh --email your-email@example.com
 ```
 
 **What it detects:**
@@ -25,14 +24,13 @@ bash setup_env.sh --email your-email@example.com
 Use the provided `docker_setup.sh` script for automated setup:
 
 ```bash
-cd modeling
-./docker_setup.sh --email your-email@example.com
+./modeling/docker_setup.sh --email your-email@example.com
 ```
 
 **Skip VERL installation** (useful for basic environment setup first):
 
 ```bash
-./docker_setup.sh --email your-email@example.com --skip-verl
+./modeling/docker_setup.sh --email your-email@example.com --skip-verl
 ```
 
 ### Option 2: Manual Setup
@@ -48,7 +46,7 @@ cd modeling
    ```bash
    docker run --runtime=nvidia -it --rm --shm-size="10g" --cap-add=SYS_ADMIN \
      -v $(pwd)/workspace:/workspace \
-     -v $(pwd)/modeling:/app/modeling \
+     -v $(pwd):/app \
      -p 8888:8888 -p 6006:6006 \
      verlai/verl:vemlp-th2.4.0-cu124-vllm0.6.3-ray2.10-te1.7-v0.0.3
    ```
@@ -56,14 +54,14 @@ cd modeling
 3. **Setup environment inside container:**
 
    ```bash
-   cd /app/modeling
-   bash setup_env.sh --email your-email@example.com --docker
+   cd /app
+   bash modeling/setup_env.sh --email your-email@example.com --docker
    ```
 
    **Skip VERL installation:**
 
    ```bash
-   bash setup_env.sh --email your-email@example.com --docker --skip-verl
+   bash modeling/setup_env.sh --email your-email@example.com --docker --skip-verl
    ```
 
 ## Updated setup_env.sh Features
@@ -87,13 +85,13 @@ The `setup_env.sh` script now supports Docker mode with the `--docker` flag:
 
 ```bash
 # Local setup (original behavior)
-bash setup_env.sh --email your-email@example.com
+bash modeling/setup_env.sh --email your-email@example.com
 
 # Docker setup with VERL (auto-installs Docker if needed)
-bash setup_env.sh --email your-email@example.com --docker
+bash modeling/setup_env.sh --email your-email@example.com --docker
 
 # Docker setup without VERL (basic environment only, auto-installs Docker if needed)
-bash setup_env.sh --email your-email@example.com --docker --skip-verl
+bash modeling/setup_env.sh --email your-email@example.com --docker --skip-verl
 ```
 
 ## Docker Setup Script Options
@@ -101,7 +99,7 @@ bash setup_env.sh --email your-email@example.com --docker --skip-verl
 The `docker_setup.sh` script provides several options:
 
 ```bash
-./docker_setup.sh [OPTIONS]
+./modeling/docker_setup.sh [OPTIONS]
 
 Options:
   -e, --email EMAIL    Email address for SSH key generation (required)
@@ -123,9 +121,11 @@ When using Docker, the workspace is structured as follows:
 ├── cache/           # HuggingFace cache
 └── logs/            # Training logs
 
-/app/modeling/       # Project files (mounted from host)
-├── setup_env.sh     # Updated setup script
-├── docker_setup.sh  # Docker automation script
+/app/                # Project files (mounted from host)
+├── pyproject.toml   # Unified uv project
+├── modeling/
+│   ├── setup_env.sh
+│   └── docker_setup.sh
 └── ...              # Other project files
 ```
 
@@ -217,7 +217,7 @@ docker logs verl-container
 
 # Remove and recreate
 docker rm verl-container
-./docker_setup.sh --email your-email@example.com
+./modeling/docker_setup.sh --email your-email@example.com
 ```
 
 ## Next Steps
@@ -234,10 +234,10 @@ After setup:
 
    ```bash
    # Quick validation (built into setup)
-   python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
+   uv run python -c "import verl; print(f'VERL version: {verl.__version__}')"
 
    # Comprehensive validation
-   python3 /app/modeling/validate_verl.py
+   uv run python /app/modeling/validate_verl.py
    ```
 
 3. **Login to Hugging Face:**
@@ -258,13 +258,13 @@ After installing VERL, you can validate the installation using the provided vali
 ### Quick Validation
 
 ```bash
-python3 -c "import verl; print(f'VERL version: {verl.__version__}')"
+uv run python -c "import verl; print(f'VERL version: {verl.__version__}')"
 ```
 
 ### Comprehensive Validation
 
 ```bash
-python3 /app/modeling/validate_verl.py
+uv run python /app/modeling/validate_verl.py
 ```
 
 The validation script checks:
