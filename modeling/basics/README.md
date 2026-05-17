@@ -14,7 +14,7 @@ Minimal implementations for interview purposes.
 ## Usage
 
 ```python
-from attention import SimpleTransformer, GroupedQueryAttention
+from modeling.basics.attention import SimpleTransformer, GroupedQueryAttention
 
 # Basic transformer
 model = SimpleTransformer(vocab_size=1000, d_model=512, num_heads=8, num_layers=6, d_ff=2048)
@@ -27,7 +27,7 @@ gqa_balanced = GroupedQueryAttention(d_model=512, num_heads=8, num_kv_heads=2)  
 ## Test
 
 ```bash
-python test_attention.py
+uv run python modeling/basics/test_attention.py
 ```
 
 ## Key Concepts

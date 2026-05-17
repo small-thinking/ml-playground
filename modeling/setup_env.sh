@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Function to display usage
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -230,23 +233,24 @@ else
       build-essential
 fi
 
-echo "=== [Step 3] Setting up Python environment ==="
-pip3 install --upgrade pip
-pip3 install virtualenv ipython
+echo "=== [Step 3] Setting up unified uv environment for modeling/tests ==="
+if ! command -v uv >/dev/null 2>&1; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
 
-# Install project requirements
-pip install -r requirements.txt
-
-echo "=== [Step 4] Installing Hugging Face CLI ==="
-pip install huggingface_hub[cli]
+cd "$REPO_ROOT"
+uv sync --extra dev
+echo "✓ Synced Python environment from $REPO_ROOT/pyproject.toml"
 
 # Install VERL if in Docker mode (moved to later step)
 if [ "$DOCKER_MODE" = true ] && [ "$SKIP_VERL" = false ]; then
-    echo "=== [Step 5] Installing VERL ==="
-    pip3 install verl
+    echo "=== [Step 4] Installing VERL into the shared uv environment ==="
+    uv pip install --python "$REPO_ROOT/.venv/bin/python" verl
     
-    echo "=== [Step 5.1] Validating VERL Installation ==="
-    python3 -c "
+    echo "=== [Step 4.1] Validating VERL Installation ==="
+    uv run python -c "
 import sys
 try:
     import verl
@@ -293,8 +297,8 @@ except Exception as e:
 elif [ "$DOCKER_MODE" = true ] && [ "$SKIP_VERL" = true ]; then
     echo "=== [Step 5] Skipping VERL Installation ==="
     echo "VERL installation skipped. To install VERL later, run:"
-    echo "  pip3 install verl"
-    echo "  python3 /app/modeling/validate_verl.py"
+    echo "  uv pip install --python $REPO_ROOT/.venv/bin/python verl"
+    echo "  uv run python /app/modeling/validate_verl.py"
 fi
 
 echo "=== [Step 6] Installing oh-my-bash ==="
@@ -404,8 +408,8 @@ if [ "$DOCKER_MODE" = true ]; then
     echo "1. Login to Hugging Face: huggingface-cli login"
     echo "2. Add your SSH key to GitHub/GitLab (see instructions above)"
     if [ "$SKIP_VERL" = true ]; then
-        echo "3. Install VERL when ready: pip3 install verl"
-        echo "4. Validate VERL: python3 /app/modeling/validate_verl.py"
+        echo "3. Install VERL when ready: uv pip install --python $REPO_ROOT/.venv/bin/python verl"
+        echo "4. Validate VERL: uv run python /app/modeling/validate_verl.py"
     else
         echo "3. VERL is already installed and validated!"
     fi
@@ -419,16 +423,16 @@ else
     
     if [ "$ENVIRONMENT_TYPE" = "remote" ]; then
         echo "3. For remote VM training:"
-        echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"
-        echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
+        echo "   - GRPO: uv run -m modeling.llm_post_training.reasoning_grpo --model-size 3B --use-lora"
+        echo "   - SFT:  uv run -m modeling.llm_post_training.instruction_sft --model-size 3B --use-lora"
         echo ""
         echo "4. To use Docker on this VM later:"
         echo "   - Run: $0 --email $EMAIL --docker (auto-installs Docker)"
         echo "   - Or manually: curl -fsSL https://get.docker.com | sh"
-        echo "   - Then: ./docker_setup.sh --email $EMAIL"
+        echo "   - Then: ./modeling/docker_setup.sh --email $EMAIL"
     else
         echo "3. Start training:"
-        echo "   - GRPO: python reasoning_grpo.py --model-size 3B --use-lora"
-        echo "   - SFT:  python instruction_sft.py --model-size 3B --use-lora"
+        echo "   - GRPO: uv run -m modeling.llm_post_training.reasoning_grpo --model-size 3B --use-lora"
+        echo "   - SFT:  uv run -m modeling.llm_post_training.instruction_sft --model-size 3B --use-lora"
     fi
 fi

@@ -57,8 +57,7 @@ trainer.train(num_epochs=50)
 Run the training script:
 
 ```bash
-cd modeling/generation
-python train_autoencoder.py
+uv run -m modeling.generation.ae.train_autoencoder
 ```
 
 ### Testing
@@ -66,7 +65,7 @@ python train_autoencoder.py
 Test the implementation:
 
 ```bash
-python test_autoencoder.py
+uv run pytest tests/modeling/generation/ae/test_autoencoder.py
 ```
 
 ## Image DataLoaders
@@ -144,21 +143,15 @@ test_loader = factory.get_test_dataloader()
 
 ### Testing
 
-Run the test script to verify everything works:
+The current automated coverage is the autoencoder test suite:
 
 ```bash
-cd modeling/generation
-python test_image_dataloader.py
+uv run pytest tests/modeling/generation/ae/test_autoencoder.py
 ```
 
 ### Examples
 
-See `example_usage.py` for complete examples including:
-
-- Basic usage patterns
-- Auto-encoder training loops
-- VAE training loops
-- Factory pattern usage
+See the package modules and the [`ae/`](./ae/) README for concrete training and inference examples.
 
 ### Dependencies
 
@@ -167,4 +160,4 @@ See `example_usage.py` for complete examples including:
 - `datasets` >= 2.18.0
 - `transformers` >= 4.40.0
 
-All dependencies are already included in the project's `pyproject.toml`.
+All dependencies are managed from the repository root `pyproject.toml` via `uv`.

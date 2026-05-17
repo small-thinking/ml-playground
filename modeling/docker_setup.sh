@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Function to display usage
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -109,7 +112,7 @@ docker run -d \
     --shm-size="10g" \
     --cap-add=SYS_ADMIN \
     -v "$WORKSPACE_DIR:/workspace" \
-    -v "$(pwd)/modeling:/app/modeling" \
+    -v "$REPO_ROOT:/app" \
     -p 8888:8888 \
     -p 6006:6006 \
     "$VERL_IMAGE" \
@@ -122,13 +125,13 @@ echo ""
 echo "=== Setting up environment inside container ==="
 if [ "$SKIP_VERL" = true ]; then
     docker exec "$CONTAINER_NAME" bash -c "
-        cd /app/modeling && 
-        bash setup_env.sh --email '$EMAIL' --docker --skip-verl
+        cd /app &&
+        bash modeling/setup_env.sh --email '$EMAIL' --docker --skip-verl
     "
 else
     docker exec "$CONTAINER_NAME" bash -c "
-        cd /app/modeling && 
-        bash setup_env.sh --email '$EMAIL' --docker
+        cd /app &&
+        bash modeling/setup_env.sh --email '$EMAIL' --docker
     "
 fi
 
@@ -145,7 +148,7 @@ echo "To remove the container:"
 echo "  docker rm $CONTAINER_NAME"
 echo ""
 echo "Your workspace is mounted at: $WORKSPACE_DIR"
-echo "Project files are mounted at: /app/modeling"
+echo "Project files are mounted at: /app"
 echo ""
 echo "Next steps:"
 echo "1. Access the container: docker exec -it $CONTAINER_NAME bash"

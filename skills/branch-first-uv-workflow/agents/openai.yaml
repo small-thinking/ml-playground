@@ -1,0 +1,4 @@
+interface:
+  display_name: "Branch First UV Workflow"
+  short_description: "Branch first, use uv, and auto-create PRs"
+  default_prompt: "Use $branch-first-uv-workflow so code changes start from the latest remote default branch, run in the repo's uv environment when present, and end with a PR that includes Summary and Test Plan."

@@ -7,15 +7,8 @@ This module implements a SimCSE (Simple Contrastive Learning of Sentence Embeddi
 ### Using uv with virtual environment (recommended)
 
 ```bash
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create virtual environment and install dependencies
-uv venv && source .venv/bin/activate  # On macOS/Linux
-# or on Windows: .venv\Scripts\activate
-
-# Install dependencies
-uv pip install -e .
+# From the repository root
+uv sync --extra dev
 ```
 
 ## Architecture
@@ -31,15 +24,10 @@ The model uses a shared architecture defined in `model.py` that can be used by b
 ### 1. Train the Model
 
 ```bash
-# From repository root (recommended)
-python modeling/llm_embedding/training.py
+uv run -m modeling.llm_embedding.training
 
 # Quick verification run (1 batch only)
-python modeling/llm_embedding/training.py --dry-run
-
-# Or navigate to the directory first
-cd modeling/llm_embedding
-python training.py
+uv run -m modeling.llm_embedding.training --dry-run
 ```
 
 This will:
@@ -51,18 +39,13 @@ This will:
 ### 2. Use the Trained Model
 
 ```bash
-# From repository root (recommended)
-python modeling/llm_embedding/inference.py "What can machine learning do?"
-
-# Or navigate to the directory first
-cd modeling/llm_embedding
-python inference.py "What can machine learning do?"
+uv run -m modeling.llm_embedding.inference "What can machine learning do?"
 
 # Multiple texts from file
-python modeling/llm_embedding/inference.py --file texts.txt
+uv run -m modeling.llm_embedding.inference --file texts.txt
 
 # Save embeddings
-python modeling/llm_embedding/inference.py "Your text" --output embeddings.npy
+uv run -m modeling.llm_embedding.inference "Your text" --output embeddings.npy
 ```
 
 ## Model Architecture
