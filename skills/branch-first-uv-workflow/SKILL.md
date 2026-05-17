@@ -18,7 +18,7 @@ Follow this workflow before substantial code edits unless the user explicitly as
 5. Re-apply any local work onto the feature branch if the tree started dirty.
 6. Use `uv` for Python environment sync, execution, and lockfile updates when the repo is `uv`-based.
 7. Run relevant checks in that same environment.
-8. Commit, push, and open a PR when the task calls for publication.
+8. Commit, push, and auto-create a PR when the task calls for publication.
 
 ## Branching Rules
 
@@ -60,5 +60,9 @@ If the tree started dirty, stash or otherwise preserve local edits before updati
 
 - Prepare a focused commit on the feature branch.
 - Push that branch, not the default branch.
-- Open a PR with a clear title, a concise explanation of what changed and why, and an explicit test plan.
+- Auto-attempt PR creation with the best available GitHub path in the environment, such as the GitHub app integration or `gh`.
+- If automated PR creation is blocked by permissions, still push the branch and provide the direct PR creation URL plus the ready-to-use PR title and body.
+- Open the PR with a clear title and a structured body.
+- Always include a `Summary` section in the PR body that explains what changed and why.
+- Always include a `Test Plan` section in the PR body with exact commands that were run and their outcomes.
 - Call out any residual risks, skipped checks, or follow-up work.
