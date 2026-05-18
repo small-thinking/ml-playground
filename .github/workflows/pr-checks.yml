@@ -29,5 +29,13 @@ jobs:
       - name: Run pytest
         run: uv run pytest -q
 
-      - name: Run attention smoke test
-        run: uv run python modeling/basics/test_attention.py
+      - name: Run attention benchmark smoke test
+        run: >-
+          uv run python -m modeling.basics.benchmark_kv_cache
+          --device cpu
+          --batch-size 1
+          --seq-len 8
+          --d-model 32
+          --n-heads 4
+          --warmup 0
+          --iters 1
