@@ -1,15 +1,4 @@
-"""Interview-friendly attention implementations.
-
-The goal of this file is not to be feature-complete. It is to provide a few
-small, conventional implementations that are easy to study and easy to rewrite
-on a whiteboard:
-
-1. single-head causal self-attention
-2. multi-head attention (MHA)
-3. MHA with KV cache for decoding
-4. grouped-query attention (GQA)
-5. multi-query attention (MQA) as a special case of GQA
-"""
+"""Interview-friendly attention implementations."""
 
 import math
 
@@ -37,10 +26,12 @@ class SingleHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask=None, return_attn=False):
+        # Project input tokens into query, key, and value.
         q = self.wq(x)
         k = self.wk(x)
         v = self.wv(x)
 
+        # Each token attends to all visible tokens.
         scores = q @ k.transpose(-2, -1) / math.sqrt(self.d_model)
         if mask is not None:
             if mask.dtype != torch.bool:
@@ -57,13 +48,7 @@ class SingleHeadAttention(nn.Module):
 
 
 class MHA(nn.Module):
-    """Conventional multi-head self-attention.
-
-    Shapes:
-    - input x: [B, T, D]
-    - q/k/v after reshape: [B, H, T, Dh]
-    - output: [B, T, D]
-    """
+    """Conventional multi-head self-attention."""
 
     def __init__(self, d_model, n_heads, dropout=0.0, bias=True):
         super().__init__()
@@ -81,6 +66,7 @@ class MHA(nn.Module):
     def forward(self, x, mask=None, return_attn=False):
         bsz, seq_len, _ = x.shape
 
+        # Split the model dimension into multiple heads.
         q = self.wq(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.wk(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.wv(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
@@ -93,6 +79,7 @@ class MHA(nn.Module):
 
         attn = self.dropout(F.softmax(scores, dim=-1))
         out = attn @ v
+        # Merge all heads back into [B, T, D].
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
         out = self.wo(out)
 
@@ -102,16 +89,7 @@ class MHA(nn.Module):
 
 
 class MHAWithKVCache(MHA):
-    """MHA for autoregressive decoding with an explicit KV cache.
-
-    Usage:
-    - Step 1: out, k_cache, v_cache = attn(x[:, :1], kv_cache=None)
-    - Step 2: out, k_cache, v_cache = attn(x[:, 1:2], kv_cache=(k_cache, v_cache))
-
-    The cache update is simply:
-    - new_k_cache = concat(old_k_cache, k_new)
-    - new_v_cache = concat(old_v_cache, v_new)
-    """
+    """MHA for autoregressive decoding with an explicit KV cache."""
 
     def forward(
         self,
@@ -129,10 +107,12 @@ class MHAWithKVCache(MHA):
 
         bsz, seq_len, _ = x.shape
 
+        # At decode time q comes from only the new token(s).
         q = self.wq(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k_new = self.wk(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v_new = self.wv(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
+        # "Writing" the cache just means appending new K/V and returning them.
         k = k_new if k_cache is None else torch.cat([k_cache, k_new], dim=2)
         v = v_new if v_cache is None else torch.cat([v_cache, v_new], dim=2)
 
@@ -148,13 +128,7 @@ class MHAWithKVCache(MHA):
 
 
 class GroupedQueryAttention(nn.Module):
-    """GQA: many query heads, fewer key/value heads.
-
-    Examples:
-    - num_heads=8, num_kv_heads=8 -> standard MHA-style head count
-    - num_heads=8, num_kv_heads=2 -> GQA
-    - num_heads=8, num_kv_heads=1 -> MQA
-    """
+    """GQA: many query heads, fewer key/value heads."""
 
     def __init__(self, d_model, num_heads, num_kv_heads, dropout=0.0, bias=True):
         super().__init__()
@@ -176,10 +150,13 @@ class GroupedQueryAttention(nn.Module):
     def forward(self, x, mask=None, return_attn=False):
         bsz, seq_len, _ = x.shape
 
+        # Queries keep the full number of heads.
         q = self.wq(x).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        # Keys and values use fewer heads to save memory/bandwidth.
         k = self.wk(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.wv(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
+        # Share each KV head across a group of query heads.
         k = k.repeat_interleave(self.group_size, dim=1)
         v = v.repeat_interleave(self.group_size, dim=1)
 
