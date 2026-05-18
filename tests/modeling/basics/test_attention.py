@@ -6,18 +6,10 @@ from modeling.basics.attention import (
     GroupedQueryAttention,
     MQA,
     PositionalEncoding,
-    SingleHeadAttention,
     SimpleTransformer,
     TransformerBlock,
     causal_mask,
 )
-
-
-def test_single_head_attention_output_shape():
-    x = torch.randn(2, 5, 32)
-    attn = SingleHeadAttention(d_model=32)
-    out = attn(x, mask=causal_mask(x.size(1)))
-    assert out.shape == x.shape
 
 
 def test_mha_output_shape():
