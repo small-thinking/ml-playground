@@ -1,4 +1,4 @@
-"""Interview-friendly attention implementations plus small playground helpers."""
+"""Interview-friendly attention implementations."""
 
 import math
 
@@ -8,108 +8,185 @@ import torch.nn.functional as F
 
 
 def causal_mask(seq_len, device=None):
-    """Lower-triangular mask shaped for attention broadcasting."""
+    """Return a lower-triangular mask with shape [1, 1, T, T]."""
     mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device))
     return mask.view(1, 1, seq_len, seq_len)
 
 
-class MHA(nn.Module):
-    """Concise multi-head self-attention for interview-style implementations."""
+class SingleHeadAttention(nn.Module):
+    """Smallest useful causal self-attention implementation."""
 
-    def __init__(self, d_model, n_heads, dropout=0.0, bias=True):
+    def __init__(self, d_model, dropout=0.0, bias=True):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_model = d_model
-        self.h = n_heads
-        self.d = d_model // n_heads
         self.wq = nn.Linear(d_model, d_model, bias=bias)
         self.wk = nn.Linear(d_model, d_model, bias=bias)
         self.wv = nn.Linear(d_model, d_model, bias=bias)
         self.wo = nn.Linear(d_model, d_model, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
-    def _split_heads(self, x):
-        bsz, seq_len, _ = x.shape
-        return x.view(bsz, seq_len, self.h, self.d).transpose(1, 2)
+    def forward(self, x, mask=None, return_attn=False):
+        # Project input tokens into query, key, and value.
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
 
-    def _merge_heads(self, x):
-        bsz, _, seq_len, _ = x.shape
-        return x.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
+        # Each token attends to all visible tokens.
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d_model)
+        if mask is not None:
+            if mask.dtype != torch.bool:
+                mask = mask != 0
+            scores = scores.masked_fill(~mask.squeeze(1), torch.finfo(scores.dtype).min)
 
-    def _project_qkv(self, x):
-        return (
-            self._split_heads(self.wq(x)),
-            self._split_heads(self.wk(x)),
-            self._split_heads(self.wv(x)),
-        )
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out = attn @ v
+        out = self.wo(out)
+
+        if return_attn:
+            return out, attn
+        return out
+
+
+class MHA(nn.Module):
+    """Conventional multi-head self-attention."""
+
+    def __init__(self, d_model, n_heads, dropout=0.0, bias=True):
+        super().__init__()
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+
+        self.wq = nn.Linear(d_model, d_model, bias=bias)
+        self.wk = nn.Linear(d_model, d_model, bias=bias)
+        self.wv = nn.Linear(d_model, d_model, bias=bias)
+        self.wo = nn.Linear(d_model, d_model, bias=bias)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask=None, return_attn=False):
-        q, k, v = self._project_qkv(x)
-        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+        bsz, seq_len, _ = x.shape
+
+        # Split the model dimension into multiple heads.
+        q = self.wq(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
         if mask is not None:
             if mask.dtype != torch.bool:
                 mask = mask != 0
             scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+
         attn = self.dropout(F.softmax(scores, dim=-1))
         out = attn @ v
-        out = self.wo(self._merge_heads(out))
+        # Merge all heads back into [B, T, D].
+        out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
+        out = self.wo(out)
+
         if return_attn:
             return out, attn
         return out
 
 
 class MHAWithKVCache(MHA):
-    """Incremental decoding MHA that reuses past K/V states."""
+    """MHA for autoregressive decoding with an explicit KV cache."""
 
-    def forward(self, x, k_cache=None, v_cache=None, return_attn=False):
-        q, k_new, v_new = self._project_qkv(x)
+    def forward(
+        self,
+        x,
+        kv_cache=None,
+        *,
+        k_cache=None,
+        v_cache=None,
+        return_attn=False,
+    ):
+        if kv_cache is not None:
+            if k_cache is not None or v_cache is not None:
+                raise ValueError("Pass either kv_cache or k_cache/v_cache, not both.")
+            k_cache, v_cache = kv_cache
+
+        bsz, seq_len, _ = x.shape
+
+        # At decode time q comes from only the new token(s).
+        q = self.wq(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        k_new = self.wk(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        v_new = self.wv(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # "Writing" the cache just means appending new K/V and returning them.
         k = k_new if k_cache is None else torch.cat([k_cache, k_new], dim=2)
         v = v_new if v_cache is None else torch.cat([v_cache, v_new], dim=2)
-        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
         attn = self.dropout(F.softmax(scores, dim=-1))
         out = attn @ v
-        out = self.wo(self._merge_heads(out))
+        out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
+        out = self.wo(out)
+
         if return_attn:
             return out, k, v, attn
         return out, k, v
 
 
 class GroupedQueryAttention(nn.Module):
-    """GQA/MQA variant with fewer KV heads than query heads."""
+    """GQA: many query heads, fewer key/value heads."""
 
-    def __init__(self, d_model, num_heads, num_kv_heads=1, dropout=0.0, bias=True):
+    def __init__(self, d_model, num_heads, num_kv_heads, dropout=0.0, bias=True):
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-        assert (
-            num_heads % num_kv_heads == 0
-        ), "num_heads must be divisible by num_kv_heads"
+        assert num_heads % num_kv_heads == 0, "num_heads must be divisible by num_kv_heads"
+
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
-        self.d = d_model // num_heads
-        self.head_ratio = num_heads // num_kv_heads
+        self.head_dim = d_model // num_heads
+        self.group_size = num_heads // num_kv_heads
+
         self.wq = nn.Linear(d_model, d_model, bias=bias)
-        self.wk = nn.Linear(d_model, num_kv_heads * self.d, bias=bias)
-        self.wv = nn.Linear(d_model, num_kv_heads * self.d, bias=bias)
+        self.wk = nn.Linear(d_model, num_kv_heads * self.head_dim, bias=bias)
+        self.wv = nn.Linear(d_model, num_kv_heads * self.head_dim, bias=bias)
         self.wo = nn.Linear(d_model, d_model, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, q, k, v, mask=None):
-        bsz, seq_len, _ = q.shape
-        q = self.wq(q).view(bsz, seq_len, self.num_heads, self.d).transpose(1, 2)
-        k = self.wk(k).view(bsz, seq_len, self.num_kv_heads, self.d).transpose(1, 2)
-        v = self.wv(v).view(bsz, seq_len, self.num_kv_heads, self.d).transpose(1, 2)
-        k = k.repeat_interleave(self.head_ratio, dim=1)
-        v = v.repeat_interleave(self.head_ratio, dim=1)
-        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+    def forward(self, x, mask=None, return_attn=False):
+        bsz, seq_len, _ = x.shape
+
+        # Queries keep the full number of heads.
+        q = self.wq(x).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        # Keys and values use fewer heads to save memory/bandwidth.
+        k = self.wk(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        # Share each KV head across a group of query heads.
+        k = k.repeat_interleave(self.group_size, dim=1)
+        v = v.repeat_interleave(self.group_size, dim=1)
+
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
         if mask is not None:
             if mask.dtype != torch.bool:
                 mask = mask != 0
             scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+
         attn = self.dropout(F.softmax(scores, dim=-1))
         out = attn @ v
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
-        return self.wo(out)
+        out = self.wo(out)
+
+        if return_attn:
+            return out, attn
+        return out
+
+
+class MQA(GroupedQueryAttention):
+    """MQA is just GQA with one KV head."""
+
+    def __init__(self, d_model, num_heads, dropout=0.0, bias=True):
+        super().__init__(
+            d_model=d_model,
+            num_heads=num_heads,
+            num_kv_heads=1,
+            dropout=dropout,
+            bias=bias,
+        )
 
 
 class PositionalEncoding(nn.Module):
@@ -148,7 +225,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Minimal pre-norm transformer block built on the hand-written MHA."""
+    """Minimal pre-norm transformer block."""
 
     def __init__(self, d_model, n_heads, hidden_dim, dropout=0.0):
         super().__init__()

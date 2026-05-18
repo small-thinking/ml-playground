@@ -3,11 +3,21 @@ import torch
 from modeling.basics.attention import (
     MHA,
     MHAWithKVCache,
+    GroupedQueryAttention,
+    MQA,
     PositionalEncoding,
+    SingleHeadAttention,
     SimpleTransformer,
     TransformerBlock,
     causal_mask,
 )
+
+
+def test_single_head_attention_output_shape():
+    x = torch.randn(2, 5, 32)
+    attn = SingleHeadAttention(d_model=32)
+    out = attn(x, mask=causal_mask(x.size(1)))
+    assert out.shape == x.shape
 
 
 def test_mha_output_shape():
@@ -48,6 +58,35 @@ def test_kv_cache_matches_full_causal_attention():
 
     actual = torch.cat(outputs, dim=1)
     assert torch.allclose(actual, expected, atol=1e-5)
+
+
+def test_kv_cache_tuple_api_grows_over_time():
+    x = torch.randn(2, 3, 32)
+    cached = MHAWithKVCache(d_model=32, n_heads=4, dropout=0.0).eval()
+
+    out1, k1, v1 = cached(x[:, :1], kv_cache=None)
+    out2, k2, v2 = cached(x[:, 1:2], kv_cache=(k1, v1))
+
+    assert out1.shape == (2, 1, 32)
+    assert out2.shape == (2, 1, 32)
+    assert k1.shape == (2, 4, 1, 8)
+    assert v1.shape == (2, 4, 1, 8)
+    assert k2.shape == (2, 4, 2, 8)
+    assert v2.shape == (2, 4, 2, 8)
+
+
+def test_grouped_query_attention_output_shape():
+    x = torch.randn(2, 6, 32)
+    gqa = GroupedQueryAttention(d_model=32, num_heads=4, num_kv_heads=2)
+    out = gqa(x, mask=causal_mask(x.size(1)))
+    assert out.shape == x.shape
+
+
+def test_mqa_is_gqa_with_one_kv_head():
+    x = torch.randn(2, 6, 32)
+    mqa = MQA(d_model=32, num_heads=4)
+    out = mqa(x, mask=causal_mask(x.size(1)))
+    assert out.shape == x.shape
 
 
 def test_positional_encoding_is_batch_first():
