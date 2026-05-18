@@ -13,40 +13,6 @@ def causal_mask(seq_len, device=None):
     return mask.view(1, 1, seq_len, seq_len)
 
 
-class SingleHeadAttention(nn.Module):
-    """Smallest useful causal self-attention implementation."""
-
-    def __init__(self, d_model, dropout=0.0, bias=True):
-        super().__init__()
-        self.d_model = d_model
-        self.wq = nn.Linear(d_model, d_model, bias=bias)
-        self.wk = nn.Linear(d_model, d_model, bias=bias)
-        self.wv = nn.Linear(d_model, d_model, bias=bias)
-        self.wo = nn.Linear(d_model, d_model, bias=bias)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, mask=None, return_attn=False):
-        # Project input tokens into query, key, and value.
-        q = self.wq(x)
-        k = self.wk(x)
-        v = self.wv(x)
-
-        # Each token attends to all visible tokens.
-        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d_model)
-        if mask is not None:
-            if mask.dtype != torch.bool:
-                mask = mask != 0
-            scores = scores.masked_fill(~mask.squeeze(1), torch.finfo(scores.dtype).min)
-
-        attn = self.dropout(F.softmax(scores, dim=-1))
-        out = attn @ v
-        out = self.wo(out)
-
-        if return_attn:
-            return out, attn
-        return out
-
-
 class MHA(nn.Module):
     """Conventional multi-head self-attention."""
 
@@ -66,20 +32,22 @@ class MHA(nn.Module):
     def forward(self, x, mask=None, return_attn=False):
         bsz, seq_len, _ = x.shape
 
-        # Split the model dimension into multiple heads.
+        # `view(..., n_heads, head_dim)` then `transpose(1, 2)` gives [B, H, T, Dh].
         q = self.wq(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.wk(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.wv(x).view(bsz, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
+        # Scale by head_dim, not d_model.
         scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
         if mask is not None:
             if mask.dtype != torch.bool:
                 mask = mask != 0
+            # Expect a broadcastable mask like [1, 1, T, T] or [B, 1, T, T].
             scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
 
         attn = self.dropout(F.softmax(scores, dim=-1))
         out = attn @ v
-        # Merge all heads back into [B, T, D].
+        # `transpose(...).contiguous()` is the safe path before flattening heads back.
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
         out = self.wo(out)
 
@@ -128,7 +96,7 @@ class MHAWithKVCache(MHA):
 
 
 class GroupedQueryAttention(nn.Module):
-    """GQA: many query heads, fewer key/value heads."""
+    """GQA: like MHA, but multiple query heads share each KV head."""
 
     def __init__(self, d_model, num_heads, num_kv_heads, dropout=0.0, bias=True):
         super().__init__()
@@ -156,7 +124,7 @@ class GroupedQueryAttention(nn.Module):
         k = self.wk(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.wv(x).view(bsz, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Share each KV head across a group of query heads.
+        # The only new idea vs. MHA: repeat each KV head across its query-head group.
         k = k.repeat_interleave(self.group_size, dim=1)
         v = v.repeat_interleave(self.group_size, dim=1)
 
