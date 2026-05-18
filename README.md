@@ -43,3 +43,7 @@ Sentence embedding learning using SimCSE approach.
 #### [LLM Post Training](modeling/llm_post_training/README.md)
 
 Docker-based environment for LLM post-training experiments.
+
+#### [Attention Basics](modeling/basics/README.md)
+
+Interview-friendly transformer attention implementations, including a hand-written multi-head attention module, a KV-cache decoding path, and small correctness/benchmark scaffolding.

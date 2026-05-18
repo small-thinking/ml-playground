@@ -1,50 +1,65 @@
 # Attention & Transformer Basics
 
-Minimal implementations for interview purposes.
+This folder now has two layers:
 
-## Components
+- the interview core: `MHA`, `MHAWithKVCache`, `TransformerBlock`
+- the playground layer: tests, a benchmark script, and a small transformer stack
 
-- **ScaledDotProductAttention**: Basic attention mechanism
-- **MultiHeadAttention**: Multi-head attention with Q, K, V projections
-- **GroupedQueryAttention**: Grouped-query attention (GQA) with configurable KV heads
-- **PositionalEncoding**: Sinusoidal positional encoding
-- **TransformerEncoderBlock**: Self-attention + FFN + layer norm
-- **SimpleTransformer**: Complete transformer model
-
-## Usage
+## Interview Core
 
 ```python
-from modeling.basics.attention import SimpleTransformer, GroupedQueryAttention
+from modeling.basics.attention import MHA, MHAWithKVCache, TransformerBlock, causal_mask
 
-# Basic transformer
-model = SimpleTransformer(vocab_size=1000, d_model=512, num_heads=8, num_layers=6, d_ff=2048)
+x = torch.randn(2, 16, 128)
+mha = MHA(d_model=128, n_heads=8)
+y = mha(x, mask=causal_mask(x.size(1)))
 
-# Grouped-query attention (it is also MQA when num_kv_heads=1)
-gqa = GroupedQueryAttention(d_model=512, num_heads=8, num_kv_heads=1)  # MQA
-gqa_balanced = GroupedQueryAttention(d_model=512, num_heads=8, num_kv_heads=2)  # GQA
+cached = MHAWithKVCache(d_model=128, n_heads=8)
+step_out, k_cache, v_cache = cached(x[:, :1])
+
+block = TransformerBlock(d_model=128, n_heads=8, hidden_dim=512)
+z = block(x, mask=causal_mask(x.size(1)))
 ```
+
+The idea is to keep the live-coding path short:
+
+1. split `Q/K/V` into heads
+2. compute `QK^T / sqrt(d)`
+3. `softmax`
+4. weight `V`
+5. merge heads and project out
+
+`MHAWithKVCache` keeps the same core, but appends new `K/V` to the cache during decoding so each step only projects the newest token.
+
+## Playground Extras
+
+- `GroupedQueryAttention`: a compact GQA/MQA variant
+- `PositionalEncoding`: batch-first sinusoidal encoding
+- `SimpleTransformer`: stack of hand-written transformer blocks
+- `benchmark_kv_cache.py`: compares autoregressive decoding with and without KV cache
 
 ## Test
 
 ```bash
-uv run python modeling/basics/test_attention.py
+uv run pytest tests/modeling/basics/test_attention.py
 ```
 
-## Key Concepts
+The tests check:
 
-1. **Attention**: Q, K, V matrices and scaled dot-product
-2. **Multi-Head**: Parallel attention heads
-3. **Grouped-Query**: Query heads grouped, sharing K, V heads (reduces memory/compute)
-4. **Positional Encoding**: Sinusoidal encoding for sequence position
-5. **Residual Connections**: Skip connections for gradient flow
-6. **Layer Normalization**: Normalization for training stability
+- output shapes
+- attention probability normalization
+- cached decoding matches full causal attention
+- positional encoding uses batch-first shapes correctly
 
-## Attention Comparison
+## Benchmark
 
-| Method  | Query Heads | KV Heads | Memory Usage |
-| ------- | ----------- | -------- | ------------ |
-| **MHA** | 8           | 8        | 100%         |
-| **GQA** | 8           | 2        | ~50%         |
-| **MQA** | 8           | 1        | ~33%         |
+```bash
+uv run python -m modeling.basics.benchmark_kv_cache --device cpu
+```
 
-**Benefits**: Memory efficiency, computational efficiency, scalability, maintains quality.
+This benchmark measures a realistic interview talking point:
+
+- without cache: recompute attention over the whole prefix at every decode step
+- with cache: reuse old `K/V` and only process the newest token
+
+It also prints the max output difference so we can verify the cached path is numerically aligned with the full causal path.
