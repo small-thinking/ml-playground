@@ -13,26 +13,6 @@ def causal_mask(seq_len, device=None):
     return mask.view(1, 1, seq_len, seq_len)
 
 
-class ScaledDotProductAttention(nn.Module):
-    """Scaled dot-product attention on pre-projected heads."""
-
-    def __init__(self, dropout=0.0):
-        super().__init__()
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, q, k, v, mask=None, return_attn=False):
-        scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
-        if mask is not None:
-            if mask.dtype != torch.bool:
-                mask = mask != 0
-            scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
-        attn = self.dropout(F.softmax(scores, dim=-1))
-        out = attn @ v
-        if return_attn:
-            return out, attn
-        return out
-
-
 class MHA(nn.Module):
     """Concise multi-head self-attention for interview-style implementations."""
 
@@ -46,7 +26,7 @@ class MHA(nn.Module):
         self.wk = nn.Linear(d_model, d_model, bias=bias)
         self.wv = nn.Linear(d_model, d_model, bias=bias)
         self.wo = nn.Linear(d_model, d_model, bias=bias)
-        self.attn = ScaledDotProductAttention(dropout=dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def _split_heads(self, x):
         bsz, seq_len, _ = x.shape
@@ -65,9 +45,13 @@ class MHA(nn.Module):
 
     def forward(self, x, mask=None, return_attn=False):
         q, k, v = self._project_qkv(x)
-        out = self.attn(q, k, v, mask=mask, return_attn=return_attn)
-        if return_attn:
-            out, attn = out
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+        if mask is not None:
+            if mask.dtype != torch.bool:
+                mask = mask != 0
+            scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out = attn @ v
         out = self.wo(self._merge_heads(out))
         if return_attn:
             return out, attn
@@ -81,9 +65,9 @@ class MHAWithKVCache(MHA):
         q, k_new, v_new = self._project_qkv(x)
         k = k_new if k_cache is None else torch.cat([k_cache, k_new], dim=2)
         v = v_new if v_cache is None else torch.cat([v_cache, v_new], dim=2)
-        out = self.attn(q, k, v, return_attn=return_attn)
-        if return_attn:
-            out, attn = out
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out = attn @ v
         out = self.wo(self._merge_heads(out))
         if return_attn:
             return out, k, v, attn
@@ -108,7 +92,7 @@ class GroupedQueryAttention(nn.Module):
         self.wk = nn.Linear(d_model, num_kv_heads * self.d, bias=bias)
         self.wv = nn.Linear(d_model, num_kv_heads * self.d, bias=bias)
         self.wo = nn.Linear(d_model, d_model, bias=bias)
-        self.attn = ScaledDotProductAttention(dropout=dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, q, k, v, mask=None):
         bsz, seq_len, _ = q.shape
@@ -117,7 +101,13 @@ class GroupedQueryAttention(nn.Module):
         v = self.wv(v).view(bsz, seq_len, self.num_kv_heads, self.d).transpose(1, 2)
         k = k.repeat_interleave(self.head_ratio, dim=1)
         v = v.repeat_interleave(self.head_ratio, dim=1)
-        out = self.attn(q, k, v, mask=mask)
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.d)
+        if mask is not None:
+            if mask.dtype != torch.bool:
+                mask = mask != 0
+            scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
+        attn = self.dropout(F.softmax(scores, dim=-1))
+        out = attn @ v
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
         return self.wo(out)
 
