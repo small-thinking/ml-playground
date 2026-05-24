@@ -57,9 +57,23 @@ The tests check:
 uv run python -m modeling.basics.benchmark_kv_cache --device cpu
 ```
 
+Or sweep a few decode lengths in one run:
+
+```bash
+uv run python -m modeling.basics.benchmark_kv_cache --device cpu --seq-lens 32 64 128
+```
+
 This benchmark measures a realistic interview talking point:
 
 - without cache: recompute attention over the whole prefix at every decode step
 - with cache: reuse old `K/V` and only process the newest token
 
-It also prints the max output difference so we can verify the cached path is numerically aligned with the full causal path.
+It also prints:
+
+- `max_output_diff`: verifies the cached path stays numerically aligned with full causal attention
+- `measured_speedup`: the end-to-end timing difference on your device
+- `cache_hit_rate`: what fraction of attended `K/V` tokens came from cache instead of being newly projected
+- `kv_projection_reduction`: how much `K/V` projection work drops in the cached path
+- `attention_score_reduction`: how much attention-score work drops when we stop recomputing old query positions
+
+That makes it easier to explain both the empirical timing result and the theoretical reason KV cache helps.
