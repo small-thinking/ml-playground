@@ -6,8 +6,10 @@ It is intentionally broader than any single method: supervised fine-tuning
 share evaluation, provenance, budget, and artifact conventions without being
 forced into one experiment implementation.
 
-Status: local MVP implemented and tested. No remote Tinker call or training run
-has been made or authorized by this document.
+Status: the local connectivity and three-step SFT MVPs are implemented and
+tested. The first real three-step Tinker + W&B run passed on 2026-07-21; see the
+[validation record](validation/2026-07-21-sft-wandb-mvp.md). No benchmark or full
+training run has been made.
 
 ## Proposed layout
 
@@ -18,6 +20,7 @@ their code is needed.
 modeling/llm_post_training/tinker/
 ├── README.md
 ├── mvp.py                       # Local doctor and gated one-sample smoke
+├── train_mvp.py                 # Gated 3-step SFT + W&B smoke
 ├── common/                      # Shared evaluation, data, cost, and I/O code
 └── experiments/
     ├── sft_then_rl/             # First controlled checkpoint ladder
@@ -74,10 +77,110 @@ This MVP intentionally does **not**:
 - save a checkpoint;
 - run SFT, RL, or OPD.
 
-After the one-request sampling smoke succeeds, the next smallest gate is one
-disposable LoRA batch (`forward_backward` plus `optim_step`). Only after that
-training-path smoke succeeds should the project run a pilot benchmark baseline
-or a real training experiment.
+## Training MVP: three updates with W&B
+
+The next gate is implemented separately in `train_mvp.py`. It proves this
+minimal end-to-end sequence without attempting meaningful model improvement:
+
+1. sample once from the unadapted model;
+2. create a rank-16 LoRA training client;
+3. repeat `forward_backward` plus `optim_step` exactly three times over two
+   tiny, repository-authored arithmetic examples;
+4. log basic loss, token, estimated-cost, and step-timing metrics to Weights &
+   Biases;
+5. save the disposable weights for sampling and sample the same prompt again.
+
+The two examples are smoke fixtures, not a benchmark or proposed training
+dataset. The before/after text only verifies data flow; three updates cannot
+support a quality claim.
+
+Copy the committed template to the ignored repository-root `.env` and fill the
+values locally. Never commit `.env` or paste its values into an issue or PR:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+```dotenv
+TINKER_API_KEY=...
+WANDB_API_KEY=...
+WANDB_PROJECT=ml-playground-tinker
+# WANDB_ENTITY=...
+```
+
+The default command loads that file and runs a local-only preflight. It reports
+only whether each key is present, never the values:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_mvp
+```
+
+The paid path remains double-gated and must not be run until its exact command
+and budget have received an explicit `GO`:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_mvp \
+  --run \
+  --allow-paid
+```
+
+Run those commands from the repository root. The paid command prints live
+progress to stderr and leaves the final machine-readable report on stdout. A
+run looks like this (metric values and the W&B URL will vary):
+
+```text
+[tinker-mvp] authorized model=Qwen/Qwen3.5-4B steps=3 max_token_cost_usd=0.000714816
+[tinker-mvp] connecting to Tinker with verified HTTPX transport
+[tinker-mvp] clients ready examples_per_step=2 train_tokens_per_step=30
+[tinker-mvp] initializing W&B project=ml-playground-tinker
+[tinker-mvp] W&B run=https://wandb.ai/.../runs/...
+[tinker-mvp] sampling unadapted model
+[tinker-mvp] baseline sample complete prompt_tokens=... output_tokens=32
+[tinker-mvp] step=1/3 loss=... cumulative_train_tokens=30 step_seconds=... estimated_train_cost_usd=0.00002211
+[tinker-mvp] step=2/3 loss=... cumulative_train_tokens=60 step_seconds=... estimated_train_cost_usd=0.00004422
+[tinker-mvp] step=3/3 loss=... cumulative_train_tokens=90 step_seconds=... estimated_train_cost_usd=0.00006633
+[tinker-mvp] sampling trained ephemeral checkpoint
+[tinker-mvp] trained sample complete prompt_tokens=... output_tokens=32
+[tinker-mvp] complete estimated_total_token_cost_usd=...
+{
+  "mode": "remote-sft-wandb-mvp",
+  "steps_completed": 3,
+  "wandb_run_url": "https://wandb.ai/.../runs/..."
+}
+```
+
+Each invocation of the paid command creates a new Tinker/W&B run. The local
+preflight command is the right way to inspect readiness without another charge.
+
+The frozen upper-bound estimate is `$0.000714816` in token charges, below the
+local `$0.01` hard stop. This estimate covers six tiny SFT examples processed
+across three steps plus the two bounded samples. It is not a provider-enforced
+billing cap, and the Tinker console remains the billing source of truth.
+
+The MVP explicitly supplies a standard verified HTTPX client to Tinker. This
+avoids a macOS CA-store incompatibility observed with the SDK's default
+`pyqwest` transport while keeping TLS certificate verification enabled.
+
+The validated run completed all three updates and synced its metrics to
+[W&B](https://wandb.ai/techtao-small-thinking/ml-playground-tinker/runs/3zne613h).
+It processed 90 train tokens and used an estimated `$0.00014649` in total token
+charges. Both samples reached the 32-token limit, so the run proves plumbing
+only and does not support a model-quality conclusion.
+
+The checked-in validation record includes a static chart generated from the
+three W&B API history rows. Rebuild it with:
+
+```bash
+MPLCONFIGDIR=/tmp/ml-playground-matplotlib uv run python \
+  modeling/llm_post_training/tinker/validation/plot_mvp_metrics.py
+```
+
+Only after this training-path smoke succeeds should the project run a pilot
+benchmark baseline or a real training experiment.
 
 ## First experiment: baseline -> SFT -> RL
 
