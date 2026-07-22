@@ -128,6 +128,34 @@ uv run --extra tinker python -m \
   --allow-paid
 ```
 
+Run those commands from the repository root. The paid command prints live
+progress to stderr and leaves the final machine-readable report on stdout. A
+run looks like this (metric values and the W&B URL will vary):
+
+```text
+[tinker-mvp] authorized model=Qwen/Qwen3.5-4B steps=3 max_token_cost_usd=0.000714816
+[tinker-mvp] connecting to Tinker with verified HTTPX transport
+[tinker-mvp] clients ready examples_per_step=2 train_tokens_per_step=30
+[tinker-mvp] initializing W&B project=ml-playground-tinker
+[tinker-mvp] W&B run=https://wandb.ai/.../runs/...
+[tinker-mvp] sampling unadapted model
+[tinker-mvp] baseline sample complete prompt_tokens=... output_tokens=32
+[tinker-mvp] step=1/3 loss=... cumulative_train_tokens=30 step_seconds=... estimated_train_cost_usd=0.00002211
+[tinker-mvp] step=2/3 loss=... cumulative_train_tokens=60 step_seconds=... estimated_train_cost_usd=0.00004422
+[tinker-mvp] step=3/3 loss=... cumulative_train_tokens=90 step_seconds=... estimated_train_cost_usd=0.00006633
+[tinker-mvp] sampling trained ephemeral checkpoint
+[tinker-mvp] trained sample complete prompt_tokens=... output_tokens=32
+[tinker-mvp] complete estimated_total_token_cost_usd=...
+{
+  "mode": "remote-sft-wandb-mvp",
+  "steps_completed": 3,
+  "wandb_run_url": "https://wandb.ai/.../runs/..."
+}
+```
+
+Each invocation of the paid command creates a new Tinker/W&B run. The local
+preflight command is the right way to inspect readiness without another charge.
+
 The frozen upper-bound estimate is `$0.000714816` in token charges, below the
 local `$0.01` hard stop. This estimate covers six tiny SFT examples processed
 across three steps plus the two bounded samples. It is not a provider-enforced
@@ -142,6 +170,14 @@ The validated run completed all three updates and synced its metrics to
 It processed 90 train tokens and used an estimated `$0.00014649` in total token
 charges. Both samples reached the 32-token limit, so the run proves plumbing
 only and does not support a model-quality conclusion.
+
+The checked-in validation record includes a static chart generated from the
+three W&B API history rows. Rebuild it with:
+
+```bash
+MPLCONFIGDIR=/tmp/ml-playground-matplotlib uv run python \
+  modeling/llm_post_training/tinker/validation/plot_mvp_metrics.py
+```
 
 Only after this training-path smoke succeeds should the project run a pilot
 benchmark baseline or a real training experiment.

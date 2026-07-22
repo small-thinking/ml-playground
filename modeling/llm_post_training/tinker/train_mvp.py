@@ -52,6 +52,11 @@ class TrainingMVPError(RuntimeError):
     """Raised when an MVP safety, readiness, or response check fails."""
 
 
+def _print_progress(message: str) -> None:
+    """Write human-readable live progress without mixing it into JSON stdout."""
+    print(f"[tinker-mvp] {message}", file=sys.stderr, flush=True)
+
+
 @dataclass(frozen=True)
 class TrainingConfig:
     """Frozen bounds for the disposable three-step SFT run."""
@@ -349,9 +354,14 @@ async def run_training_mvp(
     wandb_module: Any = None,
     service_client: Any = None,
     clock: Callable[[], float] = time.monotonic,
+    progress: Callable[[str], None] = _print_progress,
 ) -> TrainingMVPReport:
     """Run baseline sample, three SFT updates, W&B logging, and trained sample."""
     _require_paid_authorization(config, allow_paid, environ)
+    progress(
+        f"authorized model={config.model_id} steps={config.training_steps} "
+        f"max_token_cost_usd={estimate_max_token_cost_usd(config):.9f}"
+    )
 
     if tinker_module is None:
         try:
@@ -372,6 +382,7 @@ async def run_training_mvp(
         # Tinker's default pyqwest transport can miss macOS trust-store issuers.
         # Standard HTTPX keeps TLS verification enabled and is supported by the
         # SDK's ServiceClient ``http_client`` escape hatch.
+        progress("connecting to Tinker with verified HTTPX transport")
         service_client = tinker_module.ServiceClient(
             user_metadata={"experiment": "ml-playground-tinker-sft-wandb-mvp"},
             http_client=httpx.AsyncClient(follow_redirects=True),
@@ -389,11 +400,16 @@ async def run_training_mvp(
     tokenizer = training_client.get_tokenizer()
     batch = prepare_training_batch(tokenizer, tinker_module, config)
     train_tokens_per_step = batch.input_tokens
+    progress(
+        f"clients ready examples_per_step={len(batch.data)} "
+        f"train_tokens_per_step={train_tokens_per_step}"
+    )
     project = environ.get("WANDB_PROJECT", WANDB_PROJECT)
     entity = environ.get("WANDB_ENTITY") or None
 
     wandb_run = None
     try:
+        progress(f"initializing W&B project={project}")
         wandb_run = wandb_module.init(
             project=project,
             entity=entity,
@@ -410,9 +426,16 @@ async def run_training_mvp(
                 "hard_cap_usd": config.hard_cap_usd,
             },
         )
+        if getattr(wandb_run, "url", None):
+            progress(f"W&B run={wandb_run.url}")
 
+        progress("sampling unadapted model")
         before = await _sample_once(
             base_sampling_client, tokenizer, tinker_module, config
+        )
+        progress(
+            f"baseline sample complete prompt_tokens={before.prompt_tokens} "
+            f"output_tokens={before.output_tokens}"
         )
         cumulative_train_tokens = 0
         for step in range(1, config.training_steps + 1):
@@ -429,6 +452,9 @@ async def run_training_mvp(
             step_seconds = clock() - started_at
             cumulative_train_tokens += train_tokens_per_step
             mean_loss = _mean_cross_entropy_loss(fwdbwd_result, batch)
+            estimated_cumulative_train_cost = (
+                cumulative_train_tokens * config.train_usd_per_million / 1_000_000
+            )
             wandb_run.log(
                 {
                     "train/step": step,
@@ -440,15 +466,20 @@ async def run_training_mvp(
                         train_tokens_per_step * config.train_usd_per_million / 1_000_000
                     ),
                     "cost/estimated_cumulative_train_usd": (
-                        cumulative_train_tokens
-                        * config.train_usd_per_million
-                        / 1_000_000
+                        estimated_cumulative_train_cost
                     ),
                     "timing/step_seconds": step_seconds,
                 },
                 step=step,
             )
+            progress(
+                f"step={step}/{config.training_steps} loss={mean_loss:.10g} "
+                f"cumulative_train_tokens={cumulative_train_tokens} "
+                f"step_seconds={step_seconds:.3f} "
+                f"estimated_train_cost_usd={estimated_cumulative_train_cost:.8f}"
+            )
 
+        progress("sampling trained ephemeral checkpoint")
         trained_sampling_client = training_client.save_weights_and_get_sampling_client()
         after = await _sample_once(
             trained_sampling_client, tokenizer, tinker_module, config
@@ -459,6 +490,11 @@ async def run_training_mvp(
             sample_prompt_tokens=before.prompt_tokens + after.prompt_tokens,
             sample_output_tokens=before.output_tokens + after.output_tokens,
         )
+        progress(
+            f"trained sample complete prompt_tokens={after.prompt_tokens} "
+            f"output_tokens={after.output_tokens}"
+        )
+        progress(f"complete estimated_total_token_cost_usd={estimated_cost:.8f}")
         wandb_run.summary.update(
             {
                 "sample/before_text": before.response_text,

@@ -21,6 +21,8 @@ quality.
 The rows below were read back from the W&B API after the CLI completed, rather
 than copied only from local console output.
 
+![Tinker SFT and W&B MVP synced metrics](assets/2026-07-21-sft-wandb-mvp-metrics.png)
+
 | Step | Mean cross-entropy loss | Train tokens | Cumulative train tokens | Step time (s) | Estimated cumulative train cost (USD) |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | 0.0247530093 | 30 | 30 | 2.1606 | 0.00002211 |
@@ -73,3 +75,10 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
 
 The remote command exited successfully, and a separate W&B API readback
 returned all three metric rows plus the final summary.
+
+Regenerate the chart from the checked-in W&B readback rows with:
+
+```bash
+MPLCONFIGDIR=/tmp/ml-playground-matplotlib UV_CACHE_DIR=.uv-cache uv run python \
+  modeling/llm_post_training/tinker/validation/plot_mvp_metrics.py
+```

@@ -273,6 +273,7 @@ def test_remote_mvp_runs_three_updates_and_logs_basic_metrics():
     service_client = FakeServiceClient()
     fake_wandb = FakeWandb()
     times = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.3])
+    progress_messages = []
 
     report = asyncio.run(
         run_training_mvp(
@@ -283,6 +284,7 @@ def test_remote_mvp_runs_three_updates_and_logs_basic_metrics():
             wandb_module=fake_wandb,
             service_client=service_client,
             clock=lambda: next(times),
+            progress=progress_messages.append,
         )
     )
 
@@ -317,6 +319,10 @@ def test_remote_mvp_runs_three_updates_and_logs_basic_metrics():
     assert report.estimated_token_cost_usd < report.hard_cap_usd
     assert "tinker-secret" not in str(report)
     assert "wandb-secret" not in str(report)
+    assert any("step=1/3" in message for message in progress_messages)
+    assert any("step=2/3" in message for message in progress_messages)
+    assert any("step=3/3" in message for message in progress_messages)
+    assert progress_messages[-1].startswith("complete estimated_total_token_cost_usd=")
 
 
 def test_default_service_client_uses_standard_httpx_transport(monkeypatch):
