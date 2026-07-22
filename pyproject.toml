@@ -40,6 +40,9 @@ dev = [
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
 ]
+tinker = [
+    "tinker>=0.23.2 ; python_full_version >= '3.11'",
+]
 
 [tool.black]
 line-length = 88
