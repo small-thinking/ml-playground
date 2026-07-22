@@ -367,14 +367,20 @@ async def run_training_mvp(
             raise TrainingMVPError("Weights & Biases is unavailable") from exc
 
     if service_client is None:
+        import httpx
+
+        # Tinker's default pyqwest transport can miss macOS trust-store issuers.
+        # Standard HTTPX keeps TLS verification enabled and is supported by the
+        # SDK's ServiceClient ``http_client`` escape hatch.
         service_client = tinker_module.ServiceClient(
-            user_metadata={"experiment": "ml-playground-tinker-sft-wandb-mvp"}
+            user_metadata={"experiment": "ml-playground-tinker-sft-wandb-mvp"},
+            http_client=httpx.AsyncClient(follow_redirects=True),
         )
 
-    base_sampling_client = service_client.create_sampling_client(
+    base_sampling_client = await service_client.create_sampling_client_async(
         base_model=config.model_id
     )
-    training_client = service_client.create_lora_training_client(
+    training_client = await service_client.create_lora_training_client_async(
         base_model=config.model_id,
         rank=config.lora_rank,
         seed=0,
@@ -443,9 +449,7 @@ async def run_training_mvp(
                 step=step,
             )
 
-        trained_sampling_client = training_client.save_weights_and_get_sampling_client(
-            name="mvp-sft-step-3"
-        )
+        trained_sampling_client = training_client.save_weights_and_get_sampling_client()
         after = await _sample_once(
             trained_sampling_client, tokenizer, tinker_module, config
         )

@@ -7,8 +7,9 @@ share evaluation, provenance, budget, and artifact conventions without being
 forced into one experiment implementation.
 
 Status: the local connectivity and three-step SFT MVPs are implemented and
-tested with fake clients. No remote Tinker call or training run has been made
-or authorized by this document.
+tested. The first real three-step Tinker + W&B run passed on 2026-07-21; see the
+[validation record](validation/2026-07-21-sft-wandb-mvp.md). No benchmark or full
+training run has been made.
 
 ## Proposed layout
 
@@ -131,6 +132,16 @@ The frozen upper-bound estimate is `$0.000714816` in token charges, below the
 local `$0.01` hard stop. This estimate covers six tiny SFT examples processed
 across three steps plus the two bounded samples. It is not a provider-enforced
 billing cap, and the Tinker console remains the billing source of truth.
+
+The MVP explicitly supplies a standard verified HTTPX client to Tinker. This
+avoids a macOS CA-store incompatibility observed with the SDK's default
+`pyqwest` transport while keeping TLS certificate verification enabled.
+
+The validated run completed all three updates and synced its metrics to
+[W&B](https://wandb.ai/techtao-small-thinking/ml-playground-tinker/runs/3zne613h).
+It processed 90 train tokens and used an estimated `$0.00014649` in total token
+charges. Both samples reached the 32-token limit, so the run proves plumbing
+only and does not support a model-quality conclusion.
 
 Only after this training-path smoke succeeds should the project run a pilot
 benchmark baseline or a real training experiment.

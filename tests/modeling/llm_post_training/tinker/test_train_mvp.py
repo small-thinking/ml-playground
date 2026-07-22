@@ -105,8 +105,8 @@ class FakeTrainingClient:
         self.optim_calls.append(adam_params)
         return FakeFuture(SimpleNamespace())
 
-    def save_weights_and_get_sampling_client(self, name):
-        self.saved_name = name
+    def save_weights_and_get_sampling_client(self):
+        self.saved_name = "ephemeral"
         return self.trained_sampling_client
 
 
@@ -120,11 +120,11 @@ class FakeServiceClient:
         self.base_model = None
         self.training_kwargs = None
 
-    def create_sampling_client(self, base_model):
+    async def create_sampling_client_async(self, base_model):
         self.base_model = base_model
         return self.base_sampling_client
 
-    def create_lora_training_client(self, **kwargs):
+    async def create_lora_training_client_async(self, **kwargs):
         self.training_kwargs = kwargs
         return self.training_client
 
@@ -291,7 +291,7 @@ def test_remote_mvp_runs_three_updates_and_logs_basic_metrics():
     assert len(training_client.optim_calls) == 3
     assert all(call[1] == "cross_entropy" for call in training_client.forward_calls)
     assert all(param.learning_rate == 1e-4 for param in training_client.optim_calls)
-    assert training_client.saved_name == "mvp-sft-step-3"
+    assert training_client.saved_name == "ephemeral"
     assert service_client.base_sampling_client.calls == 1
     assert service_client.trained_sampling_client.calls == 1
 
@@ -317,3 +317,42 @@ def test_remote_mvp_runs_three_updates_and_logs_basic_metrics():
     assert report.estimated_token_cost_usd < report.hard_cap_usd
     assert "tinker-secret" not in str(report)
     assert "wandb-secret" not in str(report)
+
+
+def test_default_service_client_uses_standard_httpx_transport(monkeypatch):
+    import httpx
+
+    service_client = FakeServiceClient()
+    captured = {}
+    fake_http_client = object()
+
+    def build_http_client(**kwargs):
+        captured["httpx_kwargs"] = kwargs
+        return fake_http_client
+
+    def build_service_client(**kwargs):
+        captured["service_kwargs"] = kwargs
+        return service_client
+
+    fake_tinker = SimpleNamespace(
+        ModelInput=FakeModelInput,
+        SamplingParams=FakeSamplingParams,
+        types=FAKE_TINKER.types,
+        ServiceClient=build_service_client,
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", build_http_client)
+    times = iter([0.0, 0.1, 1.0, 1.2, 2.0, 2.3])
+
+    asyncio.run(
+        run_training_mvp(
+            TrainingConfig(),
+            allow_paid=True,
+            environ=configured_environ(),
+            tinker_module=fake_tinker,
+            wandb_module=FakeWandb(),
+            clock=lambda: next(times),
+        )
+    )
+
+    assert captured["httpx_kwargs"] == {"follow_redirects": True}
+    assert captured["service_kwargs"]["http_client"] is fake_http_client
