@@ -27,7 +27,8 @@ max_sequence_tokens = 4096
 
 [evaluation]
 max_prompt_tokens = 1024
-max_output_tokens = 512
+max_output_tokens = 2048
+min_completion_rate = 0.8
 
 [checkpoint]
 prefix = "deepmath-sft-mvp"
@@ -37,7 +38,7 @@ ttl_seconds = 604800
 wandb_project = "ml-playground-tinker"
 
 [pricing]
-# Public Qwen/Qwen3.5-4B rates verified on 2026-07-21, per million tokens.
+# Public Qwen/Qwen3.5-4B rates verified on 2026-07-22, per million tokens.
 prefill_usd_per_million = 0.33
 sample_usd_per_million = 1.005
 train_usd_per_million = 0.737

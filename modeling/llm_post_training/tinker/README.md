@@ -9,8 +9,10 @@ forced into one experiment implementation.
 Status: the local connectivity and three-step SFT MVPs are implemented and
 tested. The first real three-step Tinker + W&B run passed on 2026-07-21; see the
 [validation record](validation/2026-07-21-sft-wandb-mvp.md). A configurable,
-real-data DeepMath SFT pilot is also implemented and locally data-validated,
-but no paid real-data training or benchmark run has been made.
+real-data DeepMath SFT pilot is also implemented. Its first paid 10-step run
+completed on 2026-07-22; the training path passed, while the quality result was
+inconclusive because every evaluation response was truncated. See the
+[10-step validation record](validation/2026-07-22-deepmath-sft-10-step.md).
 
 ## Proposed layout
 
@@ -247,12 +249,12 @@ The defaults live in `configs/sft_deepmath.toml`:
 | `model` | `Qwen/Qwen3.5-4B`, LoRA rank 32 |
 | `dataset` | pinned DeepMath revision, streaming, 64 train / 8 eval |
 | `training` | 100 steps, batch size 2, LR `1e-4`, 4096-token cap |
-| `evaluation` | greedy matched baseline/final sampling, 512 output tokens |
+| `evaluation` | matched sampling, 2048 output tokens, 0.8 completion floor |
 | `checkpoint` | persistent state and sampler weights with a 7-day TTL |
 | `pricing` | verified public per-token rates and a `$1.00` local hard stop |
 
 At the checked-in public rates, the frozen maximum token estimate is about
-`$0.6174` for the default 100-step pilot and about `$0.0257` for `--steps 2`.
+`$0.6421` for the default 100-step pilot and about `$0.0504` for `--steps 2`.
 These bounds include baseline/final evaluation but exclude checkpoint storage,
 which Tinker lists separately. The hard stop is a client-side preflight, not a
 provider-enforced billing cap, so the exact command and budget still require an

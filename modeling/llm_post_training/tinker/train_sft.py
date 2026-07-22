@@ -77,6 +77,7 @@ class SFTConfig:
     max_sequence_tokens: int
     max_eval_prompt_tokens: int
     max_eval_output_tokens: int
+    min_eval_completion_rate: float
     checkpoint_prefix: str
     checkpoint_ttl_seconds: int
     wandb_project: str
@@ -113,6 +114,8 @@ class SFTConfig:
             )
         if self.learning_rate <= 0:
             raise SFTExperimentError("learning_rate must be positive")
+        if not 0 < self.min_eval_completion_rate <= 1:
+            raise SFTExperimentError("evaluation.min_completion_rate must be in (0, 1]")
         for name, value in (
             ("prefill_usd_per_million", self.prefill_usd_per_million),
             ("sample_usd_per_million", self.sample_usd_per_million),
@@ -243,6 +246,7 @@ class SFTTrainingReport:
     baseline_accuracy: float
     final_accuracy: float
     accuracy_gain: float
+    quality_comparison_valid: bool
     baseline_truncation_rate: float
     final_truncation_rate: float
     checkpoint_path: str
@@ -271,7 +275,11 @@ _CONFIG_KEYS = {
         "eval_examples",
     },
     "training": {"steps", "batch_size", "learning_rate", "max_sequence_tokens"},
-    "evaluation": {"max_prompt_tokens", "max_output_tokens"},
+    "evaluation": {
+        "max_prompt_tokens",
+        "max_output_tokens",
+        "min_completion_rate",
+    },
     "checkpoint": {"prefix", "ttl_seconds"},
     "tracking": {"wandb_project"},
     "pricing": {
@@ -341,6 +349,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> SFTConfig:
         max_sequence_tokens=int(training["max_sequence_tokens"]),
         max_eval_prompt_tokens=int(evaluation["max_prompt_tokens"]),
         max_eval_output_tokens=int(evaluation["max_output_tokens"]),
+        min_eval_completion_rate=float(evaluation["min_completion_rate"]),
         checkpoint_prefix=str(checkpoint["prefix"]),
         checkpoint_ttl_seconds=int(checkpoint["ttl_seconds"]),
         wandb_project=str(tracking["wandb_project"]),
@@ -890,6 +899,18 @@ def _evaluation_metrics(prefix: str, summary: EvaluationSummary) -> dict[str, fl
     }
 
 
+def quality_comparison_is_valid(
+    baseline: EvaluationSummary,
+    final: EvaluationSummary,
+    min_completion_rate: float,
+) -> bool:
+    """Require both sides of a comparison to clear the completion-rate floor."""
+    return (
+        baseline.completion_rate >= min_completion_rate
+        and final.completion_rate >= min_completion_rate
+    )
+
+
 async def run_sft_experiment(
     config: SFTConfig,
     allow_paid: bool,
@@ -1052,6 +1073,11 @@ async def run_sft_experiment(
             _evaluation_metrics("eval/final", final),
             step=config.steps + 1,
         )
+        quality_comparison_valid = quality_comparison_is_valid(
+            baseline,
+            final,
+            config.min_eval_completion_rate,
+        )
 
         eval_prompt_tokens = baseline.prompt_tokens + final.prompt_tokens
         eval_output_tokens = baseline.output_tokens + final.output_tokens
@@ -1075,6 +1101,7 @@ async def run_sft_experiment(
             baseline_accuracy=baseline.accuracy,
             final_accuracy=final.accuracy,
             accuracy_gain=final.accuracy - baseline.accuracy,
+            quality_comparison_valid=quality_comparison_valid,
             baseline_truncation_rate=baseline.truncation_rate,
             final_truncation_rate=final.truncation_rate,
             checkpoint_path=str(state_result.path),
@@ -1100,6 +1127,7 @@ async def run_sft_experiment(
                 "eval/baseline_accuracy": baseline.accuracy,
                 "eval/final_accuracy": final.accuracy,
                 "eval/accuracy_gain": final.accuracy - baseline.accuracy,
+                "eval/quality_comparison_valid": quality_comparison_valid,
                 "checkpoint/path": str(state_result.path),
                 "checkpoint/sampler_path": str(sampler_result.path),
                 "cost/estimated_total_token_usd": estimated_cost,
@@ -1108,6 +1136,7 @@ async def run_sft_experiment(
         progress(
             f"complete baseline={baseline.accuracy:.4f} "
             f"final={final.accuracy:.4f} gain={report.accuracy_gain:.4f} "
+            f"quality_valid={quality_comparison_valid} "
             f"estimated_total_token_cost_usd={estimated_cost:.6f}"
         )
         return report

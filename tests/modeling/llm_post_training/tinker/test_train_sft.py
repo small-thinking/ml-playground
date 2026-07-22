@@ -8,11 +8,13 @@ import pytest
 
 from modeling.llm_post_training.tinker.train_sft import (
     DEFAULT_CONFIG_PATH,
+    EvaluationSummary,
     MathExample,
     SFTExperimentError,
     _materialize_batch,
     build_doctor_report,
     estimate_max_token_cost_usd,
+    evaluate_sampling_client,
     extract_final_answer,
     load_config,
     load_dataset_candidates,
@@ -21,6 +23,7 @@ from modeling.llm_post_training.tinker.train_sft import (
     parse_args,
     prepare_data_locally,
     prepare_dataset,
+    quality_comparison_is_valid,
     run_sft_experiment,
 )
 
@@ -275,6 +278,8 @@ def test_default_config_is_pinned_and_steps_are_overridable():
     assert config.dataset_license == "MIT"
     assert config.streaming is True
     assert config.steps == 100
+    assert config.max_eval_output_tokens == 2048
+    assert config.min_eval_completion_rate == pytest.approx(0.8)
     assert override_steps(config, 2).steps == 2
     assert estimate_max_token_cost_usd(config) < config.hard_cap_usd
 
@@ -478,11 +483,13 @@ def test_full_fake_run_trains_requested_steps_saves_and_evaluates(tmp_path):
     assert report.baseline_accuracy == pytest.approx(0.5)
     assert report.final_accuracy == pytest.approx(1.0)
     assert report.accuracy_gain == pytest.approx(0.5)
+    assert report.quality_comparison_valid is True
     assert Path(report.manifest_path).exists()
     assert Path(report.report_path).exists()
     payload = json.loads(Path(report.report_path).read_text(encoding="utf-8"))
     assert payload["summary"]["checkpoint_path"] == report.checkpoint_path
     assert fake_wandb.run.summary["eval/accuracy_gain"] == pytest.approx(0.5)
+    assert fake_wandb.run.summary["eval/quality_comparison_valid"] is True
     assert fake_wandb.run.finished is True
     assert any("step=1/2" in message for message in progress)
     assert progress[-1].startswith("complete baseline=")
@@ -492,3 +499,39 @@ def test_iterations_alias_is_accepted():
     args = parse_args(["--iterations", "7"])
 
     assert args.steps == 7
+
+
+def test_truncated_evaluation_invalidates_quality_comparison(tmp_path):
+    config = replace(_config(tmp_path), max_eval_output_tokens=1)
+    summary = asyncio.run(
+        evaluate_sampling_client(
+            FakeSamplingClient([201]),
+            FakeTokenizer(),
+            FAKE_TINKER,
+            _examples(1),
+            config,
+        )
+    )
+
+    assert summary.accuracy == pytest.approx(1.0)
+    assert summary.completion_rate == pytest.approx(0.0)
+    assert summary.truncation_rate == pytest.approx(1.0)
+    assert summary.score_completed == pytest.approx(0.0)
+    assert quality_comparison_is_valid(summary, summary, 0.8) is False
+
+
+def test_quality_comparison_requires_both_completion_rates():
+    complete = EvaluationSummary(
+        accuracy=0.5,
+        score_completed=0.5,
+        parse_rate=1.0,
+        completion_rate=1.0,
+        truncation_rate=0.0,
+        prompt_tokens=10,
+        output_tokens=10,
+        observations=(),
+    )
+    incomplete = replace(complete, completion_rate=0.75, truncation_rate=0.25)
+
+    assert quality_comparison_is_valid(complete, complete, 0.8) is True
+    assert quality_comparison_is_valid(complete, incomplete, 0.8) is False
