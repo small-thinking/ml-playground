@@ -6,16 +6,18 @@ It is intentionally broader than any single method: supervised fine-tuning
 share evaluation, provenance, budget, and artifact conventions without being
 forced into one experiment implementation.
 
-Status: planning only. No paid Tinker call is authorized by this document.
+Status: local MVP implemented and tested. No remote Tinker call or training run
+has been made or authorized by this document.
 
 ## Proposed layout
 
-Only this README exists today. Add the remaining directories when their code
-is needed.
+The local connectivity MVP exists today. Add the remaining directories when
+their code is needed.
 
 ```text
 modeling/llm_post_training/tinker/
 ├── README.md
+├── mvp.py                       # Local doctor and gated one-sample smoke
 ├── common/                      # Shared evaluation, data, cost, and I/O code
 └── experiments/
     ├── sft_then_rl/             # First controlled checkpoint ladder
@@ -24,6 +26,58 @@ modeling/llm_post_training/tinker/
 
 The first experiment should establish a trustworthy baseline and evaluation
 loop before OPD is introduced.
+
+## MVP: prove the smallest Tinker path first
+
+Before benchmark evaluation or training, run a deliberately tiny connectivity
+MVP implemented in `mvp.py`.
+
+The default command is local-only:
+
+```bash
+uv run --extra tinker python -m modeling.llm_post_training.tinker.mvp
+```
+
+It checks the Python and SDK versions, reports whether `TINKER_API_KEY` is
+configured without printing its value, freezes the model ID and request limits,
+and prints a machine-readable maximum-cost estimate. It does not construct a
+Tinker client or make a network request.
+
+The remote mode is a later approval gate:
+
+```bash
+uv run --extra tinker python -m modeling.llm_post_training.tinker.mvp \
+  --remote-sample \
+  --allow-paid
+```
+
+That command makes one logical sampling request to `Qwen/Qwen3.5-4B` with at
+most 512 prompt tokens and 64 output tokens. It refuses to run unless all of
+the following are true:
+
+- `--remote-sample` and `--allow-paid` are both present;
+- `TINKER_API_KEY` is configured;
+- the worst-case token estimate is no more than the `$0.01` hard cap;
+- the actual tokenized prompt is no longer than 512 tokens.
+
+Using the public rates inspected on 2026-07-21 (`$0.33` per million prefill
+tokens and `$1.005` per million sampled tokens), the preflight maximum is
+`$0.00023328`. This is a local estimate rather than a provider-enforced billing
+cap; the result must record actual token counts, and the Tinker console remains
+the billing source of truth.
+
+This MVP intentionally does **not**:
+
+- load or score LiveBench;
+- create a LoRA training client;
+- call `forward_backward` or `optim_step`;
+- save a checkpoint;
+- run SFT, RL, or OPD.
+
+After the one-request sampling smoke succeeds, the next smallest gate is one
+disposable LoRA batch (`forward_backward` plus `optim_step`). Only after that
+training-path smoke succeeds should the project run a pilot benchmark baseline
+or a real training experiment.
 
 ## First experiment: baseline -> SFT -> RL
 
@@ -215,6 +269,9 @@ does not authorize a later phase or a higher cap.
 
 ## Research sources
 
+- [Tinker quickstart](https://tinker-docs.thinkingmachines.ai/tinker/quickstart/)
+- [Tinker models and pricing](https://tinker-docs.thinkingmachines.ai/tinker/models/)
+- [Official Tinker SDK on PyPI](https://pypi.org/project/tinker/)
 - [LiveBench dataset](https://huggingface.co/datasets/livebench/math)
 - [LiveBench official repository and evaluator](https://github.com/LiveBench/LiveBench)
 - [LiveBench datasheet](https://github.com/LiveBench/LiveBench/blob/main/docs/DATASHEET.md)
