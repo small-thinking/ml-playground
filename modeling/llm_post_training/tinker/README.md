@@ -6,8 +6,9 @@ It is intentionally broader than any single method: supervised fine-tuning
 share evaluation, provenance, budget, and artifact conventions without being
 forced into one experiment implementation.
 
-Status: local MVP implemented and tested. No remote Tinker call or training run
-has been made or authorized by this document.
+Status: the local connectivity and three-step SFT MVPs are implemented and
+tested with fake clients. No remote Tinker call or training run has been made
+or authorized by this document.
 
 ## Proposed layout
 
@@ -18,6 +19,7 @@ their code is needed.
 modeling/llm_post_training/tinker/
 ├── README.md
 ├── mvp.py                       # Local doctor and gated one-sample smoke
+├── train_mvp.py                 # Gated 3-step SFT + W&B smoke
 ├── common/                      # Shared evaluation, data, cost, and I/O code
 └── experiments/
     ├── sft_then_rl/             # First controlled checkpoint ladder
@@ -74,10 +76,64 @@ This MVP intentionally does **not**:
 - save a checkpoint;
 - run SFT, RL, or OPD.
 
-After the one-request sampling smoke succeeds, the next smallest gate is one
-disposable LoRA batch (`forward_backward` plus `optim_step`). Only after that
-training-path smoke succeeds should the project run a pilot benchmark baseline
-or a real training experiment.
+## Training MVP: three updates with W&B
+
+The next gate is implemented separately in `train_mvp.py`. It proves this
+minimal end-to-end sequence without attempting meaningful model improvement:
+
+1. sample once from the unadapted model;
+2. create a rank-16 LoRA training client;
+3. repeat `forward_backward` plus `optim_step` exactly three times over two
+   tiny, repository-authored arithmetic examples;
+4. log basic loss, token, estimated-cost, and step-timing metrics to Weights &
+   Biases;
+5. save the disposable weights for sampling and sample the same prompt again.
+
+The two examples are smoke fixtures, not a benchmark or proposed training
+dataset. The before/after text only verifies data flow; three updates cannot
+support a quality claim.
+
+Copy the committed template to the ignored repository-root `.env` and fill the
+values locally. Never commit `.env` or paste its values into an issue or PR:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+```dotenv
+TINKER_API_KEY=...
+WANDB_API_KEY=...
+WANDB_PROJECT=ml-playground-tinker
+# WANDB_ENTITY=...
+```
+
+The default command loads that file and runs a local-only preflight. It reports
+only whether each key is present, never the values:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_mvp
+```
+
+The paid path remains double-gated and must not be run until its exact command
+and budget have received an explicit `GO`:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_mvp \
+  --run \
+  --allow-paid
+```
+
+The frozen upper-bound estimate is `$0.000714816` in token charges, below the
+local `$0.01` hard stop. This estimate covers six tiny SFT examples processed
+across three steps plus the two bounded samples. It is not a provider-enforced
+billing cap, and the Tinker console remains the billing source of truth.
+
+Only after this training-path smoke succeeds should the project run a pilot
+benchmark baseline or a real training experiment.
 
 ## First experiment: baseline -> SFT -> RL
 
