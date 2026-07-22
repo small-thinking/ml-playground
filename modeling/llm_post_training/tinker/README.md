@@ -8,8 +8,9 @@ forced into one experiment implementation.
 
 Status: the local connectivity and three-step SFT MVPs are implemented and
 tested. The first real three-step Tinker + W&B run passed on 2026-07-21; see the
-[validation record](validation/2026-07-21-sft-wandb-mvp.md). No benchmark or full
-training run has been made.
+[validation record](validation/2026-07-21-sft-wandb-mvp.md). A configurable,
+real-data DeepMath SFT pilot is also implemented and locally data-validated,
+but no paid real-data training or benchmark run has been made.
 
 ## Proposed layout
 
@@ -21,6 +22,9 @@ modeling/llm_post_training/tinker/
 ├── README.md
 ├── mvp.py                       # Local doctor and gated one-sample smoke
 ├── train_mvp.py                 # Gated 3-step SFT + W&B smoke
+├── train_sft.py                 # Configurable DeepMath train/eval pilot
+├── configs/
+│   └── sft_deepmath.toml        # Pinned default pilot parameters
 ├── common/                      # Shared evaluation, data, cost, and I/O code
 └── experiments/
     ├── sft_then_rl/             # First controlled checkpoint ladder
@@ -181,6 +185,89 @@ MPLCONFIGDIR=/tmp/ml-playground-matplotlib uv run python \
 
 Only after this training-path smoke succeeds should the project run a pilot
 benchmark baseline or a real training experiment.
+
+## Real-data SFT pilot: configurable end-to-end training
+
+`train_sft.py` is the next layer after the disposable three-step smoke. It
+streams a pinned MIT-licensed revision of `zwhe99/DeepMath-103K`, builds
+deterministic and disjoint train/evaluation subsets, applies the Qwen3.5 chat
+template, runs a
+matched baseline evaluation, trains a LoRA adapter, saves persistent state and
+sampler checkpoints, evaluates the trained checkpoint, and writes aggregate
+metrics to W&B. Raw questions, solutions, and model responses are not committed;
+the checked output manifest contains only content-derived IDs and metadata.
+
+The default command is still local-only and makes no network request:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_sft
+```
+
+It validates the checked-in TOML config and prints the maximum token-cost
+estimate. To validate the real Hugging Face schema and tokenizer without using
+Tinker credit, run:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_sft \
+  --prepare-data
+```
+
+That command streams only the configured 256-example candidate pool rather
+than downloading the full multi-gigabyte dataset. On 2026-07-21 it prepared 64
+training examples and 8 held-out evaluation examples, skipped 58 candidates
+that exceeded the 4096-token training cap, and wrote the ignored manifest to
+`outputs/tinker/sft/deepmath-mvp/dataset_manifest.json`.
+
+The paid training path remains double-gated. Override `training.steps` at run
+time to turn the same pipeline into a short integration test:
+
+```bash
+# Two optimizer updates: paid integration test, not a quality experiment.
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_sft \
+  --run --allow-paid --steps 2
+
+# The checked-in default: 100 optimizer updates.
+uv run --extra tinker python -m \
+  modeling.llm_post_training.tinker.train_sft \
+  --run --allow-paid
+```
+
+`--iterations` is an alias for `--steps`. One step means one
+`forward_backward` plus one optimizer update over `training.batch_size`
+examples. The fixed training subset is cycled deterministically when the step
+count consumes more examples than it contains.
+
+The defaults live in `configs/sft_deepmath.toml`:
+
+| Section | Important defaults |
+| --- | --- |
+| `model` | `Qwen/Qwen3.5-4B`, LoRA rank 32 |
+| `dataset` | pinned DeepMath revision, streaming, 64 train / 8 eval |
+| `training` | 100 steps, batch size 2, LR `1e-4`, 4096-token cap |
+| `evaluation` | greedy matched baseline/final sampling, 512 output tokens |
+| `checkpoint` | persistent state and sampler weights with a 7-day TTL |
+| `pricing` | verified public per-token rates and a `$1.00` local hard stop |
+
+At the checked-in public rates, the frozen maximum token estimate is about
+`$0.6174` for the default 100-step pilot and about `$0.0257` for `--steps 2`.
+These bounds include baseline/final evaluation but exclude checkpoint storage,
+which Tinker lists separately. The hard stop is a client-side preflight, not a
+provider-enforced billing cap, so the exact command and budget still require an
+explicit `GO` before execution.
+
+Add an optional Hugging Face read token to the ignored repository-root `.env`
+to avoid anonymous Hub rate limits:
+
+```dotenv
+HF_TOKEN=hf_...
+```
+
+The dataset revision, model, sample counts, batch size, learning rate, sequence
+limits, checkpoint TTL, W&B project, pricing inputs, and dollar cap can all be
+changed in a copied TOML config and selected with `--config path/to/config.toml`.
 
 ## First experiment: baseline -> SFT -> RL
 
