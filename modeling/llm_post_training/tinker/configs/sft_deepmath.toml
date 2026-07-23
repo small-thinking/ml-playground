@@ -1,0 +1,45 @@
+[experiment]
+name = "deepmath-sft-mvp"
+output_dir = "outputs/tinker/sft/deepmath-mvp"
+seed = 42
+
+[model]
+id = "Qwen/Qwen3.5-4B"
+lora_rank = 32
+
+[dataset]
+id = "zwhe99/DeepMath-103K"
+revision = "5cf055d1fe3d7a2eb19719ac020211469736ae44"
+split = "train"
+license = "MIT"
+solution_field = "r1_solution_1"
+streaming = true
+shuffle_buffer = 10000
+candidate_examples = 256
+train_examples = 64
+eval_examples = 8
+
+[training]
+steps = 100
+batch_size = 2
+learning_rate = 0.0001
+max_sequence_tokens = 4096
+
+[evaluation]
+max_prompt_tokens = 1024
+max_output_tokens = 2048
+min_completion_rate = 0.8
+
+[checkpoint]
+prefix = "deepmath-sft-mvp"
+ttl_seconds = 604800
+
+[tracking]
+wandb_project = "ml-playground-tinker"
+
+[pricing]
+# Public Qwen/Qwen3.5-4B rates verified on 2026-07-22, per million tokens.
+prefill_usd_per_million = 0.33
+sample_usd_per_million = 1.005
+train_usd_per_million = 0.737
+hard_cap_usd = 1.0
