@@ -29,6 +29,11 @@ uv run -m modeling.llm_post_training.reasoning_grpo --model-size 3B --use-lora
 | **DPO**  | Any base/SFT model               | Preference datasets | Preference learning                |
 | **GRPO** | Llama 3.1/3.2, Qwen2 (0.5B-8B)   | Mini-reasoning      | Reasoning with structured thinking |
 
+## Focused laboratories
+
+- [GSM8K SFT → GRPO Lab](gsm8k_sft_grpo_lab/README.md): a small,
+  diagnostics-first Base → SFT → GRPO experiment ladder with W&B evidence.
+
 ## Usage
 
 ### SFT Training
