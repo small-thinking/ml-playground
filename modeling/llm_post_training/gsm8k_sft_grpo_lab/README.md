@@ -138,6 +138,39 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 3. Run E1 formal evaluation: the selected checkpoint uses the same E0 IDs,
    prompt, G4, parser, limits, and metric names.
 
+## E1 SFT command
+
+E1 is one LoRA SFT epoch over all 5,000 frozen `sft_train` examples: rank 32,
+batch size 8, learning rate `5e-4`, and a 1,024-token limit. It writes
+`train/nll`, `train/perplexity`, learning rate, throughput, timing, and
+estimated cost at every step. It evaluates all 500 `sft_validation` examples
+at steps 0, 250, 500, and 625 with forward-only NLL/PPL; the lowest-NLL
+checkpoint is exported as the selected sampler path.
+
+The local-only preflight checks the frozen configuration and credentials. It
+does not download data or call either remote service:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --hard-cap-usd 12
+```
+
+Its current worst-case bound is `$10.486784`: 5,120,000 training-token slots
+plus four 500-example validation passes, all at the configured 1,024-token
+limit. The paid run is explicit and prints step, ETA, batch-level validation
+progress, and cumulative estimated cost to the terminal:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --run --allow-paid --hard-cap-usd 12
+```
+
+E1 validation is for checkpoint selection only. Do not compare its NLL/PPL
+with E0 generation metrics. After recording the selected sampler path, run a
+separate E1 formal evaluation against the unchanged 1,287-example test set.
+
 The E0 preflight is local-only:
 
 ```bash

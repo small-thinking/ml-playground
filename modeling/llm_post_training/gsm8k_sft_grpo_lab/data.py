@@ -251,6 +251,32 @@ def load_official_test_rows(
     return select_rows(test_rows, selected_ids)
 
 
+def load_official_train_rows(
+    manifest: SplitManifest, partition: str
+) -> Tuple[Mapping[str, object], ...]:
+    """Fetch the pinned GSM8K train revision and recover one frozen partition."""
+    ids_by_partition = {
+        "sft_train": manifest.sft_train_ids,
+        "sft_validation": manifest.sft_validation_ids,
+        "rl_train": manifest.rl_train_ids,
+        "rl_monitor": manifest.rl_monitor_ids,
+    }
+    try:
+        selected_ids = ids_by_partition[partition]
+    except KeyError as exc:
+        raise ManifestError(f"unknown train partition: {partition}") from exc
+    from datasets import load_dataset
+
+    load_dotenv(ENV_FILE, override=False)
+    train_rows = load_dataset(
+        manifest.dataset_id,
+        manifest.dataset_config,
+        split="train",
+        revision=manifest.dataset_revision,
+    )
+    return select_rows(train_rows, selected_ids)
+
+
 def dataset_profile(
     rows: Sequence[Mapping[str, object]],
 ) -> Dict[str, Union[float, int]]:
