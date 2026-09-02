@@ -468,7 +468,7 @@ async def run_remote_evaluation(
             {
                 "eval/rollouts_table": wandb_module.Table(
                     columns=TABLE_COLUMNS,
-                    data=_prediction_rows(scored.rows, samples, config),
+                    data=list(_prediction_rows(scored.rows, samples, config)),
                 )
             }
         )
