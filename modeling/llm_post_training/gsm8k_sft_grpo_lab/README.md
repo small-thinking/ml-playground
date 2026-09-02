@@ -28,6 +28,16 @@ Every paid phase requires an explicit approval, a frozen configuration, a
 worst-case cost estimate, and a held-out evaluation. Training loss or proxy
 reward alone never promotes a checkpoint.
 
+## Frozen data protocol
+
+[`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) pins GSM8K revision
+`740312add88f781978c0658806c59bc2815b9866` with 512 SFT IDs, 1,500 disjoint RL
+IDs, and 256 held-out test IDs. It contains hashes and provenance only; raw
+questions and answers remain outside Git.
+
+[`manifests/gsm8k_profile.json`](manifests/gsm8k_profile.json) records only
+split counts, answer-marker coverage, and question/answer length percentiles.
+
 ## W&B contract
 
 Each calibration or experiment is one W&B run with an experiment ID, parent
