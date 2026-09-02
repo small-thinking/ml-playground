@@ -40,10 +40,19 @@ split counts, answer-marker coverage, and question/answer length percentiles.
 
 ## W&B contract
 
+The W&B project is `mini-posttraining-lab`; related runs share the group
+`gsm8k-sft-grpo-v1`. Names begin with their experiment ID, stage, model, and
+group size (for example, `e0a-base-calibration-qwen3.5-9b-base-g4`).
+
 Each calibration or experiment is one W&B run with an experiment ID, parent
 checkpoint, model identity, dataset revision and split hash, Git commit,
 hyperparameters, reward version, hypothesis, expected failure mode, and
 planned versus actual cost.
+
+`E0a` is a 32-example calibration subset for a bounded first paid request. It
+is not a stage-comparison result. E0 Base, E1 SFT, and E4 GRPO use all 256
+held-out IDs with the same prompt version, `G=4`, decoding limits, parser, and
+metric names; only the evaluated checkpoint changes.
 
 The core metrics are:
 
