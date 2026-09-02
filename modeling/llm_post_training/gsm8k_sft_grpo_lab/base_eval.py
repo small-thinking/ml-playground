@@ -105,6 +105,7 @@ class BaseEvalConfig:
     project: str = WANDB_PROJECT
     suite_id: str = SUITE_ID
     experiment_id: str = EXPERIMENT_ID
+    attempt: int = 1
     eval_examples: int = CALIBRATION_EXAMPLES
     group_size: int = GROUP_SIZE
     temperature: float = TEMPERATURE
@@ -118,7 +119,7 @@ class BaseEvalConfig:
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
             raise BaseEvalError("model, project, and suite identifiers are required")
-        if self.eval_examples <= 0 or self.group_size != 4:
+        if self.attempt <= 0 or self.eval_examples <= 0 or self.group_size != 4:
             raise BaseEvalError("evaluation requires a positive example count and G=4")
         if min(self.temperature, self.max_prompt_tokens, self.max_output_tokens) <= 0:
             raise BaseEvalError("decoding limits and temperature must be positive")
@@ -130,7 +131,10 @@ class BaseEvalConfig:
     @property
     def run_name(self) -> str:
         model_slug = self.model_id.lower().replace("/", "-").replace(".", "-")
-        return f"{self.experiment_id}-base-calibration-{model_slug}-g{self.group_size}"
+        return (
+            f"{self.experiment_id}-base-calibration-{model_slug}"
+            f"-g{self.group_size}-a{self.attempt:02d}"
+        )
 
 
 def load_local_env() -> None:
@@ -263,6 +267,7 @@ def _git_sha() -> str:
 def _tracking_config(config: BaseEvalConfig, manifest: SplitManifest) -> Dict[str, Any]:
     return {
         "experiment_id": config.experiment_id,
+        "attempt": config.attempt,
         "suite_id": config.suite_id,
         "checkpoint": "base",
         "parent_checkpoint": None,
@@ -510,6 +515,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--allow-paid", action="store_true", help="Acknowledge paid use."
     )
     parser.add_argument(
+        "--attempt", type=int, default=1, help="Record a retry explicitly."
+    )
+    parser.add_argument(
         "--eval-examples",
         type=int,
         default=CALIBRATION_EXAMPLES,
@@ -522,7 +530,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         load_local_env()
         args = parse_args(argv)
-        config = BaseEvalConfig(eval_examples=args.eval_examples)
+        config = BaseEvalConfig(eval_examples=args.eval_examples, attempt=args.attempt)
         if args.run:
             report = asyncio.run(run_e0a(config, allow_paid=args.allow_paid))
         else:

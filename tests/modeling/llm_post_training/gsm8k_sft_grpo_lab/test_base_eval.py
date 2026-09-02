@@ -134,6 +134,10 @@ def test_protocol_id_changes_when_a_comparability_condition_changes():
     )
 
 
+def test_run_name_records_an_explicit_retry():
+    assert BaseEvalConfig(attempt=2).run_name.endswith("-g4-a02")
+
+
 def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
     manifest, rows = _manifest_and_rows()
     wandb = _FakeWandb()
