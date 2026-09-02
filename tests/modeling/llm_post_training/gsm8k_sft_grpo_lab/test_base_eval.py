@@ -196,17 +196,28 @@ def test_run_name_records_an_explicit_retry():
 
 def test_cli_accepts_an_explicit_cost_cap():
     args = parse_args(
-        ["--run", "--allow-paid", "--attempt", "3", "--hard-cap-usd", "1"]
+        [
+            "--run",
+            "--allow-paid",
+            "--attempt",
+            "3",
+            "--hard-cap-usd",
+            "1",
+            "--progress-every",
+            "8",
+        ]
     )
 
     assert args.attempt == 3
     assert args.hard_cap_usd == pytest.approx(1.0)
+    assert args.progress_every == 8
 
 
 def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
     manifest, rows = _manifest_and_rows()
     wandb = _FakeWandb()
     config = BaseEvalConfig(eval_examples=1)
+    progress = []
 
     report = asyncio.run(
         run_remote_evaluation(
@@ -218,6 +229,7 @@ def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
             tinker_module=_FakeTinker,
             wandb_module=wandb,
             service_client=_FakeServiceClient(),
+            progress=progress.append,
         )
     )
 
@@ -230,6 +242,11 @@ def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
     assert "advantage" in table.columns
     assert len(table.data) == 4
     assert wandb.run.finished is True
+    assert any("sampling 1/1 prompts" in message for message in progress)
+    assert any(
+        "complete pass_at_1=" in message and "pass_at_4=" in message
+        for message in progress
+    )
 
 
 def test_remote_evaluation_requires_explicit_paid_authorization():

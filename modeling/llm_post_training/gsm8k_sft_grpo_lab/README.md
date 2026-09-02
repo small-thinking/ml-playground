@@ -102,6 +102,13 @@ Run-level prediction and rollout tables preserve examples behind aggregate
 metrics. Dataset manifests, evaluation protocols, promoted checkpoints, and
 prediction tables are versioned artifacts.
 
+Long paid commands print a start record, W&B URL, completed prompts and
+rollouts, elapsed time, observed token cost, and a final aggregate summary to
+the terminal. These updates use stderr so stdout remains a parseable JSON
+report. The SFT runner will additionally print train step, NLL, perplexity,
+learning rate, and each validation result; it will not print raw prompts or
+responses.
+
 ## Immediate execution plan
 
 1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
