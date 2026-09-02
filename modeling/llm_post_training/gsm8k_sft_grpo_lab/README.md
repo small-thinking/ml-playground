@@ -23,9 +23,10 @@ tool defines the laboratory's identity or directory name.
    quality. Add generation validation before attempting another SFT configuration.
 8. Classify the disjoint RL pool only after an SFT checkpoint is selected by
    generation validation.
-9. Run E4 clean GRPO from the promoted SFT checkpoint, then E5 bad difficulty,
-   E6 high learning rate,
-   and E7 exploitable reward. E8 process-aware reward is optional.
+9. Run E4 clean GRPO from the promoted SFT checkpoint, then E5 signal-aware
+   GRPO with bounded resampling and monitor-based early stopping. E6 keeps that
+   higher update density while restoring E4's total effective-gradient budget.
+   E7 may test a learning-rate change only after that comparison.
 10. Export only the promoted clean SFT and GRPO adapters, compare them locally,
    and publish the final experiment report.
 
@@ -100,8 +101,15 @@ The core metrics are:
   streak, and explicit stop decision. Only a matching formal generation run is
   compared with E0 Base.
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
-  `train/degenerate_group_frac`, `train/effective_group_count`, and
-  `train/group_reward_std`.
+  `train/degenerate_group_frac`, `train/effective_group_count`,
+  `train/candidate_group_count`, `train/resample_rounds`, and
+  `train/group_reward_std`. E5 also logs its per-step effective-group target and
+  whether bounded resampling reached it. E6 additionally logs cumulative
+  effective groups, the total target, the global candidate cap, and the stop
+  reason.
+- GRPO selection: fixed `rl_monitor/pass_at_4`, then pass@1, records every
+  checkpoint table including step 0, and logs best-so-far monitor scores,
+  material-regression streak, and stop decision when early stopping is enabled.
 - Guardrails: `eval/true_exact_match`, process coverage beside process
   validity, policy-drift metrics when the backend exposes them, and separated
   planned/actual token and USD metrics.
@@ -138,15 +146,193 @@ NLL, perplexity, learning rate, and validation boundaries/results. GRPO
 additionally prints rollout groups, reward mean, mixed-group fraction, and
 degenerate-group fraction. No progress line includes raw prompts or responses.
 
-## Immediate execution plan
+## Completed execution ladder
 
-1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
+1. E0 Base formal evaluation established the 1,287-example, G4 baseline.
 2. E1 showed that NLL/PPL alone is insufficient for checkpoint selection:
    its SFT checkpoint regressed on the formal generation test despite lower NLL.
-3. E2 selected step 250 by the frozen generation monitor; formally evaluate
-   that sampler before drawing a conclusion.
-4. Use E3's buffered early stopping for the next SFT run, then reserve
-   `formal_test` for its selected sampler.
+3. E2 selected step 250 by its frozen generation monitor and improved the
+   shared formal protocol over Base. Treat that result as a useful scoreboard,
+   not an endlessly reusable pristine test set.
+4. E4 clean GRPO started from E2 step 250 and is the current best formal model.
+5. E5 tested per-step signal packing, but its selected checkpoint did not
+   exceed E4 on the shared formal protocol.
+6. E6 retained E5's signal packing and reached 56 mixed groups, exceeding
+   E4's 52, but its selected step-25 checkpoint still did not exceed E4.
+   This rejects the matched-effective-group-budget hypothesis, not GRPO as a
+   method or every possible reward design.
+
+## E4 clean-GRPO command
+
+E4 defaults to restoring E2 step 250 from its Tinker **training-state** URI
+with a fresh RL optimizer. This means its initial policy is the promoted SFT
+adapter, not bare Qwen Base. It never puts a GSM8K answer in the model prompt.
+For each prompt it samples G4 on-policy completions, gives an exact
+final-answer reward of `1` or `0`, subtracts that group's mean reward, skips
+all-correct and all-wrong groups, and uses the saved rollout log-probabilities
+with `importance_sampling`.
+
+The initial economical run is 100 updates of 8 prompts (800 deterministic
+`rl_train` prompts) at LR `2e-5`. It uses the first 64 frozen `rl_monitor`
+prompts at step 0 and every 25 steps; monitor pass@4, then pass@1, selects a
+saved checkpoint. It logs reward, mixed/degenerate groups, effective-group
+count, output/format diagnostics, rollout throughput, ETA, and cumulative
+estimated token cost. The four persisted checkpoint pairs have the normal
+30-day Tinker TTL.
+
+Review the entirely local preflight first:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --steps 100 --batch-size 8 --group-size 4 --learning-rate 2e-5 \
+  --monitor-examples 64 --checkpoint-every 25 --hard-cap-usd 12
+```
+
+Its worst-case token bound is `$10.8838912`; the bound assumes every prompt
+and completion reaches 512 tokens, so it is deliberately higher than the
+likely charge. After reviewing that JSON, run the same configuration with the
+explicit paid-run gate:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --steps 100 --batch-size 8 --group-size 4 --learning-rate 2e-5 \
+  --monitor-examples 64 --checkpoint-every 25 --hard-cap-usd 12 \
+  --run --allow-paid
+```
+
+`--steps`, `--batch-size`, `--group-size` (minimum four),
+`--learning-rate`, `--temperature`, `--max-prompt-tokens`,
+`--max-output-tokens`, `--monitor-examples`,
+`--checkpoint-every`, `--hard-cap-usd`, and all E2 parent paths are explicit
+CLI parameters. Changing a setting creates a distinct W&B run name and config.
+
+## E4 selected-checkpoint formal evaluation
+
+E4's fixed monitor selected step 75, not the final step 100. Evaluate that
+exact **sampler** checkpoint—not its 1.1 GB training-state checkpoint—with the
+same 1,287-prompt G4 formal protocol used for Base and SFT. This is the only
+comparison that can establish whether E4 improved the shared scoreboard.
+
+Preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.checkpoint_eval \
+  --sampler-path 'tinker://fe6861a7-c997-538b-807f-a1e2f8e2fa2c:train:0/sampler_weights/e4-grpo-qwen-qwen3-5-9b-base-r32-b8-g4-lr2e-5-s100-m64-a01-step75' \
+  --source-training-run-url 'https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/uyou2i6z' \
+  --experiment-id e4 --evaluation-stage grpo \
+  --parent-checkpoint e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250 \
+  --hard-cap-usd 7
+```
+
+Append `--run --allow-paid` only after the local report is approved. The
+preflight maximum is `$6.99798528`; the prior complete formal evaluations cost
+materially less because most completions were shorter than 512 tokens.
+
+## E5 signal-aware GRPO command
+
+E4 produced an update on only 46 of 100 steps because 93.5% of its G4 prompt
+groups were all correct or all wrong. E5 keeps the parent, reward, LR, and G4
+fixed. It requests up to four fresh 8-prompt batches per optimizer step, but
+stops sampling that step once it has two mixed groups; all candidates remain
+on-policy and only mixed groups become GRPO datums. It does not reuse the
+`rl_monitor` for gradients.
+
+At step 0 and every five steps, E5 evaluates the same 64 frozen monitor
+prompts. It stops only after two consecutive checkpoints where both pass@1 and
+pass@4 fall by more than `0.03125` (two of 64 prompts) from the best monitor
+score. A stop reduces actual spend; the preflight bound still assumes all 25
+steps and all four sampling rounds.
+
+Preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e5 --steps 25 --batch-size 8 --group-size 4 \
+  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 5 \
+  --min-effective-groups 2 --max-resample-rounds 3 \
+  --early-stopping-patience 2 --early-stopping-max-regression 0.03125 \
+  --hard-cap-usd 14
+```
+
+The verified worst-case bound is `$11.23188736` (3,200 possible training
+rollouts plus six monitor passes). Paid run:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e5 --steps 25 --batch-size 8 --group-size 4 \
+  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 5 \
+  --min-effective-groups 2 --max-resample-rounds 3 \
+  --early-stopping-patience 2 --early-stopping-max-regression 0.03125 \
+  --hard-cap-usd 14 --run --allow-paid
+```
+
+### Initialization ablations
+
+`--init-source sft` is the default. It requires a matching training-state URI
+and sampler URI, so any future SFT checkpoint can be substituted with
+`--parent-state-path`, `--parent-sampler-path`, and `--init-label`.
+
+`--init-source base` instead creates a fresh rank-32 LoRA on `--model-id` and
+uses the bare model as the step-0 monitor. It ignores the SFT parent paths and
+names the W&B run with `from-base` (or a supplied `--init-label`). This is the
+direct Base→GRPO ablation; it must use the same `rl_train`, `rl_monitor`, and
+eventual formal protocol as the SFT→GRPO condition.
+
+## E6 fixed-effective-budget GRPO command
+
+E6 is deliberately named as a new experiment, not “E5.1.” E5 demonstrated that
+per-step signal packing alone was insufficient: it obtained 37 mixed groups in
+688 candidates and lost to E4 on the formal test. E6 keeps that packing rule
+(`2` mixed groups per optimizer step, at most four 8-prompt sampling rounds),
+but does **not** stop after 25 optimizer steps.
+
+The comparison baseline is E4, the current best formal model: both E4 and E6
+start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, the same
+64-prompt frozen monitor, and checkpoints at steps 25/50/75/100. E4 sampled
+800 candidates, found 52 mixed groups, and selected step 75. E6 targets 56
+mixed groups—slightly above E4's total learning signal—with a hard cap of
+1,200 candidates. Its 100 steps are only a maximum guard. It stops at the
+first of:
+
+1. 56 cumulative mixed groups;
+2. 1,200 cumulative candidate groups;
+3. monitor-based early stopping; or
+4. step 100.
+
+The preflight cost bound assumes all 1,200 candidate groups, all seven possible
+monitor passes (step 0, four scheduled checkpoints, and one unscheduled
+terminal checkpoint), and maximum token lengths.
+
+Preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e6 --steps 100 --batch-size 8 --group-size 4 \
+  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 25 \
+  --min-effective-groups 2 --max-resample-rounds 3 \
+  --target-total-effective-groups 56 --max-total-candidate-groups 1200 \
+  --early-stopping-patience 2 --early-stopping-max-regression 0.03125 \
+  --hard-cap-usd 20
+```
+
+The verified maximum is `$15.80384256`. The paid command is the same command
+with `--run --allow-paid` appended; it continues to use the E2 parent paths by
+default.
+
+### Observed E6 outcome
+
+The paid E6 run reached its 56-mixed-group boundary after 43 steps and 1,128
+candidate groups. The frozen monitor selected step 25 (`pass@1=0.8242`,
+`pass@4=0.8438`), so the matching formal evaluation used that sampler. It
+scored pass@1 `0.7034` and pass@4 `0.7343`, below E4's `0.7197` and `0.7506`.
+E6 therefore rejects the fixed-effective-budget continuation of E5; it does
+not establish a GRPO ceiling beyond this binary-reward, fixed-data setting.
 
 ## E1 SFT command
 
