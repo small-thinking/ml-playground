@@ -62,6 +62,15 @@ class _FakeServiceClient:
         return _FakeSamplingClient()
 
 
+class _FakeCheckpointServiceClient:
+    def __init__(self):
+        self.kwargs = None
+
+    async def create_sampling_client_async(self, **kwargs):
+        self.kwargs = kwargs
+        return _FakeSamplingClient()
+
+
 class _FakeRun:
     def __init__(self):
         self.url = "https://wandb.ai/example/mini-posttraining-lab/runs/e0a"
@@ -265,3 +274,45 @@ def test_remote_evaluation_requires_explicit_paid_authorization():
                 environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
             )
         )
+
+
+def test_remote_evaluation_samples_from_a_post_training_sampler_checkpoint():
+    manifest, rows = _manifest_and_rows()
+    service = _FakeCheckpointServiceClient()
+    wandb = _FakeWandb()
+    sampler_path = "tinker://run:train:0/sampler_weights/e1-step625"
+
+    report = asyncio.run(
+        run_remote_evaluation(
+            BaseEvalConfig(
+                experiment_id="e1",
+                evaluation_stage="sft",
+                model_path=sampler_path,
+                checkpoint="e1-step625",
+                parent_checkpoint="base",
+                evaluation_split="calibration",
+                eval_examples=1,
+            ),
+            manifest,
+            rows,
+            allow_paid=True,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+        )
+    )
+
+    assert service.kwargs == {"model_path": sampler_path}
+    assert report["mode"] == "remote-sft-eval"
+    assert report["checkpoint"] == "e1-step625"
+    assert "sft" in wandb.init_kwargs["tags"]
+
+
+def test_post_training_evaluation_rejects_a_training_state_as_sampler():
+    with pytest.raises(BaseEvalError, match="sampler_weights"):
+        BaseEvalConfig(
+            evaluation_stage="sft",
+            model_path="tinker://run:train:0/weights/e1-step625",
+            checkpoint="e1-step625",
+        ).validate()
