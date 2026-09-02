@@ -46,6 +46,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
 
 EXPERIMENT_ID = "e1"
 E2_EXPERIMENT_ID = "e2"
+E3_EXPERIMENT_ID = "e3"
 LORA_RANK = 32
 BATCH_SIZE = 8
 LEARNING_RATE = 5e-4
@@ -62,6 +63,8 @@ PROGRESS_EVERY = 25
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60
 HARD_CAP_USD = 12.0
 E2_HARD_CAP_USD = 18.0
+E3_EARLY_STOPPING_PATIENCE = 1
+E3_EARLY_STOPPING_MAX_REGRESSION = 4 / E2_GENERATION_MONITOR_EXAMPLES
 TRAIN_USD_PER_MILLION = 1.463
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -90,6 +93,8 @@ class SFTConfig:
     generation_monitor_examples: int = 0
     generation_monitor_group_size: int = GENERATION_MONITOR_GROUP_SIZE
     checkpoint_selection: str = "validation_nll"
+    early_stopping_patience: Optional[int] = None
+    early_stopping_max_regression: float = 0.0
     progress_every: int = PROGRESS_EVERY
     checkpoint_ttl_seconds: int = CHECKPOINT_TTL_SECONDS
     hard_cap_usd: float = HARD_CAP_USD
@@ -98,8 +103,12 @@ class SFTConfig:
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
             raise SFTTrainingError("model, project, and suite identifiers are required")
-        if self.experiment_id not in {EXPERIMENT_ID, E2_EXPERIMENT_ID}:
-            raise SFTTrainingError("SFT experiment ID must be e1 or e2")
+        if self.experiment_id not in {
+            EXPERIMENT_ID,
+            E2_EXPERIMENT_ID,
+            E3_EXPERIMENT_ID,
+        }:
+            raise SFTTrainingError("SFT experiment ID must be e1, e2, or e3")
         positive_ints = {
             "attempt": self.attempt,
             "lora_rank": self.lora_rank,
@@ -119,6 +128,13 @@ class SFTConfig:
             raise SFTTrainingError("learning_rate_schedule must be constant or linear")
         if self.generation_monitor_examples < 0:
             raise SFTTrainingError("generation_monitor_examples cannot be negative")
+        if (
+            self.early_stopping_patience is not None
+            and self.early_stopping_patience <= 0
+        ):
+            raise SFTTrainingError("early_stopping_patience must be positive")
+        if self.early_stopping_max_regression < 0:
+            raise SFTTrainingError("early_stopping_max_regression cannot be negative")
         if self.checkpoint_selection not in {"validation_nll", "generation_pass_at_4"}:
             raise SFTTrainingError("checkpoint_selection is not supported")
         if (
@@ -126,6 +142,11 @@ class SFTConfig:
             and self.generation_monitor_examples == 0
         ):
             raise SFTTrainingError("generation selection requires a monitor")
+        if (
+            self.early_stopping_patience is not None
+            and self.generation_monitor_examples == 0
+        ):
+            raise SFTTrainingError("early stopping requires a generation monitor")
         if self.hard_cap_usd <= 0 or self.train_usd_per_million <= 0:
             raise SFTTrainingError("cost settings must be positive")
         if manifest is not None:
@@ -144,10 +165,18 @@ class SFTConfig:
                 f"-b{self.batch_size}-a{self.attempt:02d}"
             )
         lr_slug = f"{self.learning_rate:.0e}".replace("-0", "-")
+        early_stop_slug = (
+            ""
+            if self.early_stopping_patience is None
+            else (
+                f"-es{self.early_stopping_patience}"
+                f"-tol{self.early_stopping_max_regression:.4f}".replace(".", "p")
+            )
+        )
         return (
             f"{self.experiment_id}-sft-{model_slug}-r{self.lora_rank}"
             f"-b{self.batch_size}-lr{lr_slug}-{self.learning_rate_schedule}"
-            f"-gm{self.generation_monitor_examples}-a{self.attempt:02d}"
+            f"-gm{self.generation_monitor_examples}{early_stop_slug}-a{self.attempt:02d}"
         )
 
     def training_steps(self, manifest: SplitManifest) -> int:
@@ -156,8 +185,12 @@ class SFTConfig:
 
     def validation_steps(self, manifest: SplitManifest) -> Tuple[int, ...]:
         steps = self.training_steps(manifest)
-        scheduled = tuple(range(self.validation_every, steps + 1, self.validation_every))
-        return scheduled if scheduled and scheduled[-1] == steps else scheduled + (steps,)
+        scheduled = tuple(
+            range(self.validation_every, steps + 1, self.validation_every)
+        )
+        return (
+            scheduled if scheduled and scheduled[-1] == steps else scheduled + (steps,)
+        )
 
 
 def e2_config() -> SFTConfig:
@@ -170,6 +203,16 @@ def e2_config() -> SFTConfig:
         generation_monitor_examples=E2_GENERATION_MONITOR_EXAMPLES,
         checkpoint_selection="generation_pass_at_4",
         hard_cap_usd=E2_HARD_CAP_USD,
+    )
+
+
+def e3_config() -> SFTConfig:
+    """Return E2's generation monitor with buffered early stopping."""
+    return replace(
+        e2_config(),
+        experiment_id=E3_EXPERIMENT_ID,
+        early_stopping_patience=E3_EARLY_STOPPING_PATIENCE,
+        early_stopping_max_regression=E3_EARLY_STOPPING_MAX_REGRESSION,
     )
 
 
@@ -227,9 +270,7 @@ def estimate_max_token_cost_usd(config: SFTConfig, manifest: SplitManifest) -> f
     """Bound training, NLL validation, and optional generation monitoring."""
     config.validate(manifest)
     train_tokens = (
-        config.training_steps(manifest)
-        * config.batch_size
-        * config.max_sequence_tokens
+        config.training_steps(manifest) * config.batch_size * config.max_sequence_tokens
     )
     validation_tokens = (
         (1 + len(config.validation_steps(manifest)))
@@ -237,9 +278,7 @@ def estimate_max_token_cost_usd(config: SFTConfig, manifest: SplitManifest) -> f
         * config.max_sequence_tokens
     )
     train_and_nll_cost = (
-        (train_tokens + validation_tokens)
-        * config.train_usd_per_million
-        / 1_000_000
+        (train_tokens + validation_tokens) * config.train_usd_per_million / 1_000_000
     )
     monitor_runs = 1 + len(config.validation_steps(manifest))
     monitor_cost = (
@@ -277,7 +316,9 @@ def build_doctor_report(
     manifest = read_manifest() if manifest is None else manifest
     config.validate(manifest)
     estimated_cost = estimate_max_token_cost_usd(config, manifest)
-    tinker_sdk = _package_version("tinker") if tinker_version is None else tinker_version
+    tinker_sdk = (
+        _package_version("tinker") if tinker_version is None else tinker_version
+    )
     wandb_sdk = _package_version("wandb") if wandb_version is None else wandb_version
     return {
         "mode": "local-sft-preflight",
@@ -292,6 +333,8 @@ def build_doctor_report(
         "generation_monitor_group_size": config.generation_monitor_group_size,
         "generation_monitor_ids_hash": _generation_monitor_ids_hash(config, manifest),
         "checkpoint_selection": config.checkpoint_selection,
+        "early_stopping_patience": config.early_stopping_patience,
+        "early_stopping_max_regression": config.early_stopping_max_regression,
         "learning_rate_schedule": config.learning_rate_schedule,
         "tinker_sdk_version": tinker_sdk,
         "wandb_version": wandb_sdk,
@@ -324,7 +367,9 @@ def _authorize(
     if not environ.get("TINKER_API_KEY") or not environ.get("WANDB_API_KEY"):
         raise SFTTrainingError("TINKER_API_KEY and WANDB_API_KEY are required")
     if environ.get("WANDB_MODE", "").lower() == "offline":
-        raise SFTTrainingError("WANDB_MODE=offline cannot produce the required dashboard")
+        raise SFTTrainingError(
+            "WANDB_MODE=offline cannot produce the required dashboard"
+        )
     if estimate_max_token_cost_usd(config, manifest) > config.hard_cap_usd:
         raise SFTTrainingError("estimated maximum token cost exceeds the hard cap")
 
@@ -338,7 +383,11 @@ def build_sft_completion(answer: str) -> str:
     final_answer = answer[marker + len("####") :].strip().splitlines()[0].strip()
     if normalize_number(final_answer) is None:
         raise SFTTrainingError("a GSM8K final answer is not numeric")
-    return f"{reasoning}\n\\boxed{{{final_answer}}}" if reasoning else f"\\boxed{{{final_answer}}}"
+    return (
+        f"{reasoning}\n\\boxed{{{final_answer}}}"
+        if reasoning
+        else f"\\boxed{{{final_answer}}}"
+    )
 
 
 def _encode(tokenizer: Any, text: str) -> list[int]:
@@ -479,8 +528,7 @@ def _effective_learning_rate(config: SFTConfig, step: int, total_steps: int) -> 
 
 def _monitor_cost(prompt_tokens: int, output_tokens: int) -> float:
     return (
-        prompt_tokens * PREFILL_USD_PER_MILLION
-        + output_tokens * SAMPLE_USD_PER_MILLION
+        prompt_tokens * PREFILL_USD_PER_MILLION + output_tokens * SAMPLE_USD_PER_MILLION
     ) / 1_000_000
 
 
@@ -586,6 +634,28 @@ def _monitor_metrics(report: GenerationMonitorReport) -> Dict[str, float]:
     }
 
 
+def _is_better_generation_score(
+    pass_at_1: float,
+    pass_at_4: float,
+    best_pass_at_1: float,
+    best_pass_at_4: float,
+) -> bool:
+    return (pass_at_4, pass_at_1) > (best_pass_at_4, best_pass_at_1)
+
+
+def _is_material_generation_regression(
+    pass_at_1: float,
+    pass_at_4: float,
+    best_pass_at_1: float,
+    best_pass_at_4: float,
+    tolerance: float,
+) -> bool:
+    return (
+        pass_at_1 < best_pass_at_1 - tolerance
+        and pass_at_4 < best_pass_at_4 - tolerance
+    )
+
+
 def _select_checkpoint(
     checkpoints: Sequence[CheckpointRecord], config: SFTConfig
 ) -> CheckpointRecord:
@@ -646,6 +716,8 @@ def _tracking_config(config: SFTConfig, manifest: SplitManifest) -> Dict[str, An
         "generation_monitor_max_output_tokens": MAX_OUTPUT_TOKENS,
         "generation_monitor_ids_hash": _generation_monitor_ids_hash(config, manifest),
         "checkpoint_selection": config.checkpoint_selection,
+        "early_stopping_patience": config.early_stopping_patience,
+        "early_stopping_max_regression": config.early_stopping_max_regression,
         "train_usd_per_million": config.train_usd_per_million,
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
@@ -690,7 +762,7 @@ async def run_sft_training(
     clock: Callable[[], float] = time.monotonic,
     progress: Callable[[str], None] = _print_progress,
 ) -> Dict[str, Any]:
-    """Run one frozen SFT epoch and select its lowest-validation-NLL checkpoint."""
+    """Run one frozen SFT epoch and select its configured best checkpoint."""
     manifest = read_manifest() if manifest is None else manifest
     _authorize(config, manifest, allow_paid, environ)
     if tinker_module is None:
@@ -742,9 +814,7 @@ async def run_sft_training(
             user_metadata={"experiment_id": config.experiment_id},
         )
         tokenizer = training_client.get_tokenizer()
-        train = prepare_sft_examples(
-            train_rows, tokenizer, config.max_sequence_tokens
-        )
+        train = prepare_sft_examples(train_rows, tokenizer, config.max_sequence_tokens)
         validation = prepare_sft_examples(
             validation_rows, tokenizer, config.max_sequence_tokens
         )
@@ -767,6 +837,11 @@ async def run_sft_training(
         processed_tokens = 0
         generation_monitor_cost = 0.0
         baseline_generation: Optional[GenerationMonitorReport] = None
+        best_generation_pass_at_1: Optional[float] = None
+        best_generation_pass_at_4: Optional[float] = None
+        generation_regression_streak = 0
+        early_stopping_triggered = False
+        early_stopping_step: Optional[int] = None
         elapsed_started_at = clock()
         progress("validating untrained adapter")
         baseline_nll, baseline_tokens = await _validation_nll(
@@ -825,11 +900,15 @@ async def run_sft_training(
                 f"pass_at_4={baseline_generation.metrics['eval/pass_at_4']:.4f} "
                 f"estimated_cost=${generation_monitor_cost:.4f}"
             )
+            best_generation_pass_at_1 = baseline_generation.metrics["eval/pass_at_1"]
+            best_generation_pass_at_4 = baseline_generation.metrics["eval/pass_at_4"]
 
         checkpoints: list[CheckpointRecord] = []
         validation_steps = set(config.validation_steps(manifest))
         train_batches = _batches(train, config.batch_size)
         total_steps = len(train_batches)
+        completed_training_steps = 0
+        examples_seen = 0
         for step, batch in enumerate(train_batches, start=1):
             data, batch_tokens, supervised_tokens = _materialize_batch(
                 batch, tinker_module
@@ -845,6 +924,8 @@ async def run_sft_training(
             )
             await optimizer.result_async()
             processed_tokens += batch_tokens
+            completed_training_steps = step
+            examples_seen += len(batch)
             nll = _loss_sum(forward_backward_result) / supervised_tokens
             step_seconds = max(clock() - step_started_at, 1e-9)
             elapsed_seconds = clock() - elapsed_started_at
@@ -855,6 +936,8 @@ async def run_sft_training(
                 "train/perplexity": _perplexity(nll),
                 "train/learning_rate": current_learning_rate,
                 "train/supervised_tokens": float(supervised_tokens),
+                "train/examples_seen": float(examples_seen),
+                "train/fraction_examples_seen": examples_seen / len(train),
                 "train/tokens_per_second": batch_tokens / step_seconds,
                 "timing/step_seconds": step_seconds,
                 "timing/elapsed_seconds": elapsed_seconds,
@@ -865,11 +948,7 @@ async def run_sft_training(
                 ),
             }
             wandb_run.log(metrics, step=step)
-            if (
-                step == 1
-                or step % config.progress_every == 0
-                or step == total_steps
-            ):
+            if step == 1 or step % config.progress_every == 0 or step == total_steps:
                 progress(
                     f"step={step}/{total_steps} nll={nll:.5f} "
                     f"perplexity={_perplexity(nll):.3f} lr={current_learning_rate:.2g} "
@@ -930,17 +1009,21 @@ async def run_sft_training(
                 ),
             )
             checkpoints.append(record)
+            should_stop = False
+            early_stopping_metrics: Dict[str, float] = {}
             checkpoint_metrics = {
-                    "sft_validation/nll": validation_nll,
-                    "sft_validation/perplexity": validation_ppl,
-                    "sft_validation/is_baseline": 0.0,
-                    "sft_validation/nll_delta_from_base": validation_nll - baseline_nll,
-                    "run_stats/cumulative_processed_tokens": float(processed_tokens),
-                    "run_stats/estimated_cumulative_usd": _total_estimated_cost(
-                        processed_tokens, generation_monitor_cost, config
-                    ),
-                }
+                "sft_validation/nll": validation_nll,
+                "sft_validation/perplexity": validation_ppl,
+                "sft_validation/is_baseline": 0.0,
+                "sft_validation/nll_delta_from_base": validation_nll - baseline_nll,
+                "run_stats/cumulative_processed_tokens": float(processed_tokens),
+                "run_stats/estimated_cumulative_usd": _total_estimated_cost(
+                    processed_tokens, generation_monitor_cost, config
+                ),
+            }
             if generation is not None:
+                generation_pass_at_1 = generation.metrics["eval/pass_at_1"]
+                generation_pass_at_4 = generation.metrics["eval/pass_at_4"]
                 checkpoint_metrics.update(_monitor_metrics(generation))
                 checkpoint_metrics.update(
                     {
@@ -950,6 +1033,64 @@ async def run_sft_training(
                         ),
                     }
                 )
+                if baseline_generation is not None:
+                    checkpoint_metrics.update(
+                        {
+                            "sft_generation_validation/pass_at_1_delta_from_base": (
+                                generation_pass_at_1
+                                - baseline_generation.metrics["eval/pass_at_1"]
+                            ),
+                            "sft_generation_validation/pass_at_4_delta_from_base": (
+                                generation_pass_at_4
+                                - baseline_generation.metrics["eval/pass_at_4"]
+                            ),
+                        }
+                    )
+                if config.early_stopping_patience is not None:
+                    if (
+                        best_generation_pass_at_1 is None
+                        or best_generation_pass_at_4 is None
+                    ):
+                        raise SFTTrainingError(
+                            "early stopping requires a baseline generation score"
+                        )
+                    pass_at_1_delta = generation_pass_at_1 - best_generation_pass_at_1
+                    pass_at_4_delta = generation_pass_at_4 - best_generation_pass_at_4
+                    material_regression = _is_material_generation_regression(
+                        generation_pass_at_1,
+                        generation_pass_at_4,
+                        best_generation_pass_at_1,
+                        best_generation_pass_at_4,
+                        config.early_stopping_max_regression,
+                    )
+                    generation_regression_streak = (
+                        generation_regression_streak + 1 if material_regression else 0
+                    )
+                    if _is_better_generation_score(
+                        generation_pass_at_1,
+                        generation_pass_at_4,
+                        best_generation_pass_at_1,
+                        best_generation_pass_at_4,
+                    ):
+                        best_generation_pass_at_1 = generation_pass_at_1
+                        best_generation_pass_at_4 = generation_pass_at_4
+                    should_stop = (
+                        generation_regression_streak >= config.early_stopping_patience
+                    )
+                    early_stopping_metrics = {
+                        "early_stopping/best_pass_at_1": best_generation_pass_at_1,
+                        "early_stopping/best_pass_at_4": best_generation_pass_at_4,
+                        "early_stopping/pass_at_1_delta_from_best": pass_at_1_delta,
+                        "early_stopping/pass_at_4_delta_from_best": pass_at_4_delta,
+                        "early_stopping/material_regression": float(
+                            material_regression
+                        ),
+                        "early_stopping/regression_streak": float(
+                            generation_regression_streak
+                        ),
+                        "early_stopping/stop_triggered": float(should_stop),
+                    }
+                    checkpoint_metrics.update(early_stopping_metrics)
             wandb_run.log(checkpoint_metrics, step=step)
             progress(
                 f"validation step={step}/{total_steps} nll={validation_nll:.5f} "
@@ -963,6 +1104,19 @@ async def run_sft_training(
                     f"pass_at_4={generation.metrics['eval/pass_at_4']:.4f} "
                     f"monitor_cost=${generation_monitor_cost:.4f}"
                 )
+            if config.early_stopping_patience is not None:
+                progress(
+                    f"early stopping step={step}/{total_steps} "
+                    f"decision={'stop' if should_stop else 'continue'} "
+                    f"streak={generation_regression_streak}/"
+                    f"{config.early_stopping_patience} "
+                    f"best_pass_at_1={best_generation_pass_at_1:.4f} "
+                    f"best_pass_at_4={best_generation_pass_at_4:.4f}"
+                )
+            if should_stop:
+                early_stopping_triggered = True
+                early_stopping_step = step
+                break
 
         if not checkpoints:
             raise SFTTrainingError("training completed without a validation checkpoint")
@@ -971,7 +1125,9 @@ async def run_sft_training(
             processed_tokens, generation_monitor_cost, config
         )
         if total_estimated_cost > config.hard_cap_usd:
-            raise SFTTrainingError("observed token cost exceeded the configured hard cap")
+            raise SFTTrainingError(
+                "observed token cost exceeded the configured hard cap"
+            )
         report = {
             "mode": "remote-sft-training",
             "network_called": True,
@@ -981,6 +1137,8 @@ async def run_sft_training(
             "sft_train_examples": len(train),
             "sft_validation_examples": len(validation),
             "training_steps": total_steps,
+            "completed_training_steps": completed_training_steps,
+            "completed_examples_seen": examples_seen,
             "baseline_validation_nll": baseline_nll,
             "baseline_validation_perplexity": _perplexity(baseline_nll),
             "baseline_generation_monitor": (
@@ -989,6 +1147,14 @@ async def run_sft_training(
             "selected_checkpoint": asdict(selected),
             "validation_checkpoints": [asdict(record) for record in checkpoints],
             "generation_monitor_estimated_cost_usd": generation_monitor_cost,
+            "early_stopping": {
+                "enabled": config.early_stopping_patience is not None,
+                "patience": config.early_stopping_patience,
+                "max_regression": config.early_stopping_max_regression,
+                "triggered": early_stopping_triggered,
+                "step": early_stopping_step,
+                "final_regression_streak": generation_regression_streak,
+            },
             "estimated_token_cost_usd": total_estimated_cost,
             "hard_cap_usd": config.hard_cap_usd,
             "wandb_run_url": getattr(wandb_run, "url", None),
@@ -1011,11 +1177,20 @@ async def run_sft_training(
                 "checkpoint/selected_generation_pass_at_4": (
                     selected.generation_pass_at_4
                 ),
+                "early_stopping/enabled": float(
+                    config.early_stopping_patience is not None
+                ),
+                "early_stopping/triggered": float(early_stopping_triggered),
+                "early_stopping/step": early_stopping_step,
+                "early_stopping/final_regression_streak": generation_regression_streak,
+                "run_stats/completed_training_steps": completed_training_steps,
+                "run_stats/completed_examples_seen": examples_seen,
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
         )
         progress(
             f"complete selected_step={selected.step} selection={config.checkpoint_selection} "
+            f"completed_steps={completed_training_steps}/{total_steps} "
             f"best_validation_nll={selected.nll:.5f} "
             f"estimated_cost=${total_estimated_cost:.4f}"
         )
@@ -1038,23 +1213,39 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Acknowledge approval for the cost-gated Tinker request.",
     )
     parser.add_argument("--attempt", type=int, default=1)
-    parser.add_argument("--recipe", choices=("e1", "e2"), default="e1")
+    parser.add_argument("--recipe", choices=("e1", "e2", "e3"), default="e1")
     parser.add_argument("--hard-cap-usd", type=float)
     parser.add_argument("--progress-every", type=int, default=PROGRESS_EVERY)
+    parser.add_argument("--early-stopping-patience", type=int)
+    parser.add_argument("--early-stopping-max-regression", type=float)
     return parser.parse_args(argv)
 
 
 async def _async_main(args: argparse.Namespace) -> Dict[str, Any]:
-    base_config = e2_config() if args.recipe == E2_EXPERIMENT_ID else SFTConfig()
+    base_config = (
+        e2_config()
+        if args.recipe == E2_EXPERIMENT_ID
+        else e3_config()
+        if args.recipe == E3_EXPERIMENT_ID
+        else SFTConfig()
+    )
     config = replace(
         base_config,
         attempt=args.attempt,
         hard_cap_usd=(
-            base_config.hard_cap_usd
-            if args.hard_cap_usd is None
-            else args.hard_cap_usd
+            base_config.hard_cap_usd if args.hard_cap_usd is None else args.hard_cap_usd
         ),
         progress_every=args.progress_every,
+        early_stopping_patience=(
+            base_config.early_stopping_patience
+            if args.early_stopping_patience is None
+            else args.early_stopping_patience
+        ),
+        early_stopping_max_regression=(
+            base_config.early_stopping_max_regression
+            if args.early_stopping_max_regression is None
+            else args.early_stopping_max_regression
+        ),
     )
     if args.run:
         return await run_sft_training(config, allow_paid=args.allow_paid)

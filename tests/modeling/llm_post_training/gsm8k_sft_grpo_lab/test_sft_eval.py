@@ -22,6 +22,17 @@ def test_sft_formal_config_uses_the_common_formal_protocol():
     assert config.parent_checkpoint == "base"
 
 
+def test_sft_formal_config_preserves_the_selected_experiment_id():
+    config = SFTFormalEvalConfig(
+        SAMPLER_PATH.replace("e1", "e2"),
+        TRAINING_RUN_URL,
+        experiment_id="e2",
+    ).base_config()
+
+    assert config.experiment_id == "e2"
+    assert config.run_name.startswith("e2-sft-formal-")
+
+
 def test_sft_formal_config_rejects_training_state_for_sampling():
     with pytest.raises(BaseEvalError, match="sampler_weights"):
         SFTFormalEvalConfig(
@@ -38,9 +49,12 @@ def test_cli_requires_explicit_sft_provenance():
             TRAINING_RUN_URL,
             "--hard-cap-usd",
             "7",
+            "--experiment-id",
+            "e2",
         ]
     )
 
     assert args.sampler_path == SAMPLER_PATH
     assert args.source_training_run_url == TRAINING_RUN_URL
+    assert args.experiment_id == "e2"
     assert args.run is False
