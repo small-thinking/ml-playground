@@ -143,10 +143,57 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
 2. E1 showed that NLL/PPL alone is insufficient for checkpoint selection:
    its SFT checkpoint regressed on the formal generation test despite lower NLL.
-3. E2 selected step 250 by the frozen generation monitor; formally evaluate
-   that sampler before drawing a conclusion.
-4. Use E3's buffered early stopping for the next SFT run, then reserve
-   `formal_test` for its selected sampler.
+3. E2 selected step 250 by its frozen generation monitor and improved the
+   shared formal protocol over Base. Treat that result as a useful scoreboard,
+   not an endlessly reusable pristine test set.
+4. Run E4 clean GRPO from E2 step 250 on `rl_train`; use the disjoint
+   `rl_monitor` only for checkpoint selection, then separately decide whether
+   a formal GRPO comparison is warranted.
+
+## E4 clean-GRPO command
+
+E4 restores E2 step 250 from its Tinker **training-state** URI with a fresh RL
+optimizer. It never puts a GSM8K answer in the model prompt. For each prompt it
+samples G4 on-policy completions, gives an exact final-answer reward of `1` or
+`0`, subtracts that group's mean reward, skips all-correct and all-wrong
+groups, and uses the saved rollout log-probabilities with
+`importance_sampling`.
+
+The initial economical run is 100 updates of 8 prompts (800 deterministic
+`rl_train` prompts) at LR `2e-5`. It uses the first 64 frozen `rl_monitor`
+prompts at step 0 and every 25 steps; monitor pass@4, then pass@1, selects a
+saved checkpoint. It logs reward, mixed/degenerate groups, effective-group
+count, output/format diagnostics, rollout throughput, ETA, and cumulative
+estimated token cost. The four persisted checkpoint pairs have the normal
+30-day Tinker TTL.
+
+Review the entirely local preflight first:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --steps 100 --batch-size 8 --group-size 4 --learning-rate 2e-5 \
+  --monitor-examples 64 --checkpoint-every 25 --hard-cap-usd 12
+```
+
+Its worst-case token bound is `$10.8838912`; the bound assumes every prompt
+and completion reaches 512 tokens, so it is deliberately higher than the
+likely charge. After reviewing that JSON, run the same configuration with the
+explicit paid-run gate:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --steps 100 --batch-size 8 --group-size 4 --learning-rate 2e-5 \
+  --monitor-examples 64 --checkpoint-every 25 --hard-cap-usd 12 \
+  --run --allow-paid
+```
+
+`--steps`, `--batch-size`, `--group-size` (minimum four),
+`--learning-rate`, `--temperature`, `--max-prompt-tokens`,
+`--max-output-tokens`, `--monitor-examples`,
+`--checkpoint-every`, `--hard-cap-usd`, and all E2 parent paths are explicit
+CLI parameters. Changing a setting creates a distinct W&B run name and config.
 
 ## E1 SFT command
 
