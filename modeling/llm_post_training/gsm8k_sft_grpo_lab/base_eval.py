@@ -1,4 +1,4 @@
-"""Cost-gated Base-model evaluation on frozen GSM8K test partitions."""
+"""Cost-gated evaluation of frozen GSM8K test partitions."""
 
 from __future__ import annotations
 
@@ -109,6 +109,11 @@ class BaseEvalConfig:
     project: str = WANDB_PROJECT
     suite_id: str = SUITE_ID
     experiment_id: str = EXPERIMENT_ID
+    evaluation_stage: str = "base"
+    model_path: Optional[str] = None
+    checkpoint: str = "base"
+    parent_checkpoint: Optional[str] = None
+    source_training_run_url: Optional[str] = None
     evaluation_split: str = "calibration"
     attempt: int = 1
     eval_examples: int = CALIBRATION_EXAMPLES
@@ -125,6 +130,16 @@ class BaseEvalConfig:
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
             raise BaseEvalError("model, project, and suite identifiers are required")
+        if self.evaluation_stage not in {"base", "sft", "grpo"}:
+            raise BaseEvalError("evaluation stage must be base, sft, or grpo")
+        if not self.checkpoint:
+            raise BaseEvalError("checkpoint label is required")
+        if self.evaluation_stage == "base" and self.model_path is not None:
+            raise BaseEvalError("base evaluation must use a base model, not model_path")
+        if self.evaluation_stage != "base" and not self.model_path:
+            raise BaseEvalError("post-training evaluation requires a sampler model_path")
+        if self.model_path and "/sampler_weights/" not in self.model_path:
+            raise BaseEvalError("model_path must be a Tinker sampler_weights checkpoint")
         if self.attempt <= 0 or self.eval_examples <= 0 or self.group_size != 4:
             raise BaseEvalError("evaluation requires a positive example count and G=4")
         if self.evaluation_split not in {"calibration", "formal"}:
@@ -148,7 +163,8 @@ class BaseEvalConfig:
     def run_name(self) -> str:
         model_slug = self.model_id.lower().replace("/", "-").replace(".", "-")
         return (
-            f"{self.experiment_id}-base-{self.evaluation_split}-{model_slug}"
+            f"{self.experiment_id}-{self.evaluation_stage}-"
+            f"{self.evaluation_split}-{model_slug}"
             f"-g{self.group_size}-a{self.attempt:02d}"
         )
 
@@ -216,9 +232,12 @@ def build_doctor_report(
     tinker_key = bool(environ.get("TINKER_API_KEY"))
     wandb_key = bool(environ.get("WANDB_API_KEY"))
     return {
-        "mode": "local-base-eval-preflight",
+        "mode": f"local-{config.evaluation_stage}-eval-preflight",
         "network_called": False,
         "model_id": config.model_id,
+        "evaluation_stage": config.evaluation_stage,
+        "checkpoint": config.checkpoint,
+        "model_path_configured": bool(config.model_path),
         "evaluation_split": config.evaluation_split,
         "evaluated_examples": config.eval_examples,
         "generated_rollouts": config.eval_examples * config.group_size,
@@ -306,8 +325,10 @@ def _tracking_config(config: BaseEvalConfig, manifest: SplitManifest) -> Dict[st
         "experiment_id": config.experiment_id,
         "attempt": config.attempt,
         "suite_id": config.suite_id,
-        "checkpoint": "base",
-        "parent_checkpoint": None,
+        "checkpoint": config.checkpoint,
+        "parent_checkpoint": config.parent_checkpoint,
+        "model_path": config.model_path,
+        "source_training_run_url": config.source_training_run_url,
         "model_id": config.model_id,
         "model_revision": "not exposed by Tinker sampling API",
         "dataset_id": manifest.dataset_id,
@@ -327,8 +348,16 @@ def _tracking_config(config: BaseEvalConfig, manifest: SplitManifest) -> Dict[st
         "sample_usd_per_million": config.sample_usd_per_million,
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
-        "hypothesis": "Raw Base evaluation establishes a post-training baseline.",
-        "expected_failure": "Low format accuracy or too few mixed rollout groups.",
+        "hypothesis": (
+            "Raw Base evaluation establishes a post-training baseline."
+            if config.evaluation_stage == "base"
+            else "The selected post-training checkpoint improves formal GSM8K outcomes."
+        ),
+        "expected_failure": (
+            "Low format accuracy or too few mixed rollout groups."
+            if config.evaluation_stage == "base"
+            else "Validation loss improves without a formal generation improvement."
+        ),
     }
 
 
@@ -390,7 +419,7 @@ def _prediction_rows(
             sample_by_id[row.example_id]["question"],
             sample_by_id[row.example_id]["ground_truth"],
             config.model_id,
-            "base",
+            config.checkpoint,
             config.experiment_id,
             row.response,
             row.parsed_answer,
@@ -456,7 +485,7 @@ async def run_remote_evaluation(
             name=config.run_name,
             group=config.suite_id,
             job_type="evaluation",
-            tags=["gsm8k", "base", config.evaluation_split, "g4"],
+            tags=["gsm8k", config.evaluation_stage, config.evaluation_split, "g4"],
             config=_tracking_config(config, manifest),
         )
         progress(
@@ -466,9 +495,12 @@ async def run_remote_evaluation(
             f"wandb={getattr(wandb_run, 'url', None)}"
         )
         progress("initializing Tinker sampling client")
-        client = await service_client.create_sampling_client_async(
-            base_model=config.model_id
+        client_kwargs = (
+            {"model_path": config.model_path}
+            if config.model_path is not None
+            else {"base_model": config.model_id}
         )
+        client = await service_client.create_sampling_client_async(**client_kwargs)
         tokenizer = client.get_tokenizer()
         started_at = time.monotonic()
         partial_prompt_total = 0
@@ -563,11 +595,14 @@ async def run_remote_evaluation(
             f"actual_cost=${actual_cost:.4f}"
         )
         return {
-            "mode": "remote-base-eval",
+            "mode": f"remote-{config.evaluation_stage}-eval",
             "network_called": True,
+            "evaluation_stage": config.evaluation_stage,
             "evaluation_split": config.evaluation_split,
             "run_name": config.run_name,
             "model_id": config.model_id,
+            "checkpoint": config.checkpoint,
+            "model_path": config.model_path,
             "evaluation_protocol_id": evaluation_protocol_id(config, manifest),
             "evaluated_examples": len(samples),
             "generated_rollouts": len(scored.rows),

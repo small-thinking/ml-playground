@@ -171,6 +171,34 @@ E1 validation is for checkpoint selection only. Do not compare its NLL/PPL
 with E0 generation metrics. After recording the selected sampler path, run a
 separate E1 formal evaluation against the unchanged 1,287-example test set.
 
+## E1 formal-evaluation command
+
+E1 formal evaluation accepts only a `sampler_weights` URI, never the larger
+training-state URI. It runs the exact E0 formal protocol: all 1,287 frozen test
+prompts, G4, temperature 1.0, 512 prompt/output token limits, and the same
+parser. Thus its pass@1 and pass@4 are directly comparable with E0.
+
+First run a local-only preflight using the selected checkpoint and its source
+training W&B run:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_eval \
+  --sampler-path 'tinker://.../sampler_weights/selected-checkpoint' \
+  --source-training-run-url 'https://wandb.ai/.../runs/e1-sft-run' \
+  --hard-cap-usd 7
+```
+
+Then run the explicit paid evaluation with the same arguments plus
+`--run --allow-paid`. The separate W&B run records both the SFT source run and
+the exact sampler path, so an evaluation cannot silently use a different
+checkpoint.
+
+For the first SFT run, retain both selected step-625 checkpoints: the sampler
+weights support formal evaluation and inference; the training state supports a
+future GRPO branch. Intermediate step-250 and step-500 pairs are diagnostic
+only and may be deleted after E1 formal evaluation and checkpoint promotion.
+
 The E0 preflight is local-only:
 
 ```bash
