@@ -110,9 +110,14 @@ class _FakeServiceClient:
     def __init__(self):
         self.training_client = _FakeTrainingClient()
         self.loaded = None
+        self.created_from_base = None
 
     async def create_training_client_from_state_async(self, path, **kwargs):
         self.loaded = (path, kwargs)
+        return self.training_client
+
+    async def create_lora_training_client_async(self, **kwargs):
+        self.created_from_base = kwargs
         return self.training_client
 
     async def create_sampling_client_async(self, **kwargs):
@@ -270,3 +275,30 @@ def test_grpo_monitor_scores_the_disjoint_holdout_and_can_keep_the_parent():
     assert report["selected_checkpoint"]["step"] == 0
     logged = [payload for payload, _ in wandb.run.logs]
     assert any("rl_monitor/pass_at_4" in payload for payload in logged)
+
+
+def test_direct_base_rl_uses_a_fresh_lora_and_never_loads_the_sft_state():
+    manifest = _manifest()
+    service = _FakeServiceClient()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(init_source="base", initialization_label="base-ablation"),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    assert service.loaded is None
+    assert service.created_from_base["base_model"] == "Qwen/Qwen3.5-9B-Base"
+    assert report["initialization_source"] == "base"
+    assert report["parent_state_path"] is None
+    assert "from-base-ablation" in report["run_name"]

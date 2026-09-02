@@ -152,12 +152,13 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 
 ## E4 clean-GRPO command
 
-E4 restores E2 step 250 from its Tinker **training-state** URI with a fresh RL
-optimizer. It never puts a GSM8K answer in the model prompt. For each prompt it
-samples G4 on-policy completions, gives an exact final-answer reward of `1` or
-`0`, subtracts that group's mean reward, skips all-correct and all-wrong
-groups, and uses the saved rollout log-probabilities with
-`importance_sampling`.
+E4 defaults to restoring E2 step 250 from its Tinker **training-state** URI
+with a fresh RL optimizer. This means its initial policy is the promoted SFT
+adapter, not bare Qwen Base. It never puts a GSM8K answer in the model prompt.
+For each prompt it samples G4 on-policy completions, gives an exact
+final-answer reward of `1` or `0`, subtracts that group's mean reward, skips
+all-correct and all-wrong groups, and uses the saved rollout log-probabilities
+with `importance_sampling`.
 
 The initial economical run is 100 updates of 8 prompts (800 deterministic
 `rl_train` prompts) at LR `2e-5`. It uses the first 64 frozen `rl_monitor`
@@ -194,6 +195,18 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
 `--max-output-tokens`, `--monitor-examples`,
 `--checkpoint-every`, `--hard-cap-usd`, and all E2 parent paths are explicit
 CLI parameters. Changing a setting creates a distinct W&B run name and config.
+
+### Initialization ablations
+
+`--init-source sft` is the default. It requires a matching training-state URI
+and sampler URI, so any future SFT checkpoint can be substituted with
+`--parent-state-path`, `--parent-sampler-path`, and `--init-label`.
+
+`--init-source base` instead creates a fresh rank-32 LoRA on `--model-id` and
+uses the bare model as the step-0 monitor. It ignores the SFT parent paths and
+names the W&B run with `from-base` (or a supplied `--init-label`). This is the
+direct Base→GRPO ablation; it must use the same `rl_train`, `rl_monitor`, and
+eventual formal protocol as the SFT→GRPO condition.
 
 ## E1 SFT command
 

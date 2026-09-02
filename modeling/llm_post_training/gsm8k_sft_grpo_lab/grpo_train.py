@@ -101,6 +101,8 @@ class GRPOConfig:
     suite_id: str = SUITE_ID
     experiment_id: str = EXPERIMENT_ID
     attempt: int = 1
+    init_source: str = "sft"
+    initialization_label: Optional[str] = None
     parent_checkpoint: str = PARENT_CHECKPOINT
     parent_state_path: str = PARENT_STATE_PATH
     parent_sampler_path: str = PARENT_SAMPLER_PATH
@@ -129,12 +131,17 @@ class GRPOConfig:
             raise GRPOTrainingError(
                 "model, project, and suite identifiers are required"
             )
-        if "/weights/" not in self.parent_state_path:
-            raise GRPOTrainingError(
-                "parent_state_path must be a Tinker training-state URI"
-            )
-        if "/sampler_weights/" not in self.parent_sampler_path:
-            raise GRPOTrainingError("parent_sampler_path must be a Tinker sampler URI")
+        if self.init_source not in {"sft", "base"}:
+            raise GRPOTrainingError("init_source must be sft or base")
+        if self.init_source == "sft":
+            if "/weights/" not in self.parent_state_path:
+                raise GRPOTrainingError(
+                    "parent_state_path must be a Tinker training-state URI"
+                )
+            if "/sampler_weights/" not in self.parent_sampler_path:
+                raise GRPOTrainingError(
+                    "parent_sampler_path must be a Tinker sampler URI"
+                )
         positive_ints = {
             "attempt": self.attempt,
             "lora_rank": self.lora_rank,
@@ -182,10 +189,14 @@ class GRPOConfig:
     def run_name(self) -> str:
         model_slug = self.model_id.lower().replace("/", "-").replace(".", "-")
         lr_slug = f"{self.learning_rate:.0e}".replace("-0", "-")
+        source_label = self.initialization_label or (
+            "base" if self.init_source == "base" else "e2s250"
+        )
+        source_slug = re.sub(r"[^a-zA-Z0-9]+", "-", source_label).strip("-").lower()
         return (
             f"{self.experiment_id}-grpo-{model_slug}-r{self.lora_rank}"
             f"-b{self.batch_size}-g{self.group_size}-lr{lr_slug}"
-            f"-s{self.steps}-m{self.monitor_examples}-a{self.attempt:02d}"
+            f"-from-{source_slug}-s{self.steps}-m{self.monitor_examples}-a{self.attempt:02d}"
         )
 
     def checkpoint_steps(self) -> Tuple[int, ...]:
@@ -235,8 +246,8 @@ class CheckpointRecord:
     """A persisted policy and the monitor score used to select it."""
 
     step: int
-    state_path: str
-    sampler_path: str
+    state_path: Optional[str]
+    sampler_path: Optional[str]
     monitor_pass_at_1: Optional[float]
     monitor_pass_at_4: Optional[float]
 
@@ -317,9 +328,18 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "attempt": config.attempt,
         "suite_id": config.suite_id,
         "model_id": config.model_id,
-        "parent_checkpoint": config.parent_checkpoint,
-        "parent_state_path": config.parent_state_path,
-        "parent_sampler_path": config.parent_sampler_path,
+        "initialization_source": config.init_source,
+        "initialization_label": config.initialization_label
+        or ("base" if config.init_source == "base" else "e2s250"),
+        "parent_checkpoint": config.parent_checkpoint
+        if config.init_source == "sft"
+        else None,
+        "parent_state_path": config.parent_state_path
+        if config.init_source == "sft"
+        else None,
+        "parent_sampler_path": (
+            config.parent_sampler_path if config.init_source == "sft" else None
+        ),
         "dataset_id": manifest.dataset_id,
         "dataset_revision": manifest.dataset_revision,
         "manifest_hash": manifest.manifest_hash,
@@ -347,7 +367,7 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "git_sha": _git_sha(),
         "hypothesis": (
             "On-policy binary-answer GRPO improves held-out RL-monitor pass@4 "
-            "from the promoted E2 SFT policy."
+            f"from the {config.init_source} initialization policy."
         ),
         "expected_failure": (
             "Too many degenerate groups leave too little learning signal, or "
@@ -377,9 +397,18 @@ def build_doctor_report(
         "network_called": False,
         "run_name": config.run_name,
         "model_id": config.model_id,
-        "parent_checkpoint": config.parent_checkpoint,
-        "parent_state_path": config.parent_state_path,
-        "parent_sampler_path": config.parent_sampler_path,
+        "initialization_source": config.init_source,
+        "initialization_label": config.initialization_label
+        or ("base" if config.init_source == "base" else "e2s250"),
+        "parent_checkpoint": config.parent_checkpoint
+        if config.init_source == "sft"
+        else None,
+        "parent_state_path": config.parent_state_path
+        if config.init_source == "sft"
+        else None,
+        "parent_sampler_path": (
+            config.parent_sampler_path if config.init_source == "sft" else None
+        ),
         "manifest_hash": manifest.manifest_hash,
         "rl_train_examples": len(manifest.rl_train_ids),
         "rl_monitor_examples": config.monitor_examples,
@@ -661,7 +690,7 @@ def _monitor_table_rows(groups: Sequence[RolloutGroup]) -> Tuple[Tuple[Any, ...]
 
 async def _monitor_policy(
     service_client: Any,
-    sampler_path: str,
+    sampler_path: Optional[str],
     rows: Sequence[Mapping[str, object]],
     config: GRPOConfig,
     tinker_module: Any,
@@ -669,7 +698,13 @@ async def _monitor_policy(
     progress: Callable[[str], None],
 ) -> MonitorReport:
     """Score a frozen held-out RL monitor without feeding it into GRPO updates."""
-    client = await service_client.create_sampling_client_async(model_path=sampler_path)
+    client = await service_client.create_sampling_client_async(
+        **(
+            {"model_path": sampler_path}
+            if sampler_path
+            else {"base_model": config.model_id}
+        )
+    )
     tokenizer = client.get_tokenizer()
     groups = await _sample_groups(
         client,
@@ -754,7 +789,7 @@ async def run_grpo_training(
     clock: Callable[[], float] = time.monotonic,
     progress: Callable[[str], None] = _print_progress,
 ) -> Dict[str, Any]:
-    """Run on-policy GRPO from the promoted E2 training-state checkpoint."""
+    """Run on-policy GRPO from an SFT checkpoint or a fresh Base LoRA."""
     manifest = read_manifest() if manifest is None else manifest
     _authorize(config, manifest, allow_paid, environ)
     if tinker_module is None:
@@ -800,12 +835,23 @@ async def run_grpo_training(
             f"groups={config.group_size} monitor={len(monitor_rows)} "
             f"max_cost=${estimate_max_token_cost_usd(config, manifest):.4f}"
         )
-        progress("restoring promoted E2 training state with a fresh RL optimizer")
-        training_client = await service_client.create_training_client_from_state_async(
-            config.parent_state_path,
-            base_model=config.model_id,
-            user_metadata={"experiment_id": config.experiment_id},
-        )
+        if config.init_source == "sft":
+            progress("restoring SFT training state with a fresh RL optimizer")
+            training_client = (
+                await service_client.create_training_client_from_state_async(
+                    config.parent_state_path,
+                    base_model=config.model_id,
+                    user_metadata={"experiment_id": config.experiment_id},
+                )
+            )
+        else:
+            progress("initializing a fresh Base LoRA for the direct-RL ablation")
+            training_client = await service_client.create_lora_training_client_async(
+                base_model=config.model_id,
+                rank=config.lora_rank,
+                seed=config.seed,
+                user_metadata={"experiment_id": config.experiment_id},
+            )
         tokenizer = training_client.get_tokenizer()
         wandb_run = wandb_module.init(
             project=config.project,
@@ -824,10 +870,10 @@ async def run_grpo_training(
         checkpoints: list[CheckpointRecord] = []
         baseline_monitor: Optional[MonitorReport] = None
         if monitor_rows:
-            progress(f"monitoring parent policy prompts={len(monitor_rows)}")
+            progress(f"monitoring initialization policy prompts={len(monitor_rows)}")
             baseline_monitor = await _monitor_policy(
                 service_client,
-                config.parent_sampler_path,
+                config.parent_sampler_path if config.init_source == "sft" else None,
                 monitor_rows,
                 config,
                 tinker_module,
@@ -838,7 +884,7 @@ async def run_grpo_training(
             sampled_output_tokens += baseline_monitor.output_tokens
             baseline_metrics = {
                 **_monitor_metrics(baseline_monitor),
-                "rl_monitor/is_parent": 1.0,
+                "rl_monitor/is_initialization": 1.0,
                 "run_stats/estimated_cumulative_usd": _sampling_cost(
                     sampled_prompt_tokens, sampled_output_tokens, config
                 ),
@@ -852,8 +898,16 @@ async def run_grpo_training(
             checkpoints.append(
                 CheckpointRecord(
                     step=0,
-                    state_path=config.parent_state_path,
-                    sampler_path=config.parent_sampler_path,
+                    state_path=(
+                        config.parent_state_path
+                        if config.init_source == "sft"
+                        else None
+                    ),
+                    sampler_path=(
+                        config.parent_sampler_path
+                        if config.init_source == "sft"
+                        else None
+                    ),
                     monitor_pass_at_1=baseline_monitor.metrics["eval/pass_at_1"],
                     monitor_pass_at_4=baseline_monitor.metrics["eval/pass_at_4"],
                 )
@@ -994,7 +1048,7 @@ async def run_grpo_training(
             )
             checkpoints.append(record)
             checkpoint_metrics: Dict[str, Any] = {
-                "checkpoint/is_parent": 0.0,
+                "checkpoint/is_initialization": 0.0,
                 "checkpoint/state_path": record.state_path,
                 "checkpoint/sampler_path": record.sampler_path,
                 "run_stats/estimated_cumulative_usd": _sampling_cost(
@@ -1004,15 +1058,15 @@ async def run_grpo_training(
             }
             if monitor is not None:
                 checkpoint_metrics.update(_monitor_metrics(monitor))
-                checkpoint_metrics["rl_monitor/is_parent"] = 0.0
+                checkpoint_metrics["rl_monitor/is_initialization"] = 0.0
                 if baseline_monitor is not None:
                     checkpoint_metrics.update(
                         {
-                            "rl_monitor/pass_at_1_delta_from_parent": (
+                            "rl_monitor/pass_at_1_delta_from_initialization": (
                                 monitor.metrics["eval/pass_at_1"]
                                 - baseline_monitor.metrics["eval/pass_at_1"]
                             ),
-                            "rl_monitor/pass_at_4_delta_from_parent": (
+                            "rl_monitor/pass_at_4_delta_from_initialization": (
                                 monitor.metrics["eval/pass_at_4"]
                                 - baseline_monitor.metrics["eval/pass_at_4"]
                             ),
@@ -1042,9 +1096,18 @@ async def run_grpo_training(
             "run_name": config.run_name,
             "model_id": config.model_id,
             "manifest_hash": manifest.manifest_hash,
-            "parent_checkpoint": config.parent_checkpoint,
-            "parent_state_path": config.parent_state_path,
-            "parent_sampler_path": config.parent_sampler_path,
+            "initialization_source": config.init_source,
+            "initialization_label": config.initialization_label
+            or ("base" if config.init_source == "base" else "e2s250"),
+            "parent_checkpoint": config.parent_checkpoint
+            if config.init_source == "sft"
+            else None,
+            "parent_state_path": config.parent_state_path
+            if config.init_source == "sft"
+            else None,
+            "parent_sampler_path": (
+                config.parent_sampler_path if config.init_source == "sft" else None
+            ),
             "rl_train_examples": len(train_rows),
             "rl_monitor_examples": len(monitor_rows),
             "training_steps": config.steps,
@@ -1088,6 +1151,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--run", action="store_true", help="Start the paid GRPO run.")
     parser.add_argument("--allow-paid", action="store_true")
     parser.add_argument("--attempt", type=int, default=1)
+    parser.add_argument("--init-source", choices=("sft", "base"), default="sft")
+    parser.add_argument("--init-label")
+    parser.add_argument("--model-id", default=MODEL_ID)
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--group-size", type=int, default=DEFAULT_GROUP_SIZE)
@@ -1111,7 +1177,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
     return GRPOConfig(
+        model_id=args.model_id,
         attempt=args.attempt,
+        init_source=args.init_source,
+        initialization_label=args.init_label,
         parent_checkpoint=args.parent_checkpoint,
         parent_state_path=args.parent_state_path,
         parent_sampler_path=args.parent_sampler_path,
