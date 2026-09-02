@@ -14,10 +14,13 @@ from dotenv import load_dotenv
 
 DATASET_ID = "openai/gsm8k"
 DATASET_CONFIG = "main"
+DATASET_REVISION = "740312add88f781978c0658806c59bc2815b9866"
 DEFAULT_SEED = 20260901
-DEFAULT_SFT_COUNT = 512
-DEFAULT_RL_COUNT = 1500
-DEFAULT_EVAL_COUNT = 256
+DEFAULT_SFT_TRAIN_COUNT = 5000
+DEFAULT_SFT_VALIDATION_COUNT = 500
+DEFAULT_RL_TRAIN_COUNT = 1800
+DEFAULT_RL_MONITOR_COUNT = 173
+CALIBRATION_TEST_COUNT = 32
 DEFAULT_MANIFEST_PATH = Path(__file__).parent / "manifests" / "gsm8k_splits.json"
 DEFAULT_PROFILE_PATH = Path(__file__).parent / "manifests" / "gsm8k_profile.json"
 ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
@@ -36,16 +39,35 @@ class SplitManifest:
     dataset_config: str
     dataset_revision: str
     seed: int
-    sft_ids: Tuple[str, ...]
-    rl_ids: Tuple[str, ...]
-    eval_ids: Tuple[str, ...]
+    sft_train_ids: Tuple[str, ...]
+    sft_validation_ids: Tuple[str, ...]
+    rl_train_ids: Tuple[str, ...]
+    rl_monitor_ids: Tuple[str, ...]
+    calibration_test_ids: Tuple[str, ...]
+    formal_test_ids: Tuple[str, ...]
     manifest_hash: str
 
     def validate(self) -> None:
-        all_ids = self.sft_ids + self.rl_ids + self.eval_ids
+        all_ids = (
+            self.sft_train_ids
+            + self.sft_validation_ids
+            + self.rl_train_ids
+            + self.rl_monitor_ids
+            + self.calibration_test_ids
+            + self.formal_test_ids
+        )
         if len(set(all_ids)) != len(all_ids):
-            raise ManifestError("SFT, RL, and evaluation IDs must be disjoint")
-        if not all(self.sft_ids) or not all(self.rl_ids) or not all(self.eval_ids):
+            raise ManifestError("manifest partitions must be disjoint")
+        if not all(
+            (
+                self.sft_train_ids,
+                self.sft_validation_ids,
+                self.rl_train_ids,
+                self.rl_monitor_ids,
+                self.calibration_test_ids,
+                self.formal_test_ids,
+            )
+        ):
             raise ManifestError("each split must contain at least one example")
 
     def to_dict(self) -> dict[str, Any]:
@@ -91,33 +113,53 @@ def build_manifest(
     test_rows: Iterable[Mapping[str, object]],
     dataset_revision: str,
     seed: int = DEFAULT_SEED,
-    sft_count: int = DEFAULT_SFT_COUNT,
-    rl_count: int = DEFAULT_RL_COUNT,
-    eval_count: int = DEFAULT_EVAL_COUNT,
+    sft_train_count: int = DEFAULT_SFT_TRAIN_COUNT,
+    sft_validation_count: int = DEFAULT_SFT_VALIDATION_COUNT,
+    rl_train_count: int = DEFAULT_RL_TRAIN_COUNT,
+    rl_monitor_count: int = DEFAULT_RL_MONITOR_COUNT,
+    calibration_test_count: int = CALIBRATION_TEST_COUNT,
 ) -> SplitManifest:
     """Partition official train/test rows without retaining their raw text."""
     if not dataset_revision:
         raise ManifestError("dataset revision is required")
-    if min(sft_count, rl_count, eval_count) <= 0:
+    counts = (
+        sft_train_count,
+        sft_validation_count,
+        rl_train_count,
+        rl_monitor_count,
+        calibration_test_count,
+    )
+    if min(counts) <= 0:
         raise ManifestError("split counts must be positive")
 
     train_ids = _ordered_ids(train_rows, seed, "train")
     eval_ids = _ordered_ids(test_rows, seed, "test")
-    required_train = sft_count + rl_count
+    required_train = (
+        sft_train_count + sft_validation_count + rl_train_count + rl_monitor_count
+    )
     if len(train_ids) < required_train:
         raise ManifestError(f"need {required_train} train rows, found {len(train_ids)}")
-    if len(eval_ids) < eval_count:
-        raise ManifestError(f"need {eval_count} test rows, found {len(eval_ids)}")
+    if len(eval_ids) <= calibration_test_count:
+        raise ManifestError(
+            f"need more than {calibration_test_count} test rows, found {len(eval_ids)}"
+        )
+
+    sft_train_end = sft_train_count
+    sft_validation_end = sft_train_end + sft_validation_count
+    rl_train_end = sft_validation_end + rl_train_count
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_id": DATASET_ID,
         "dataset_config": DATASET_CONFIG,
         "dataset_revision": dataset_revision,
         "seed": seed,
-        "sft_ids": train_ids[:sft_count],
-        "rl_ids": train_ids[sft_count:required_train],
-        "eval_ids": eval_ids[:eval_count],
+        "sft_train_ids": train_ids[:sft_train_end],
+        "sft_validation_ids": train_ids[sft_train_end:sft_validation_end],
+        "rl_train_ids": train_ids[sft_validation_end:rl_train_end],
+        "rl_monitor_ids": train_ids[rl_train_end:required_train],
+        "calibration_test_ids": eval_ids[:calibration_test_count],
+        "formal_test_ids": eval_ids[calibration_test_count:],
     }
     manifest = SplitManifest(manifest_hash=_manifest_hash(payload), **payload)
     manifest.validate()
@@ -140,9 +182,12 @@ def read_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> SplitManifest:
             dataset_config=str(payload["dataset_config"]),
             dataset_revision=str(payload["dataset_revision"]),
             seed=int(payload["seed"]),
-            sft_ids=tuple(payload["sft_ids"]),
-            rl_ids=tuple(payload["rl_ids"]),
-            eval_ids=tuple(payload["eval_ids"]),
+            sft_train_ids=tuple(payload["sft_train_ids"]),
+            sft_validation_ids=tuple(payload["sft_validation_ids"]),
+            rl_train_ids=tuple(payload["rl_train_ids"]),
+            rl_monitor_ids=tuple(payload["rl_monitor_ids"]),
+            calibration_test_ids=tuple(payload["calibration_test_ids"]),
+            formal_test_ids=tuple(payload["formal_test_ids"]),
             manifest_hash=str(payload["manifest_hash"]),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -156,9 +201,12 @@ def read_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> SplitManifest:
             "dataset_config": manifest.dataset_config,
             "dataset_revision": manifest.dataset_revision,
             "seed": manifest.seed,
-            "sft_ids": manifest.sft_ids,
-            "rl_ids": manifest.rl_ids,
-            "eval_ids": manifest.eval_ids,
+            "sft_train_ids": manifest.sft_train_ids,
+            "sft_validation_ids": manifest.sft_validation_ids,
+            "rl_train_ids": manifest.rl_train_ids,
+            "rl_monitor_ids": manifest.rl_monitor_ids,
+            "calibration_test_ids": manifest.calibration_test_ids,
+            "formal_test_ids": manifest.formal_test_ids,
         }
     )
     if manifest.manifest_hash != expected_hash:
@@ -179,10 +227,18 @@ def select_rows(
     return tuple(indexed[example_id] for example_id in example_ids)
 
 
-def load_official_eval_rows(
-    manifest: SplitManifest,
+def load_official_test_rows(
+    manifest: SplitManifest, partition: str
 ) -> Tuple[Mapping[str, object], ...]:
-    """Fetch the pinned GSM8K test revision and recover the held-out rows."""
+    """Fetch the pinned GSM8K test revision and recover one frozen partition."""
+    ids_by_partition = {
+        "calibration": manifest.calibration_test_ids,
+        "formal": manifest.formal_test_ids,
+    }
+    try:
+        selected_ids = ids_by_partition[partition]
+    except KeyError as exc:
+        raise ManifestError(f"unknown test partition: {partition}") from exc
     from datasets import load_dataset
 
     load_dotenv(ENV_FILE, override=False)
@@ -192,7 +248,7 @@ def load_official_eval_rows(
         split="test",
         revision=manifest.dataset_revision,
     )
-    return select_rows(test_rows, manifest.eval_ids)
+    return select_rows(test_rows, selected_ids)
 
 
 def dataset_profile(
@@ -240,28 +296,20 @@ def prepare_official_manifest(
     output_path: Path,
     profile_path: Path,
     seed: int = DEFAULT_SEED,
-    sft_count: int = DEFAULT_SFT_COUNT,
-    rl_count: int = DEFAULT_RL_COUNT,
-    eval_count: int = DEFAULT_EVAL_COUNT,
 ) -> SplitManifest:
     """Fetch a pinned official revision and write its deterministic manifest."""
     from datasets import load_dataset
-    from huggingface_hub import HfApi
 
     load_dotenv(ENV_FILE, override=False)
-    revision = HfApi().dataset_info(DATASET_ID).sha
-    dataset = load_dataset(DATASET_ID, DATASET_CONFIG, revision=revision)
+    dataset = load_dataset(DATASET_ID, DATASET_CONFIG, revision=DATASET_REVISION)
     manifest = build_manifest(
         dataset["train"],
         dataset["test"],
-        dataset_revision=revision,
+        dataset_revision=DATASET_REVISION,
         seed=seed,
-        sft_count=sft_count,
-        rl_count=rl_count,
-        eval_count=eval_count,
     )
     write_manifest(manifest, output_path)
-    write_profile(revision, dataset["train"], dataset["test"], profile_path)
+    write_profile(DATASET_REVISION, dataset["train"], dataset["test"], profile_path)
     return manifest
 
 
@@ -282,8 +330,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     print(
         "wrote "
-        f"{args.output} sft={len(manifest.sft_ids)} rl={len(manifest.rl_ids)} "
-        f"eval={len(manifest.eval_ids)} overlap=0 hash={manifest.manifest_hash}"
+        f"{args.output} sft_train={len(manifest.sft_train_ids)} "
+        f"sft_validation={len(manifest.sft_validation_ids)} "
+        f"rl_train={len(manifest.rl_train_ids)} "
+        f"rl_monitor={len(manifest.rl_monitor_ids)} "
+        f"calibration={len(manifest.calibration_test_ids)} "
+        f"formal={len(manifest.formal_test_ids)} overlap=0 "
+        f"hash={manifest.manifest_hash}"
     )
     return 0
 

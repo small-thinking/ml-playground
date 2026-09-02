@@ -16,12 +16,13 @@ tool defines the laboratory's identity or directory name.
    arithmetic-process diagnostic.
 3. Run a small Base-model calibration. Stop if GSM8K is saturated or produces
    too few mixed rollout groups.
-4. Run E0 Base, E1 clean SFT, then E2 high-learning-rate SFT and E3 noisy-data
-   SFT. Each failure experiment changes one intended variable.
-5. Classify the disjoint RL pool as easy, mixed, or hard from E1 rollouts.
-6. Run E4 clean GRPO from E1, then E5 bad difficulty, E6 high learning rate,
+4. Run E0 Base formal evaluation on the complete frozen test partition.
+5. Run E1 clean SFT while selecting a checkpoint with SFT validation NLL/PPL.
+6. Run E1 formal evaluation with the exact E0 protocol and compare results.
+7. Classify the disjoint RL pool as easy, mixed, or hard from E1 rollouts.
+8. Run E4 clean GRPO from E1, then E5 bad difficulty, E6 high learning rate,
    and E7 exploitable reward. E8 process-aware reward is optional.
-7. Export only the promoted clean SFT and GRPO adapters, compare them locally,
+9. Export only the promoted clean SFT and GRPO adapters, compare them locally,
    and publish the final experiment report.
 
 Every paid phase requires an explicit approval, a frozen configuration, a
@@ -37,10 +38,10 @@ only; raw questions and answers remain outside Git.
 
 | Partition | Examples | Purpose |
 | --- | ---: | --- |
-| `sft_train` | 448 | SFT gradient updates |
-| `sft_validation` | 64 | SFT checkpoint selection by NLL/PPL |
-| `rl_train` | 1,500 | GRPO prompts and reward scoring |
-| unassigned train | 5,461 | Reserved for later ablations or scale-up |
+| `sft_train` | 5,000 | SFT gradient updates |
+| `sft_validation` | 500 | SFT checkpoint selection by NLL/PPL |
+| `rl_train` | 1,800 | GRPO prompts and reward scoring |
+| `rl_monitor` | 173 | Fixed G4 RL health monitor; never updated on |
 | `calibration_test` | 32 | Completed E0a audit; never a stage-comparison result |
 | `formal_test` | 1,287 | Common, unseen Base/SFT/GRPO comparison set |
 
@@ -55,10 +56,11 @@ directly with a Base-model generation result. Formal E0 Base, E1 SFT, and E4
 GRPO results use exactly the same `formal_test` IDs and decoding protocol; only
 the evaluated checkpoint changes.
 
-The existing [`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) is a
-v1 planning manifest with 512 SFT IDs, 1,500 RL IDs, and 256 test IDs. The next
-implementation PR will replace it with the partitions above while retaining the
-completed 32-example calibration as historical evidence.
+[`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) is the immutable
+v2 manifest for these exact IDs. The first 32 deterministically ordered test
+IDs are the completed calibration; all other official test IDs form the formal
+partition. This retains calibration provenance without using those examples for
+model selection or stage comparison.
 
 [`manifests/gsm8k_profile.json`](manifests/gsm8k_profile.json) records only
 split counts, answer-marker coverage, and question/answer length percentiles.
@@ -99,6 +101,30 @@ The core metrics are:
 Run-level prediction and rollout tables preserve examples behind aggregate
 metrics. Dataset manifests, evaluation protocols, promoted checkpoints, and
 prediction tables are versioned artifacts.
+
+## Immediate execution plan
+
+1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
+2. Run E1 SFT: one epoch over `sft_train`; validation NLL/PPL selects its
+   checkpoint without generating against `formal_test`.
+3. Run E1 formal evaluation: the selected checkpoint uses the same E0 IDs,
+   prompt, G4, parser, limits, and metric names.
+
+The E0 preflight is local-only:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.base_eval \
+  --stage formal --hard-cap-usd 7
+```
+
+After reviewing its JSON report, run the paid evaluation explicitly:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.base_eval \
+  --stage formal --run --allow-paid --hard-cap-usd 7
+```
 
 ## Formal-evaluation cost boundary
 

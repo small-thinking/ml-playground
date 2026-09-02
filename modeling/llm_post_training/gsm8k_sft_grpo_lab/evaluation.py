@@ -179,6 +179,7 @@ def evaluate_groups(
 
     metrics = {
         "eval/exact_match": sum(correct) / len(rows),
+        "eval/pass_at_1": sum(correct) / len(rows),
         "eval/pass_at_4": sum(
             any(reward for reward in group[:pass_k]) for group in group_rewards
         )
