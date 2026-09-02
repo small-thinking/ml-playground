@@ -79,6 +79,7 @@ class _FakeRun:
 class _FakeWandb:
     class Table:
         def __init__(self, columns, data):
+            assert isinstance(columns, list)
             assert isinstance(data, list)
             self.columns = columns
             self.data = data
