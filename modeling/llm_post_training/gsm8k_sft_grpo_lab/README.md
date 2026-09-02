@@ -19,10 +19,14 @@ tool defines the laboratory's identity or directory name.
 4. Run E0 Base formal evaluation on the complete frozen test partition.
 5. Run E1 clean SFT while selecting a checkpoint with SFT validation NLL/PPL.
 6. Run E1 formal evaluation with the exact E0 protocol and compare results.
-7. Classify the disjoint RL pool as easy, mixed, or hard from E1 rollouts.
-8. Run E4 clean GRPO from E1, then E5 bad difficulty, E6 high learning rate,
+7. Treat E1 as a regression: NLL/PPL selection alone did not preserve generation
+   quality. Add generation validation before attempting another SFT configuration.
+8. Classify the disjoint RL pool only after an SFT checkpoint is selected by
+   generation validation.
+9. Run E4 clean GRPO from the promoted SFT checkpoint, then E5 bad difficulty,
+   E6 high learning rate,
    and E7 exploitable reward. E8 process-aware reward is optional.
-9. Export only the promoted clean SFT and GRPO adapters, compare them locally,
+10. Export only the promoted clean SFT and GRPO adapters, compare them locally,
    and publish the final experiment report.
 
 Every paid phase requires an explicit approval, a frozen configuration, a
@@ -133,10 +137,10 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 ## Immediate execution plan
 
 1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
-2. Run E1 SFT: one epoch over `sft_train`; validation NLL/PPL selects its
-   checkpoint without generating against `formal_test`.
-3. Run E1 formal evaluation: the selected checkpoint uses the same E0 IDs,
-   prompt, G4, parser, limits, and metric names.
+2. E1 showed that NLL/PPL alone is insufficient for checkpoint selection:
+   its SFT checkpoint regressed on the formal generation test despite lower NLL.
+3. Run E2 SFT with a frozen generation-monitor subset of `sft_validation` at
+   each checkpoint, then reserve `formal_test` for one final comparison.
 
 ## E1 SFT command
 
