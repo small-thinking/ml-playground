@@ -254,3 +254,8 @@ config.local.yml
 ehthumbs.db
 Thumbs.db
 .env
+
+# The GSM8K laboratory commits one small, content-ID-only split manifest.
+!modeling/llm_post_training/gsm8k_sft_grpo_lab/manifests/
+!modeling/llm_post_training/gsm8k_sft_grpo_lab/manifests/gsm8k_splits.json
+!modeling/llm_post_training/gsm8k_sft_grpo_lab/manifests/gsm8k_profile.json

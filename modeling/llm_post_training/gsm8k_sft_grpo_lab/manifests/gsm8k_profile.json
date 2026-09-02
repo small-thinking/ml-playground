@@ -1,0 +1,21 @@
+{
+  "dataset_config": "main",
+  "dataset_id": "openai/gsm8k",
+  "dataset_revision": "740312add88f781978c0658806c59bc2815b9866",
+  "test": {
+    "answer_chars_p50": 270,
+    "answer_chars_p90": 482,
+    "answer_marker_fraction": 1.0,
+    "examples": 1319,
+    "question_chars_p50": 222,
+    "question_chars_p90": 366
+  },
+  "train": {
+    "answer_chars_p50": 257,
+    "answer_chars_p90": 481,
+    "answer_marker_fraction": 1.0,
+    "examples": 7473,
+    "question_chars_p50": 217,
+    "question_chars_p90": 361
+  }
+}
