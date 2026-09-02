@@ -523,6 +523,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=CALIBRATION_EXAMPLES,
         help="Use a prefix of frozen held-out IDs; 32 is the E0a calibration.",
     )
+    parser.add_argument(
+        "--hard-cap-usd",
+        type=float,
+        default=HARD_CAP_USD,
+        help="Block the run when its worst-case token estimate exceeds this USD cap.",
+    )
     return parser.parse_args(argv)
 
 
@@ -530,7 +536,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         load_local_env()
         args = parse_args(argv)
-        config = BaseEvalConfig(eval_examples=args.eval_examples, attempt=args.attempt)
+        config = BaseEvalConfig(
+            eval_examples=args.eval_examples,
+            attempt=args.attempt,
+            hard_cap_usd=args.hard_cap_usd,
+        )
         if args.run:
             report = asyncio.run(run_e0a(config, allow_paid=args.allow_paid))
         else:

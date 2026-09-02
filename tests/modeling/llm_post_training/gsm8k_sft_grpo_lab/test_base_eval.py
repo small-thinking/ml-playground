@@ -8,6 +8,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.base_eval import (
     build_doctor_report,
     evaluation_protocol_id,
     estimate_max_token_cost_usd,
+    parse_args,
     run_remote_evaluation,
 )
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import build_manifest
@@ -137,6 +138,15 @@ def test_protocol_id_changes_when_a_comparability_condition_changes():
 
 def test_run_name_records_an_explicit_retry():
     assert BaseEvalConfig(attempt=2).run_name.endswith("-g4-a02")
+
+
+def test_cli_accepts_an_explicit_cost_cap():
+    args = parse_args(
+        ["--run", "--allow-paid", "--attempt", "3", "--hard-cap-usd", "1"]
+    )
+
+    assert args.attempt == 3
+    assert args.hard_cap_usd == pytest.approx(1.0)
 
 
 def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
