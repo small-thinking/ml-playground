@@ -295,19 +295,20 @@ per-step signal packing alone was insufficient: it obtained 37 mixed groups in
 but does **not** stop after 25 optimizer steps.
 
 The comparison baseline is E4, the current best formal model: both E4 and E6
-start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, and the
-same 64-prompt frozen monitor and checkpoint-selection rule. E4 sampled 800
-candidates, found 52 mixed groups, and selected step 75. E6 targets 56 mixed
-groups—slightly above E4's total learning signal—with a hard cap of 1,200
-candidates. Its 75 steps are only a maximum guard. It stops at the first of:
+start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, the same
+64-prompt frozen monitor, and checkpoints at steps 25/50/75/100. E4 sampled
+800 candidates, found 52 mixed groups, and selected step 75. E6 targets 56
+mixed groups—slightly above E4's total learning signal—with a hard cap of
+1,200 candidates. Its 100 steps are only a maximum guard. It stops at the
+first of:
 
 1. 56 cumulative mixed groups;
 2. 1,200 cumulative candidate groups;
 3. monitor-based early stopping; or
-4. step 75.
+4. step 100.
 
 The preflight cost bound assumes all 1,200 candidate groups, all seven possible
-monitor passes (step 0, five scheduled checkpoints, and one unscheduled
+monitor passes (step 0, four scheduled checkpoints, and one unscheduled
 terminal checkpoint), and maximum token lengths.
 
 Preflight:
@@ -315,15 +316,15 @@ Preflight:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
   modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
-  --experiment-id e6 --steps 75 --batch-size 8 --group-size 4 \
-  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 15 \
+  --experiment-id e6 --steps 100 --batch-size 8 --group-size 4 \
+  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 25 \
   --min-effective-groups 2 --max-resample-rounds 3 \
   --target-total-effective-groups 56 --max-total-candidate-groups 1200 \
   --early-stopping-patience 2 --early-stopping-max-regression 0.03125 \
   --hard-cap-usd 20
 ```
 
-The verified maximum is `$16.15183872`. The paid command is the same command
+The verified maximum is `$15.80384256`. The paid command is the same command
 with `--run --allow-paid` appended; it continues to use the E2 parent paths by
 default.
 
