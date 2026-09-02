@@ -1,4 +1,4 @@
-"""Cost-gated Base-model calibration on the frozen GSM8K evaluation split."""
+"""Cost-gated Base-model evaluation on frozen GSM8K test partitions."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
     SplitManifest,
     content_id,
-    load_official_eval_rows,
+    load_official_test_rows,
     read_manifest,
 )
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
@@ -34,8 +34,9 @@ SUITE_ID = "gsm8k-sft-grpo-v1"
 EXPERIMENT_ID = "e0a"
 PROMPT_VERSION = "gsm8k-raw-completion-v1"
 PARSER_VERSION = "numeric-boxed-v1"
-EVALUATION_VERSION = "gsm8k-eval-v1"
+EVALUATION_VERSION = "gsm8k-eval-v2"
 CALIBRATION_EXAMPLES = 32
+FORMAL_EXAMPLES = 1287
 GROUP_SIZE = 4
 TEMPERATURE = 1.0
 MAX_PROMPT_TOKENS = 512
@@ -56,6 +57,7 @@ Answer:"""
 
 METRIC_KEYS = (
     "eval/exact_match",
+    "eval/pass_at_1",
     "eval/pass_at_4",
     "eval/format_accuracy",
     "eval/avg_output_tokens",
@@ -105,6 +107,7 @@ class BaseEvalConfig:
     project: str = WANDB_PROJECT
     suite_id: str = SUITE_ID
     experiment_id: str = EXPERIMENT_ID
+    evaluation_split: str = "calibration"
     attempt: int = 1
     eval_examples: int = CALIBRATION_EXAMPLES
     group_size: int = GROUP_SIZE
@@ -121,20 +124,36 @@ class BaseEvalConfig:
             raise BaseEvalError("model, project, and suite identifiers are required")
         if self.attempt <= 0 or self.eval_examples <= 0 or self.group_size != 4:
             raise BaseEvalError("evaluation requires a positive example count and G=4")
+        if self.evaluation_split not in {"calibration", "formal"}:
+            raise BaseEvalError("evaluation split must be calibration or formal")
         if min(self.temperature, self.max_prompt_tokens, self.max_output_tokens) <= 0:
             raise BaseEvalError("decoding limits and temperature must be positive")
         if self.hard_cap_usd <= 0:
             raise BaseEvalError("hard cap must be positive")
-        if manifest is not None and self.eval_examples > len(manifest.eval_ids):
-            raise BaseEvalError("evaluation exceeds the frozen held-out split")
+        if manifest is not None:
+            selected_ids = _evaluation_ids(manifest, self.evaluation_split)
+            if self.eval_examples > len(selected_ids):
+                raise BaseEvalError("evaluation exceeds the frozen held-out split")
+            if self.evaluation_split == "formal" and self.eval_examples != len(
+                selected_ids
+            ):
+                raise BaseEvalError("formal evaluation must use every formal test ID")
 
     @property
     def run_name(self) -> str:
         model_slug = self.model_id.lower().replace("/", "-").replace(".", "-")
         return (
-            f"{self.experiment_id}-base-calibration-{model_slug}"
+            f"{self.experiment_id}-base-{self.evaluation_split}-{model_slug}"
             f"-g{self.group_size}-a{self.attempt:02d}"
         )
+
+
+def _evaluation_ids(manifest: SplitManifest, evaluation_split: str) -> Tuple[str, ...]:
+    if evaluation_split == "calibration":
+        return manifest.calibration_test_ids
+    if evaluation_split == "formal":
+        return manifest.formal_test_ids
+    raise BaseEvalError(f"unknown evaluation split: {evaluation_split}")
 
 
 def load_local_env() -> None:
@@ -191,6 +210,9 @@ def build_doctor_report(
         "mode": "local-base-eval-preflight",
         "network_called": False,
         "model_id": config.model_id,
+        "evaluation_split": config.evaluation_split,
+        "evaluated_examples": config.eval_examples,
+        "generated_rollouts": config.eval_examples * config.group_size,
         "tinker_sdk_version": tinker_sdk,
         "wandb_version": wandb_sdk,
         "hf_token_configured": hf_token,
@@ -235,9 +257,14 @@ def evaluation_protocol_id(config: BaseEvalConfig, manifest: SplitManifest) -> s
     payload = {
         "dataset_revision": manifest.dataset_revision,
         "evaluated_ids_hash": hashlib.sha256(
-            "\n".join(manifest.eval_ids[: config.eval_examples]).encode()
+            "\n".join(
+                _evaluation_ids(manifest, config.evaluation_split)[
+                    : config.eval_examples
+                ]
+            ).encode()
         ).hexdigest(),
         "eval_examples": config.eval_examples,
+        "evaluation_split": config.evaluation_split,
         "group_size": config.group_size,
         "manifest_hash": manifest.manifest_hash,
         "max_output_tokens": config.max_output_tokens,
@@ -277,6 +304,7 @@ def _tracking_config(config: BaseEvalConfig, manifest: SplitManifest) -> Dict[st
         "dataset_revision": manifest.dataset_revision,
         "manifest_hash": manifest.manifest_hash,
         "evaluation_protocol_id": evaluation_protocol_id(config, manifest),
+        "evaluation_split": config.evaluation_split,
         "eval_examples": config.eval_examples,
         "group_size": config.group_size,
         "prompt_version": PROMPT_VERSION,
@@ -289,7 +317,7 @@ def _tracking_config(config: BaseEvalConfig, manifest: SplitManifest) -> Dict[st
         "sample_usd_per_million": config.sample_usd_per_million,
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
-        "hypothesis": "Raw Base calibration establishes a post-training baseline.",
+        "hypothesis": "Raw Base evaluation establishes a post-training baseline.",
         "expected_failure": "Low format accuracy or too few mixed rollout groups.",
     }
 
@@ -416,7 +444,7 @@ async def run_remote_evaluation(
             name=config.run_name,
             group=config.suite_id,
             job_type="evaluation",
-            tags=["gsm8k", "base", "calibration", "g4"],
+            tags=["gsm8k", "base", config.evaluation_split, "g4"],
             config=_tracking_config(config, manifest),
         )
         client = await service_client.create_sampling_client_async(
@@ -476,6 +504,7 @@ async def run_remote_evaluation(
         return {
             "mode": "remote-base-eval",
             "network_called": True,
+            "evaluation_split": config.evaluation_split,
             "run_name": config.run_name,
             "model_id": config.model_id,
             "evaluation_protocol_id": evaluation_protocol_id(config, manifest),
@@ -492,24 +521,41 @@ async def run_remote_evaluation(
 
 
 async def run_e0a(config: BaseEvalConfig, allow_paid: bool) -> Dict[str, Any]:
-    """Load pinned rows only after passing the paid-run safety gate."""
+    """Run the historical calibration partition only after its safety gate."""
     _authorize(config, allow_paid, os.environ)
     manifest = read_manifest()
     config.validate(manifest)
+    if config.evaluation_split != "calibration":
+        raise BaseEvalError("E0a requires the calibration test partition")
     return await run_remote_evaluation(
         config,
         manifest,
-        load_official_eval_rows(manifest),
+        load_official_test_rows(manifest, "calibration"),
+        allow_paid=allow_paid,
+    )
+
+
+async def run_e0(config: BaseEvalConfig, allow_paid: bool) -> Dict[str, Any]:
+    """Run the complete unseen formal test partition after its safety gate."""
+    _authorize(config, allow_paid, os.environ)
+    manifest = read_manifest()
+    config.validate(manifest)
+    if config.evaluation_split != "formal":
+        raise BaseEvalError("E0 requires the formal test partition")
+    return await run_remote_evaluation(
+        config,
+        manifest,
+        load_official_test_rows(manifest, "formal"),
         allow_paid=allow_paid,
     )
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the GSM8K Base-model calibration."
+        description="Run a cost-gated GSM8K Base-model evaluation."
     )
     parser.add_argument(
-        "--run", action="store_true", help="Run the remote E0a calibration."
+        "--run", action="store_true", help="Run the selected remote evaluation."
     )
     parser.add_argument(
         "--allow-paid", action="store_true", help="Acknowledge paid use."
@@ -518,10 +564,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--attempt", type=int, default=1, help="Record a retry explicitly."
     )
     parser.add_argument(
+        "--stage",
+        choices=("calibration", "formal"),
+        default="calibration",
+        help="Select the historical calibration or complete formal test partition.",
+    )
+    parser.add_argument(
         "--eval-examples",
         type=int,
-        default=CALIBRATION_EXAMPLES,
-        help="Use a prefix of frozen held-out IDs; 32 is the E0a calibration.",
+        default=None,
+        help="Calibration-only prefix length; formal evaluation always uses all IDs.",
     )
     parser.add_argument(
         "--hard-cap-usd",
@@ -536,13 +588,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         load_local_env()
         args = parse_args(argv)
+        default_examples = (
+            FORMAL_EXAMPLES if args.stage == "formal" else CALIBRATION_EXAMPLES
+        )
         config = BaseEvalConfig(
-            eval_examples=args.eval_examples,
+            experiment_id="e0" if args.stage == "formal" else EXPERIMENT_ID,
+            evaluation_split=args.stage,
+            eval_examples=(
+                args.eval_examples
+                if args.eval_examples is not None
+                else default_examples
+            ),
             attempt=args.attempt,
             hard_cap_usd=args.hard_cap_usd,
         )
         if args.run:
-            report = asyncio.run(run_e0a(config, allow_paid=args.allow_paid))
+            runner = run_e0 if args.stage == "formal" else run_e0a
+            report = asyncio.run(runner(config, allow_paid=args.allow_paid))
         else:
             if args.allow_paid:
                 raise BaseEvalError("--allow-paid requires --run")

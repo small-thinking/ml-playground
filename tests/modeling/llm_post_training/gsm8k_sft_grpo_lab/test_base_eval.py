@@ -97,13 +97,25 @@ def _manifest_and_rows():
     train_rows = [
         {"question": "train one", "answer": "work #### 1"},
         {"question": "train two", "answer": "work #### 2"},
+        {"question": "train three", "answer": "work #### 3"},
+        {"question": "train four", "answer": "work #### 4"},
     ]
-    rows = [{"question": "What is 2 + 2?", "answer": "work #### 4"}]
+    rows = [
+        {"question": "What is 2 + 2?", "answer": "work #### 4"},
+        {"question": "What is 3 + 2?", "answer": "work #### 5"},
+    ]
     return (
         build_manifest(
-            train_rows, rows, "revision", sft_count=1, rl_count=1, eval_count=1
+            train_rows,
+            rows,
+            "revision",
+            sft_train_count=1,
+            sft_validation_count=1,
+            rl_train_count=1,
+            rl_monitor_count=1,
+            calibration_test_count=1,
         ),
-        rows,
+        rows[:1],
     )
 
 
@@ -120,6 +132,47 @@ def test_preflight_reports_a_bounded_e0a_cost_without_network():
     assert report["network_called"] is False
     assert report["hf_token_configured"] is True
     assert report["ready_for_paid_run"] is True
+
+
+def test_formal_preflight_requires_every_frozen_test_id():
+    report = build_doctor_report(
+        BaseEvalConfig(
+            experiment_id="e0",
+            evaluation_split="formal",
+            eval_examples=1287,
+            hard_cap_usd=7.0,
+        ),
+        environ={"HF_TOKEN": "set", "TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+        tinker_version="0.23.2",
+        wandb_version="0.21.1",
+    )
+
+    assert report["evaluation_split"] == "formal"
+    assert report["evaluated_examples"] == 1287
+    assert report["generated_rollouts"] == 5148
+    assert report["estimated_max_token_cost_usd"] == pytest.approx(6.99798528)
+
+
+def test_formal_evaluation_rejects_a_test_prefix():
+    manifest = build_manifest(
+        [
+            {"question": f"train {index}", "answer": f"work #### {index}"}
+            for index in range(4)
+        ],
+        [
+            {"question": f"test {index}", "answer": f"work #### {index}"}
+            for index in range(3)
+        ],
+        "revision",
+        sft_train_count=1,
+        sft_validation_count=1,
+        rl_train_count=1,
+        rl_monitor_count=1,
+        calibration_test_count=1,
+    )
+
+    with pytest.raises(BaseEvalError, match="every formal test ID"):
+        BaseEvalConfig(evaluation_split="formal", eval_examples=1).validate(manifest)
 
 
 def test_protocol_id_changes_when_a_comparability_condition_changes():
@@ -170,6 +223,7 @@ def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
 
     assert report["generated_rollouts"] == 4
     assert report["metrics"]["eval/exact_match"] == pytest.approx(0.5)
+    assert report["metrics"]["eval/pass_at_1"] == pytest.approx(0.5)
     assert wandb.init_kwargs["project"] == "mini-posttraining-lab"
     assert wandb.init_kwargs["group"] == "gsm8k-sft-grpo-v1"
     table = wandb.run.logs[1]["eval/rollouts_table"]
