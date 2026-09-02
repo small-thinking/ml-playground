@@ -28,12 +28,37 @@ Every paid phase requires an explicit approval, a frozen configuration, a
 worst-case cost estimate, and a held-out evaluation. Training loss or proxy
 reward alone never promotes a checkpoint.
 
-## Frozen data protocol
+## Data strategy
 
-[`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) pins GSM8K revision
-`740312add88f781978c0658806c59bc2815b9866` with 512 SFT IDs, 1,500 disjoint RL
-IDs, and 256 held-out test IDs. It contains hashes and provenance only; raw
-questions and answers remain outside Git.
+GSM8K revision `740312add88f781978c0658806c59bc2815b9866` has 7,473 official
+training examples and 1,319 official test examples. The next frozen manifest
+will use the following disjoint partitions. It stores hashes and provenance
+only; raw questions and answers remain outside Git.
+
+| Partition | Examples | Purpose |
+| --- | ---: | --- |
+| `sft_train` | 448 | SFT gradient updates |
+| `sft_validation` | 64 | SFT checkpoint selection by NLL/PPL |
+| `rl_train` | 1,500 | GRPO prompts and reward scoring |
+| unassigned train | 5,461 | Reserved for later ablations or scale-up |
+| `calibration_test` | 32 | Completed E0a audit; never a stage-comparison result |
+| `formal_test` | 1,287 | Common, unseen Base/SFT/GRPO comparison set |
+
+SFT and RL use different training prompts. GSM8K has enough examples to avoid
+reusing SFT questions for the first RL experiment, so an RL gain is less likely
+to be simple repetition of the SFT examples. The ground-truth answer remains
+available to the RL reward scorer but never appears in the model prompt.
+
+`sft_validation` is not an evaluation benchmark. It is observed while choosing
+an SFT checkpoint, so it logs only training diagnostics and cannot be compared
+directly with a Base-model generation result. Formal E0 Base, E1 SFT, and E4
+GRPO results use exactly the same `formal_test` IDs and decoding protocol; only
+the evaluated checkpoint changes.
+
+The existing [`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) is a
+v1 planning manifest with 512 SFT IDs, 1,500 RL IDs, and 256 test IDs. The next
+implementation PR will replace it with the partitions above while retaining the
+completed 32-example calibration as historical evidence.
 
 [`manifests/gsm8k_profile.json`](manifests/gsm8k_profile.json) records only
 split counts, answer-marker coverage, and question/answer length percentiles.
@@ -50,15 +75,20 @@ hyperparameters, reward version, hypothesis, expected failure mode, and
 planned versus actual cost.
 
 `E0a` is a 32-example calibration subset for a bounded first paid request. It
-is not a stage-comparison result. E0 Base, E1 SFT, and E4 GRPO use all 256
-held-out IDs with the same prompt version, `G=4`, decoding limits, parser, and
-metric names; only the evaluated checkpoint changes.
+is not a stage-comparison result. E0 Base, E1 SFT, and E4 GRPO use all 1,287
+`formal_test` IDs with the same prompt version, `G=4`, decoding limits, parser,
+and metric names; only the evaluated checkpoint changes. One G4 rollout group
+produces both `pass@1` and `pass@4`; G8 or G16 is unnecessary unless a future
+experiment explicitly studies higher-k sampling.
 
 The core metrics are:
 
-- Outcome: `eval/exact_match`, `eval/pass_at_4`, `eval/format_accuracy`,
+- Outcome: `eval/pass_at_1`, `eval/pass_at_4`, `eval/format_accuracy`,
   `eval/truncation_rate`, and `eval/avg_output_tokens`.
-- SFT: `train/nll` and `train/learning_rate`.
+- SFT: `train/nll`, `train/perplexity`, `train/learning_rate`, throughput,
+  step time, and planned/actual cost. `sft_validation/nll` and
+  `sft_validation/perplexity` select checkpoints; the matching formal
+  generation metrics are the only metrics compared with E0 Base.
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
   `train/degenerate_group_frac`, `train/effective_group_count`, and
   `train/group_reward_std`.
@@ -69,6 +99,16 @@ The core metrics are:
 Run-level prediction and rollout tables preserve examples behind aggregate
 metrics. Dataset manifests, evaluation protocols, promoted checkpoints, and
 prediction tables are versioned artifacts.
+
+## Formal-evaluation cost boundary
+
+The formal protocol requests 1,287 × G4 = 5,148 rollouts per evaluated
+checkpoint. The completed 32 × G4 calibration cost $0.08001, so a linear
+actual-cost extrapolation is about $3.22 for one full formal evaluation; this
+is a planning estimate, not a price guarantee. A worst-case preflight and an
+explicit paid-run approval are required before every E0, E1, or E4 evaluation.
+The earlier 256 × G4 ($0.64 extrapolated) option is a smaller diagnostic, not
+part of the formal protocol.
 
 ## Evidence and storage
 
