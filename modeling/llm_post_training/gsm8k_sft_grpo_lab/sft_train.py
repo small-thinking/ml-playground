@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -19,8 +20,13 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 from dotenv import load_dotenv
 
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.base_eval import (
+    MAX_OUTPUT_TOKENS,
+    MAX_PROMPT_TOKENS,
     MODEL_ID,
+    PREFILL_USD_PER_MILLION,
     PROMPT_VERSION,
+    SAMPLE_USD_PER_MILLION,
+    SEED,
     SUITE_ID,
     WANDB_PROJECT,
     build_prompt,
@@ -31,18 +37,31 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
     load_official_train_rows,
     read_manifest,
 )
-from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import normalize_number
+from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
+    Completion,
+    evaluate_groups,
+    normalize_number,
+)
 
 
 EXPERIMENT_ID = "e1"
+E2_EXPERIMENT_ID = "e2"
 LORA_RANK = 32
 BATCH_SIZE = 8
 LEARNING_RATE = 5e-4
+E2_LEARNING_RATE = 3e-4
 MAX_SEQUENCE_TOKENS = 1024
 VALIDATION_EVERY = 250
+E2_VALIDATION_EVERY = 125
+E2_GENERATION_MONITOR_EXAMPLES = 128
+GENERATION_MONITOR_GROUP_SIZE = 4
+GENERATION_MONITOR_TEMPERATURE = 1.0
+LINEAR_FINAL_LR_FACTOR = 0.01
+TRAINING_SEED = 20260901
 PROGRESS_EVERY = 25
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60
 HARD_CAP_USD = 12.0
+E2_HARD_CAP_USD = 18.0
 TRAIN_USD_PER_MILLION = 1.463
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -55,7 +74,7 @@ class SFTTrainingError(RuntimeError):
 
 @dataclass(frozen=True)
 class SFTConfig:
-    """Fixed conditions for the first GSM8K SFT experiment."""
+    """Frozen conditions for a GSM8K SFT experiment."""
 
     model_id: str = MODEL_ID
     project: str = WANDB_PROJECT
@@ -65,8 +84,12 @@ class SFTConfig:
     lora_rank: int = LORA_RANK
     batch_size: int = BATCH_SIZE
     learning_rate: float = LEARNING_RATE
+    learning_rate_schedule: str = "constant"
     max_sequence_tokens: int = MAX_SEQUENCE_TOKENS
     validation_every: int = VALIDATION_EVERY
+    generation_monitor_examples: int = 0
+    generation_monitor_group_size: int = GENERATION_MONITOR_GROUP_SIZE
+    checkpoint_selection: str = "validation_nll"
     progress_every: int = PROGRESS_EVERY
     checkpoint_ttl_seconds: int = CHECKPOINT_TTL_SECONDS
     hard_cap_usd: float = HARD_CAP_USD
@@ -75,14 +98,15 @@ class SFTConfig:
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
             raise SFTTrainingError("model, project, and suite identifiers are required")
-        if self.experiment_id != EXPERIMENT_ID:
-            raise SFTTrainingError("the first SFT run must use experiment ID e1")
+        if self.experiment_id not in {EXPERIMENT_ID, E2_EXPERIMENT_ID}:
+            raise SFTTrainingError("SFT experiment ID must be e1 or e2")
         positive_ints = {
             "attempt": self.attempt,
             "lora_rank": self.lora_rank,
             "batch_size": self.batch_size,
             "max_sequence_tokens": self.max_sequence_tokens,
             "validation_every": self.validation_every,
+            "generation_monitor_group_size": self.generation_monitor_group_size,
             "progress_every": self.progress_every,
             "checkpoint_ttl_seconds": self.checkpoint_ttl_seconds,
         }
@@ -91,19 +115,39 @@ class SFTConfig:
                 raise SFTTrainingError(f"{name} must be positive")
         if self.learning_rate <= 0:
             raise SFTTrainingError("learning_rate must be positive")
+        if self.learning_rate_schedule not in {"constant", "linear"}:
+            raise SFTTrainingError("learning_rate_schedule must be constant or linear")
+        if self.generation_monitor_examples < 0:
+            raise SFTTrainingError("generation_monitor_examples cannot be negative")
+        if self.checkpoint_selection not in {"validation_nll", "generation_pass_at_4"}:
+            raise SFTTrainingError("checkpoint_selection is not supported")
+        if (
+            self.checkpoint_selection == "generation_pass_at_4"
+            and self.generation_monitor_examples == 0
+        ):
+            raise SFTTrainingError("generation selection requires a monitor")
         if self.hard_cap_usd <= 0 or self.train_usd_per_million <= 0:
             raise SFTTrainingError("cost settings must be positive")
         if manifest is not None:
             manifest.validate()
             if len(manifest.sft_train_ids) < self.batch_size:
                 raise SFTTrainingError("sft_train must contain at least one batch")
+            if self.generation_monitor_examples > len(manifest.sft_validation_ids):
+                raise SFTTrainingError("generation monitor exceeds sft_validation")
 
     @property
     def run_name(self) -> str:
         model_slug = self.model_id.lower().replace("/", "-").replace(".", "-")
+        if self.experiment_id == EXPERIMENT_ID:
+            return (
+                f"{self.experiment_id}-sft-{model_slug}-r{self.lora_rank}"
+                f"-b{self.batch_size}-a{self.attempt:02d}"
+            )
+        lr_slug = f"{self.learning_rate:.0e}".replace("-0", "-")
         return (
             f"{self.experiment_id}-sft-{model_slug}-r{self.lora_rank}"
-            f"-b{self.batch_size}-a{self.attempt:02d}"
+            f"-b{self.batch_size}-lr{lr_slug}-{self.learning_rate_schedule}"
+            f"-gm{self.generation_monitor_examples}-a{self.attempt:02d}"
         )
 
     def training_steps(self, manifest: SplitManifest) -> int:
@@ -114,6 +158,19 @@ class SFTConfig:
         steps = self.training_steps(manifest)
         scheduled = tuple(range(self.validation_every, steps + 1, self.validation_every))
         return scheduled if scheduled and scheduled[-1] == steps else scheduled + (steps,)
+
+
+def e2_config() -> SFTConfig:
+    """Return the generation-selected follow-up to E1."""
+    return SFTConfig(
+        experiment_id=E2_EXPERIMENT_ID,
+        learning_rate=E2_LEARNING_RATE,
+        learning_rate_schedule="linear",
+        validation_every=E2_VALIDATION_EVERY,
+        generation_monitor_examples=E2_GENERATION_MONITOR_EXAMPLES,
+        checkpoint_selection="generation_pass_at_4",
+        hard_cap_usd=E2_HARD_CAP_USD,
+    )
 
 
 @dataclass(frozen=True)
@@ -136,6 +193,18 @@ class CheckpointRecord:
     perplexity: float
     state_path: str
     sampler_path: str
+    generation_pass_at_1: Optional[float] = None
+    generation_pass_at_4: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class GenerationMonitorReport:
+    """Generation metrics and token cost for one fixed validation subset."""
+
+    metrics: Dict[str, float]
+    prompt_tokens: int
+    output_tokens: int
+    estimated_cost_usd: float
 
 
 def _print_progress(message: str) -> None:
@@ -155,7 +224,7 @@ def _package_version(package: str) -> Optional[str]:
 
 
 def estimate_max_token_cost_usd(config: SFTConfig, manifest: SplitManifest) -> float:
-    """Bound one training epoch plus baseline and checkpoint validations."""
+    """Bound training, NLL validation, and optional generation monitoring."""
     config.validate(manifest)
     train_tokens = (
         config.training_steps(manifest)
@@ -167,7 +236,34 @@ def estimate_max_token_cost_usd(config: SFTConfig, manifest: SplitManifest) -> f
         * len(manifest.sft_validation_ids)
         * config.max_sequence_tokens
     )
-    return (train_tokens + validation_tokens) * config.train_usd_per_million / 1_000_000
+    train_and_nll_cost = (
+        (train_tokens + validation_tokens)
+        * config.train_usd_per_million
+        / 1_000_000
+    )
+    monitor_runs = 1 + len(config.validation_steps(manifest))
+    monitor_cost = (
+        monitor_runs
+        * config.generation_monitor_examples
+        * config.generation_monitor_group_size
+        * (
+            MAX_PROMPT_TOKENS * PREFILL_USD_PER_MILLION
+            + MAX_OUTPUT_TOKENS * SAMPLE_USD_PER_MILLION
+        )
+        / 1_000_000
+    )
+    return train_and_nll_cost + monitor_cost
+
+
+def _generation_monitor_ids_hash(
+    config: SFTConfig, manifest: SplitManifest
+) -> Optional[str]:
+    if not config.generation_monitor_examples:
+        return None
+    encoded = "\n".join(
+        manifest.sft_validation_ids[: config.generation_monitor_examples]
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_doctor_report(
@@ -192,6 +288,11 @@ def build_doctor_report(
         "sft_validation_examples": len(manifest.sft_validation_ids),
         "training_steps": config.training_steps(manifest),
         "validation_steps": list(config.validation_steps(manifest)),
+        "generation_monitor_examples": config.generation_monitor_examples,
+        "generation_monitor_group_size": config.generation_monitor_group_size,
+        "generation_monitor_ids_hash": _generation_monitor_ids_hash(config, manifest),
+        "checkpoint_selection": config.checkpoint_selection,
+        "learning_rate_schedule": config.learning_rate_schedule,
         "tinker_sdk_version": tinker_sdk,
         "wandb_version": wandb_sdk,
         "hf_token_configured": bool(environ.get("HF_TOKEN")),
@@ -369,6 +470,139 @@ async def _validation_nll(
     return total_loss / total_supervised_tokens, input_tokens
 
 
+def _effective_learning_rate(config: SFTConfig, step: int, total_steps: int) -> float:
+    if config.learning_rate_schedule == "constant" or total_steps <= 1:
+        return config.learning_rate
+    fraction = (step - 1) / (total_steps - 1)
+    return config.learning_rate * max(LINEAR_FINAL_LR_FACTOR, 1.0 - fraction)
+
+
+def _monitor_cost(prompt_tokens: int, output_tokens: int) -> float:
+    return (
+        prompt_tokens * PREFILL_USD_PER_MILLION
+        + output_tokens * SAMPLE_USD_PER_MILLION
+    ) / 1_000_000
+
+
+async def _generation_monitor(
+    service_client: Any,
+    model_path: Optional[str],
+    rows: Sequence[Mapping[str, object]],
+    config: SFTConfig,
+    tinker_module: Any,
+    label: str,
+    progress: Callable[[str], None],
+) -> GenerationMonitorReport:
+    """Sample a fixed held-out subset without exposing its answers to training."""
+    client_kwargs = (
+        {"model_path": model_path}
+        if model_path is not None
+        else {"base_model": config.model_id}
+    )
+    client = await service_client.create_sampling_client_async(**client_kwargs)
+    tokenizer = client.get_tokenizer()
+
+    async def sample_group(index: int, row: Mapping[str, object]) -> Dict[str, Any]:
+        prompt_tokens = list(tokenizer.encode(build_prompt(str(row["question"]))))
+        if len(prompt_tokens) > MAX_PROMPT_TOKENS:
+            raise SFTTrainingError("generation monitor prompt exceeds token limit")
+        result = await client.sample_async(
+            prompt=tinker_module.ModelInput.from_ints(tokens=prompt_tokens),
+            num_samples=config.generation_monitor_group_size,
+            sampling_params=tinker_module.SamplingParams(
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temperature=GENERATION_MONITOR_TEMPERATURE,
+                seed=SEED + index,
+            ),
+        )
+        if len(result.sequences) != config.generation_monitor_group_size:
+            raise SFTTrainingError("generation monitor received the wrong group size")
+        responses = tuple(
+            (tokenizer.decode(sequence.tokens), len(sequence.tokens))
+            for sequence in result.sequences
+        )
+        return {
+            "index": index,
+            "example_id": content_id(row),
+            "ground_truth": str(row["answer"]),
+            "prompt_tokens": len(prompt_tokens),
+            "responses": responses,
+        }
+
+    tasks = [
+        asyncio.create_task(sample_group(index, row)) for index, row in enumerate(rows)
+    ]
+    samples_by_index: Dict[int, Dict[str, Any]] = {}
+    try:
+        for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
+            sample = await task
+            samples_by_index[int(sample["index"])] = sample
+            if completed == 1 or completed % 32 == 0 or completed == len(tasks):
+                progress(
+                    f"generation validation {label} prompts={completed}/{len(tasks)} "
+                    f"rollouts={completed * config.generation_monitor_group_size}/"
+                    f"{len(tasks) * config.generation_monitor_group_size}"
+                )
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    samples = tuple(samples_by_index[index] for index in range(len(rows)))
+    groups = {
+        sample["example_id"]: tuple(
+            Completion(
+                example_id=sample["example_id"],
+                response=response,
+                ground_truth=sample["ground_truth"],
+                output_tokens=output_tokens,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+            )
+            for response, output_tokens in sample["responses"]
+        )
+        for sample in samples
+    }
+    report = evaluate_groups(groups, pass_k=config.generation_monitor_group_size)
+    prompt_total = sum(
+        sample["prompt_tokens"] * config.generation_monitor_group_size
+        for sample in samples
+    )
+    output_total = sum(
+        output_tokens for sample in samples for _, output_tokens in sample["responses"]
+    )
+    return GenerationMonitorReport(
+        metrics=dict(report.metrics),
+        prompt_tokens=prompt_total,
+        output_tokens=output_total,
+        estimated_cost_usd=_monitor_cost(prompt_total, output_total),
+    )
+
+
+def _monitor_metrics(report: GenerationMonitorReport) -> Dict[str, float]:
+    return {
+        key.replace("eval/", "sft_generation_validation/"): value
+        for key, value in report.metrics.items()
+    }
+
+
+def _select_checkpoint(
+    checkpoints: Sequence[CheckpointRecord], config: SFTConfig
+) -> CheckpointRecord:
+    if config.checkpoint_selection == "validation_nll":
+        return min(checkpoints, key=lambda record: record.nll)
+    if any(record.generation_pass_at_4 is None for record in checkpoints):
+        raise SFTTrainingError("generation monitor is missing at a checkpoint")
+    return min(
+        checkpoints,
+        key=lambda record: (
+            -float(record.generation_pass_at_4),
+            -float(record.generation_pass_at_1),
+            record.nll,
+        ),
+    )
+
+
 def _git_sha() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -399,14 +633,32 @@ def _tracking_config(config: SFTConfig, manifest: SplitManifest) -> Dict[str, An
         "lora_rank": config.lora_rank,
         "batch_size": config.batch_size,
         "learning_rate": config.learning_rate,
+        "learning_rate_schedule": config.learning_rate_schedule,
+        "linear_final_lr_factor": LINEAR_FINAL_LR_FACTOR,
+        "training_seed": TRAINING_SEED,
         "max_sequence_tokens": config.max_sequence_tokens,
         "training_steps": config.training_steps(manifest),
         "validation_steps": list(config.validation_steps(manifest)),
+        "generation_monitor_examples": config.generation_monitor_examples,
+        "generation_monitor_group_size": config.generation_monitor_group_size,
+        "generation_monitor_temperature": GENERATION_MONITOR_TEMPERATURE,
+        "generation_monitor_max_prompt_tokens": MAX_PROMPT_TOKENS,
+        "generation_monitor_max_output_tokens": MAX_OUTPUT_TOKENS,
+        "generation_monitor_ids_hash": _generation_monitor_ids_hash(config, manifest),
+        "checkpoint_selection": config.checkpoint_selection,
         "train_usd_per_million": config.train_usd_per_million,
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
-        "hypothesis": "One clean SFT epoch improves answer format and GSM8K accuracy.",
-        "expected_failure": "Validation NLL improves without formal generation gain.",
+        "hypothesis": (
+            "One clean SFT epoch improves answer format and GSM8K accuracy."
+            if config.experiment_id == EXPERIMENT_ID
+            else "Generation-selected SFT avoids the E1 formal regression."
+        ),
+        "expected_failure": (
+            "Validation NLL improves without formal generation gain."
+            if config.experiment_id == EXPERIMENT_ID
+            else "Generation monitoring regresses despite a lower learning rate."
+        ),
     }
 
 
@@ -414,9 +666,15 @@ def _estimated_cost(processed_tokens: int, config: SFTConfig) -> float:
     return processed_tokens * config.train_usd_per_million / 1_000_000
 
 
-def _report_path(run_id: str) -> Path:
+def _total_estimated_cost(
+    processed_tokens: int, generation_monitor_cost: float, config: SFTConfig
+) -> float:
+    return _estimated_cost(processed_tokens, config) + generation_monitor_cost
+
+
+def _report_path(experiment_id: str, run_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", run_id)
-    return OUTPUT_DIR / f"e1_sft_report_{safe_id}.json"
+    return OUTPUT_DIR / f"{experiment_id}_sft_report_{safe_id}.json"
 
 
 async def run_sft_training(
@@ -480,7 +738,7 @@ async def run_sft_training(
         training_client = await service_client.create_lora_training_client_async(
             base_model=config.model_id,
             rank=config.lora_rank,
-            seed=20260901,
+            seed=TRAINING_SEED,
             user_metadata={"experiment_id": config.experiment_id},
         )
         tokenizer = training_client.get_tokenizer()
@@ -490,19 +748,25 @@ async def run_sft_training(
         validation = prepare_sft_examples(
             validation_rows, tokenizer, config.max_sequence_tokens
         )
-        progress(f"data ready train={len(train)} validation={len(validation)}")
+        monitor_rows = validation_rows[: config.generation_monitor_examples]
+        progress(
+            f"data ready train={len(train)} validation={len(validation)} "
+            f"generation_monitor={len(monitor_rows)}"
+        )
         wandb_run = wandb_module.init(
             project=config.project,
             entity=environ.get("WANDB_ENTITY") or None,
             name=config.run_name,
             group=config.suite_id,
             job_type="sft-training",
-            tags=["gsm8k", "sft", "e1", f"rank-{config.lora_rank}"],
+            tags=["gsm8k", "sft", config.experiment_id, f"rank-{config.lora_rank}"],
             config=_tracking_config(config, manifest),
         )
         progress(f"started W&B run={getattr(wandb_run, 'url', None)}")
 
         processed_tokens = 0
+        generation_monitor_cost = 0.0
+        baseline_generation: Optional[GenerationMonitorReport] = None
         elapsed_started_at = clock()
         progress("validating untrained adapter")
         baseline_nll, baseline_tokens = await _validation_nll(
@@ -520,8 +784,8 @@ async def run_sft_training(
                 "sft_validation/perplexity": _perplexity(baseline_nll),
                 "sft_validation/is_baseline": 1.0,
                 "run_stats/cumulative_processed_tokens": float(processed_tokens),
-                "run_stats/estimated_cumulative_usd": _estimated_cost(
-                    processed_tokens, config
+                "run_stats/estimated_cumulative_usd": _total_estimated_cost(
+                    processed_tokens, generation_monitor_cost, config
                 ),
             },
             step=0,
@@ -530,6 +794,37 @@ async def run_sft_training(
             f"validation step=0/{config.training_steps(manifest)} "
             f"nll={baseline_nll:.5f} perplexity={_perplexity(baseline_nll):.3f}"
         )
+        if monitor_rows:
+            progress("generation validating Base model")
+            baseline_generation = await _generation_monitor(
+                service_client,
+                None,
+                monitor_rows,
+                config,
+                tinker_module,
+                label=f"step=0/{config.training_steps(manifest)}",
+                progress=progress,
+            )
+            generation_monitor_cost += baseline_generation.estimated_cost_usd
+            wandb_run.log(
+                {
+                    **_monitor_metrics(baseline_generation),
+                    "sft_generation_validation/is_baseline": 1.0,
+                    "sft_generation_validation/estimated_cumulative_usd": (
+                        generation_monitor_cost
+                    ),
+                    "run_stats/estimated_cumulative_usd": _total_estimated_cost(
+                        processed_tokens, generation_monitor_cost, config
+                    ),
+                },
+                step=0,
+            )
+            progress(
+                f"generation validation step=0/{config.training_steps(manifest)} "
+                f"pass_at_1={baseline_generation.metrics['eval/pass_at_1']:.4f} "
+                f"pass_at_4={baseline_generation.metrics['eval/pass_at_4']:.4f} "
+                f"estimated_cost=${generation_monitor_cost:.4f}"
+            )
 
         checkpoints: list[CheckpointRecord] = []
         validation_steps = set(config.validation_steps(manifest))
@@ -544,8 +839,9 @@ async def run_sft_training(
                 data=data, loss_fn="cross_entropy"
             )
             forward_backward_result = await forward_backward.result_async()
+            current_learning_rate = _effective_learning_rate(config, step, total_steps)
             optimizer = await training_client.optim_step_async(
-                tinker_module.types.AdamParams(learning_rate=config.learning_rate)
+                tinker_module.types.AdamParams(learning_rate=current_learning_rate)
             )
             await optimizer.result_async()
             processed_tokens += batch_tokens
@@ -557,15 +853,15 @@ async def run_sft_training(
             metrics = {
                 "train/nll": nll,
                 "train/perplexity": _perplexity(nll),
-                "train/learning_rate": config.learning_rate,
+                "train/learning_rate": current_learning_rate,
                 "train/supervised_tokens": float(supervised_tokens),
                 "train/tokens_per_second": batch_tokens / step_seconds,
                 "timing/step_seconds": step_seconds,
                 "timing/elapsed_seconds": elapsed_seconds,
                 "timing/eta_seconds": eta_seconds,
                 "run_stats/cumulative_processed_tokens": float(processed_tokens),
-                "run_stats/estimated_cumulative_usd": _estimated_cost(
-                    processed_tokens, config
+                "run_stats/estimated_cumulative_usd": _total_estimated_cost(
+                    processed_tokens, generation_monitor_cost, config
                 ),
             }
             wandb_run.log(metrics, step=step)
@@ -576,10 +872,10 @@ async def run_sft_training(
             ):
                 progress(
                     f"step={step}/{total_steps} nll={nll:.5f} "
-                    f"perplexity={_perplexity(nll):.3f} lr={config.learning_rate:.2g} "
+                    f"perplexity={_perplexity(nll):.3f} lr={current_learning_rate:.2g} "
                     f"throughput={batch_tokens / step_seconds:.1f}tok/s "
                     f"elapsed={elapsed_seconds:.1f}s eta={eta_seconds:.1f}s "
-                    f"estimated_cost=${_estimated_cost(processed_tokens, config):.4f}"
+                    f"estimated_cost=${_total_estimated_cost(processed_tokens, generation_monitor_cost, config):.4f}"
                 )
             if step not in validation_steps:
                 continue
@@ -604,37 +900,76 @@ async def run_sft_training(
                 checkpoint_name, ttl_seconds=config.checkpoint_ttl_seconds
             )
             sampler_result = await sampler_future.result_async()
+            generation: Optional[GenerationMonitorReport] = None
+            if monitor_rows:
+                progress(
+                    f"generation validating checkpoint step={step}/{total_steps} "
+                    f"prompts={len(monitor_rows)}"
+                )
+                generation = await _generation_monitor(
+                    service_client,
+                    str(sampler_result.path),
+                    monitor_rows,
+                    config,
+                    tinker_module,
+                    label=f"step={step}/{total_steps}",
+                    progress=progress,
+                )
+                generation_monitor_cost += generation.estimated_cost_usd
             record = CheckpointRecord(
                 step=step,
                 nll=validation_nll,
                 perplexity=validation_ppl,
                 state_path=str(state_result.path),
                 sampler_path=str(sampler_result.path),
+                generation_pass_at_1=(
+                    generation.metrics["eval/pass_at_1"] if generation else None
+                ),
+                generation_pass_at_4=(
+                    generation.metrics["eval/pass_at_4"] if generation else None
+                ),
             )
             checkpoints.append(record)
-            wandb_run.log(
-                {
+            checkpoint_metrics = {
                     "sft_validation/nll": validation_nll,
                     "sft_validation/perplexity": validation_ppl,
                     "sft_validation/is_baseline": 0.0,
                     "sft_validation/nll_delta_from_base": validation_nll - baseline_nll,
                     "run_stats/cumulative_processed_tokens": float(processed_tokens),
-                    "run_stats/estimated_cumulative_usd": _estimated_cost(
-                        processed_tokens, config
+                    "run_stats/estimated_cumulative_usd": _total_estimated_cost(
+                        processed_tokens, generation_monitor_cost, config
                     ),
-                },
-                step=step,
-            )
+                }
+            if generation is not None:
+                checkpoint_metrics.update(_monitor_metrics(generation))
+                checkpoint_metrics.update(
+                    {
+                        "sft_generation_validation/is_baseline": 0.0,
+                        "sft_generation_validation/estimated_cumulative_usd": (
+                            generation_monitor_cost
+                        ),
+                    }
+                )
+            wandb_run.log(checkpoint_metrics, step=step)
             progress(
                 f"validation step={step}/{total_steps} nll={validation_nll:.5f} "
                 f"perplexity={validation_ppl:.3f} "
-                f"estimated_cost=${_estimated_cost(processed_tokens, config):.4f}"
+                f"estimated_cost=${_total_estimated_cost(processed_tokens, generation_monitor_cost, config):.4f}"
             )
+            if generation is not None:
+                progress(
+                    f"generation validation step={step}/{total_steps} "
+                    f"pass_at_1={generation.metrics['eval/pass_at_1']:.4f} "
+                    f"pass_at_4={generation.metrics['eval/pass_at_4']:.4f} "
+                    f"monitor_cost=${generation_monitor_cost:.4f}"
+                )
 
         if not checkpoints:
             raise SFTTrainingError("training completed without a validation checkpoint")
-        selected = min(checkpoints, key=lambda record: record.nll)
-        total_estimated_cost = _estimated_cost(processed_tokens, config)
+        selected = _select_checkpoint(checkpoints, config)
+        total_estimated_cost = _total_estimated_cost(
+            processed_tokens, generation_monitor_cost, config
+        )
         if total_estimated_cost > config.hard_cap_usd:
             raise SFTTrainingError("observed token cost exceeded the configured hard cap")
         report = {
@@ -648,28 +983,40 @@ async def run_sft_training(
             "training_steps": total_steps,
             "baseline_validation_nll": baseline_nll,
             "baseline_validation_perplexity": _perplexity(baseline_nll),
+            "baseline_generation_monitor": (
+                asdict(baseline_generation) if baseline_generation else None
+            ),
             "selected_checkpoint": asdict(selected),
             "validation_checkpoints": [asdict(record) for record in checkpoints],
+            "generation_monitor_estimated_cost_usd": generation_monitor_cost,
             "estimated_token_cost_usd": total_estimated_cost,
             "hard_cap_usd": config.hard_cap_usd,
             "wandb_run_url": getattr(wandb_run, "url", None),
         }
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        path = _report_path(str(getattr(wandb_run, "id", "run")))
+        path = _report_path(config.experiment_id, str(getattr(wandb_run, "id", "run")))
         path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         wandb_run.summary.update(
             {
                 "sft_validation/baseline_nll": baseline_nll,
                 "sft_validation/best_nll": selected.nll,
                 "sft_validation/best_perplexity": selected.perplexity,
+                "checkpoint/selection_metric": config.checkpoint_selection,
                 "checkpoint/selected_step": selected.step,
                 "checkpoint/selected_state_path": selected.state_path,
                 "checkpoint/selected_sampler_path": selected.sampler_path,
+                "checkpoint/selected_generation_pass_at_1": (
+                    selected.generation_pass_at_1
+                ),
+                "checkpoint/selected_generation_pass_at_4": (
+                    selected.generation_pass_at_4
+                ),
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
         )
         progress(
-            f"complete selected_step={selected.step} best_validation_nll={selected.nll:.5f} "
+            f"complete selected_step={selected.step} selection={config.checkpoint_selection} "
+            f"best_validation_nll={selected.nll:.5f} "
             f"estimated_cost=${total_estimated_cost:.4f}"
         )
         return report
@@ -682,7 +1029,7 @@ async def run_sft_training(
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preflight or run the frozen GSM8K E1 SFT experiment."
+        description="Preflight or run a frozen GSM8K SFT experiment."
     )
     parser.add_argument("--run", action="store_true", help="Start the paid SFT run.")
     parser.add_argument(
@@ -691,16 +1038,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Acknowledge approval for the cost-gated Tinker request.",
     )
     parser.add_argument("--attempt", type=int, default=1)
-    parser.add_argument("--hard-cap-usd", type=float, default=HARD_CAP_USD)
+    parser.add_argument("--recipe", choices=("e1", "e2"), default="e1")
+    parser.add_argument("--hard-cap-usd", type=float)
     parser.add_argument("--progress-every", type=int, default=PROGRESS_EVERY)
     return parser.parse_args(argv)
 
 
 async def _async_main(args: argparse.Namespace) -> Dict[str, Any]:
+    base_config = e2_config() if args.recipe == E2_EXPERIMENT_ID else SFTConfig()
     config = replace(
-        SFTConfig(),
+        base_config,
         attempt=args.attempt,
-        hard_cap_usd=args.hard_cap_usd,
+        hard_cap_usd=(
+            base_config.hard_cap_usd
+            if args.hard_cap_usd is None
+            else args.hard_cap_usd
+        ),
         progress_every=args.progress_every,
     )
     if args.run:

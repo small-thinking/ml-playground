@@ -31,12 +31,19 @@ class _FakeAdamParams:
         self.kwargs = kwargs
 
 
+class _FakeSamplingParams:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
 class _FakeTinker:
     ModelInput = _FakeModelInput
 
     class types:
         Datum = _FakeDatum
         AdamParams = _FakeAdamParams
+
+    SamplingParams = _FakeSamplingParams
 
 
 class _FakeFuture:
@@ -52,6 +59,18 @@ class _FakeTokenizer:
 
     def encode(self, text, **kwargs):
         return list(range(max(1, len(text.split()))))
+
+    def decode(self, tokens):
+        return "\\boxed{0}"
+
+
+class _FakeSamplingClient:
+    def get_tokenizer(self):
+        return _FakeTokenizer()
+
+    async def sample_async(self, prompt, num_samples, sampling_params):
+        sequence = type("Sequence", (), {"tokens": [0]})()
+        return type("Result", (), {"sequences": [sequence] * num_samples})()
 
 
 def _loss_for(data, nll):
@@ -94,11 +113,15 @@ class _FakeTrainingClient:
 class _FakeServiceClient:
     def __init__(self):
         self.training_client = _FakeTrainingClient()
+        self.sampling_client = _FakeSamplingClient()
         self.kwargs = None
 
     async def create_lora_training_client_async(self, **kwargs):
         self.kwargs = kwargs
         return self.training_client
+
+    async def create_sampling_client_async(self, **kwargs):
+        return self.sampling_client
 
 
 class _FakeRun:
@@ -153,6 +176,22 @@ def _config():
         validation_every=1,
         progress_every=1,
         max_sequence_tokens=64,
+        hard_cap_usd=1.0,
+        train_usd_per_million=1.0,
+    )
+
+
+def _generation_config():
+    return SFTConfig(
+        experiment_id="e2",
+        batch_size=2,
+        validation_every=1,
+        progress_every=1,
+        max_sequence_tokens=64,
+        learning_rate=3e-4,
+        learning_rate_schedule="linear",
+        generation_monitor_examples=1,
+        checkpoint_selection="generation_pass_at_4",
         hard_cap_usd=1.0,
         train_usd_per_million=1.0,
     )
@@ -232,3 +271,27 @@ def test_sft_training_logs_train_and_validation_metrics_and_selects_checkpoint()
     assert wandb.run.finished is True
     assert any("step=1/2" in message and "eta=" in message for message in progress)
     assert any("validation step=2/2" in message for message in progress)
+
+
+def test_generation_monitor_logs_pass_metrics_and_selects_by_pass_at_4():
+    manifest = _manifest()
+    wandb = _FakeWandb()
+    report = asyncio.run(
+        run_sft_training(
+            _generation_config(),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=_FakeServiceClient(),
+            train_rows=_rows("train", 4),
+            validation_rows=_rows("validation", 2),
+        )
+    )
+
+    assert report["selected_checkpoint"]["generation_pass_at_4"] == 1.0
+    assert report["baseline_generation_monitor"]["metrics"]["eval/pass_at_4"] == 1.0
+    logged = [payload for payload, _ in wandb.run.logs]
+    assert any("sft_generation_validation/pass_at_1" in payload for payload in logged)
+    assert any("sft_generation_validation/pass_at_4" in payload for payload in logged)

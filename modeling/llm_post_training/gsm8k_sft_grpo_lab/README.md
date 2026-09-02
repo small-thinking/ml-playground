@@ -43,7 +43,7 @@ only; raw questions and answers remain outside Git.
 | Partition | Examples | Purpose |
 | --- | ---: | --- |
 | `sft_train` | 5,000 | SFT gradient updates |
-| `sft_validation` | 500 | SFT checkpoint selection by NLL/PPL |
+| `sft_validation` | 500 | SFT NLL/PPL diagnostics; E2 uses a fixed 128-prompt subset for generation-based checkpoint selection |
 | `rl_train` | 1,800 | GRPO prompts and reward scoring |
 | `rl_monitor` | 173 | Fixed G4 RL health monitor; never updated on |
 | `calibration_test` | 32 | Completed E0a audit; never a stage-comparison result |
@@ -55,10 +55,10 @@ to be simple repetition of the SFT examples. The ground-truth answer remains
 available to the RL reward scorer but never appears in the model prompt.
 
 `sft_validation` is not an evaluation benchmark. It is observed while choosing
-an SFT checkpoint, so it logs only training diagnostics and cannot be compared
-directly with a Base-model generation result. Formal E0 Base, E1 SFT, and E4
-GRPO results use exactly the same `formal_test` IDs and decoding protocol; only
-the evaluated checkpoint changes.
+an SFT checkpoint; E2 uses a fixed subset for generation-based selection, not
+for a headline Base/SFT comparison. Formal E0 Base, E1 SFT, and E4 GRPO results
+use exactly the same `formal_test` IDs and decoding protocol; only the evaluated
+checkpoint changes.
 
 [`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) is the immutable
 v2 manifest for these exact IDs. The first 32 deterministically ordered test
@@ -92,9 +92,11 @@ The core metrics are:
 - Outcome: `eval/pass_at_1`, `eval/pass_at_4`, `eval/format_accuracy`,
   `eval/truncation_rate`, and `eval/avg_output_tokens`.
 - SFT: `train/nll`, `train/perplexity`, `train/learning_rate`, throughput,
-  step time, and planned/actual cost. `sft_validation/nll` and
-  `sft_validation/perplexity` select checkpoints; the matching formal
-  generation metrics are the only metrics compared with E0 Base.
+  step time, and planned/actual cost. E1 selected checkpoints by
+  `sft_validation/nll`/perplexity and regressed formally. E2 additionally logs
+  `sft_generation_validation/pass_at_1`, `pass_at_4`, format, truncation, and
+  output length on a frozen subset, and selects by pass@4, then pass@1, then
+  NLL. Only a matching formal generation run is compared with E0 Base.
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
   `train/degenerate_group_frac`, `train/effective_group_count`, and
   `train/group_reward_std`.
@@ -202,6 +204,44 @@ For the first SFT run, retain both selected step-625 checkpoints: the sampler
 weights support formal evaluation and inference; the training state supports a
 future GRPO branch. Intermediate step-250 and step-500 pairs are diagnostic
 only and may be deleted after E1 formal evaluation and checkpoint promotion.
+
+## E2 SFT command
+
+E2 changes the training control rather than the frozen data: rank 32, batch 8,
+one 5,000-example epoch, and the worked-solution target remain fixed. Its peak
+LR is `3e-4` with linear decay to 1% of the peak. This is a conservative trial
+below Tinker's roughly `4.73e-4` Qwen3.5-9B LoRA starting-point formula, not a
+claim that E1's `5e-4` was itself invalid.
+
+At step 0 and steps 125/250/375/500/625, E2 samples a deterministic 128-prompt
+prefix of `sft_validation` with G4, temperature 1.0, and the same 512-token
+generation limits as formal evaluation. Its ID hash is stored in W&B config.
+The training run selects the checkpoint by monitor pass@4, then pass@1, then
+NLL. The complete 1,287-prompt `formal_test` remains untouched until one
+checkpoint is selected.
+
+Run a local-only preflight first:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --recipe e2
+```
+
+The current worst-case cap is `$16.16084992`: it includes the one epoch, six
+500-example NLL passes, and six 128 × G4 monitor passes at maximum token
+length. This is a bound, not an expected charge; it must remain under the
+explicit `--hard-cap-usd` value. After you review that JSON, the paid command
+is:
+
+```bash
+uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --recipe e2 --run --allow-paid --hard-cap-usd 18
+```
+
+E2 checkpoints retain the existing 30-day TTL. Do not merge its PR until this
+manual paid run finishes successfully and its W&B monitor is visible.
 
 The E0 preflight is local-only:
 
