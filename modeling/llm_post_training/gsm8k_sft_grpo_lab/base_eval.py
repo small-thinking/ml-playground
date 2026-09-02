@@ -9,10 +9,11 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from dotenv import load_dotenv
 
@@ -43,6 +44,7 @@ MAX_PROMPT_TOKENS = 512
 MAX_OUTPUT_TOKENS = 512
 SEED = 20260901
 HARD_CAP_USD = 0.25
+PROGRESS_EVERY = 32
 PREFILL_USD_PER_MILLION = 0.66
 SAMPLE_USD_PER_MILLION = 1.995
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -118,6 +120,7 @@ class BaseEvalConfig:
     hard_cap_usd: float = HARD_CAP_USD
     prefill_usd_per_million: float = PREFILL_USD_PER_MILLION
     sample_usd_per_million: float = SAMPLE_USD_PER_MILLION
+    progress_every: int = PROGRESS_EVERY
 
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
@@ -130,6 +133,8 @@ class BaseEvalConfig:
             raise BaseEvalError("decoding limits and temperature must be positive")
         if self.hard_cap_usd <= 0:
             raise BaseEvalError("hard cap must be positive")
+        if self.progress_every <= 0:
+            raise BaseEvalError("progress interval must be positive")
         if manifest is not None:
             selected_ids = _evaluation_ids(manifest, self.evaluation_split)
             if self.eval_examples > len(selected_ids):
@@ -180,6 +185,10 @@ def estimate_token_cost_usd(
     ) / 1_000_000
 
 
+def _print_progress(message: str) -> None:
+    print(f"[gsm8k-eval] {message}", file=sys.stderr, flush=True)
+
+
 def estimate_max_token_cost_usd(config: BaseEvalConfig) -> float:
     """Bound all requested rollouts before constructing a remote client."""
     rollouts = config.eval_examples * config.group_size
@@ -220,6 +229,7 @@ def build_doctor_report(
         "wandb_api_key_configured": wandb_key,
         "estimated_max_token_cost_usd": estimated_cost,
         "hard_cap_usd": config.hard_cap_usd,
+        "progress_every": config.progress_every,
         "ready_for_paid_run": (
             sys.version_info[:2] >= (3, 11)
             and tinker_sdk is not None
@@ -351,6 +361,7 @@ async def _sample_group(
     if any(tokens > config.max_output_tokens for _, tokens in responses):
         raise BaseEvalError("Tinker exceeded the configured output-token limit")
     return {
+        "index": index,
         "example_id": content_id(row),
         "question": str(row["question"]),
         "ground_truth": str(row["answer"]),
@@ -407,6 +418,7 @@ async def run_remote_evaluation(
     tinker_module: Any = None,
     wandb_module: Any = None,
     service_client: Any = None,
+    progress: Callable[[str], None] = _print_progress,
 ) -> Dict[str, Any]:
     """Sample `G=4` rollouts, score them, and write one W&B run."""
     _authorize(config, allow_paid, environ)
@@ -447,16 +459,57 @@ async def run_remote_evaluation(
             tags=["gsm8k", "base", config.evaluation_split, "g4"],
             config=_tracking_config(config, manifest),
         )
+        progress(
+            f"started run={config.run_name} split={config.evaluation_split} "
+            f"prompts={config.eval_examples} rollouts="
+            f"{config.eval_examples * config.group_size} "
+            f"wandb={getattr(wandb_run, 'url', None)}"
+        )
+        progress("initializing Tinker sampling client")
         client = await service_client.create_sampling_client_async(
             base_model=config.model_id
         )
         tokenizer = client.get_tokenizer()
-        samples = await asyncio.gather(
-            *(
+        started_at = time.monotonic()
+        partial_prompt_total = 0
+        partial_output_total = 0
+        samples_by_index: Dict[int, Dict[str, Any]] = {}
+        tasks = [
+            asyncio.create_task(
                 _sample_group(row, index, client, tokenizer, tinker_module, config)
-                for index, row in enumerate(rows[: config.eval_examples])
             )
+            for index, row in enumerate(rows[: config.eval_examples])
+        ]
+        try:
+            for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
+                sample = await task
+                samples_by_index[int(sample["index"])] = sample
+                partial_prompt_total += int(sample["prompt_tokens"]) * config.group_size
+                partial_output_total += sum(tokens for _, tokens in sample["responses"])
+                if (
+                    completed == 1
+                    or completed % config.progress_every == 0
+                    or completed == config.eval_examples
+                ):
+                    elapsed = time.monotonic() - started_at
+                    observed_cost = estimate_token_cost_usd(
+                        partial_prompt_total, partial_output_total, config
+                    )
+                    progress(
+                        f"sampling {completed}/{config.eval_examples} prompts; "
+                        f"{completed * config.group_size}/"
+                        f"{config.eval_examples * config.group_size} rollouts; "
+                        f"elapsed={elapsed:.1f}s observed_cost=${observed_cost:.4f}"
+                    )
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        samples = tuple(
+            samples_by_index[index] for index in range(config.eval_examples)
         )
+        progress("scoring completed rollouts")
         groups = {
             sample["example_id"]: tuple(
                 Completion(
@@ -491,6 +544,7 @@ async def run_remote_evaluation(
                 "cost/estimated_actual_token_usd": actual_cost,
             }
         )
+        progress("uploading W&B summary and rollout table")
         wandb_run.log(metrics)
         wandb_run.log(
             {
@@ -501,6 +555,11 @@ async def run_remote_evaluation(
             }
         )
         wandb_run.summary.update(metrics)
+        progress(
+            f"complete pass_at_1={metrics['eval/pass_at_1']:.4f} "
+            f"pass_at_4={metrics['eval/pass_at_4']:.4f} "
+            f"actual_cost=${actual_cost:.4f}"
+        )
         return {
             "mode": "remote-base-eval",
             "network_called": True,
@@ -523,6 +582,7 @@ async def run_remote_evaluation(
 async def run_e0a(config: BaseEvalConfig, allow_paid: bool) -> Dict[str, Any]:
     """Run the historical calibration partition only after its safety gate."""
     _authorize(config, allow_paid, os.environ)
+    _print_progress("loading frozen calibration test rows")
     manifest = read_manifest()
     config.validate(manifest)
     if config.evaluation_split != "calibration":
@@ -538,6 +598,7 @@ async def run_e0a(config: BaseEvalConfig, allow_paid: bool) -> Dict[str, Any]:
 async def run_e0(config: BaseEvalConfig, allow_paid: bool) -> Dict[str, Any]:
     """Run the complete unseen formal test partition after its safety gate."""
     _authorize(config, allow_paid, os.environ)
+    _print_progress("loading frozen formal test rows")
     manifest = read_manifest()
     config.validate(manifest)
     if config.evaluation_split != "formal":
@@ -581,6 +642,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=HARD_CAP_USD,
         help="Block the run when its worst-case token estimate exceeds this USD cap.",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=PROGRESS_EVERY,
+        help="Print sampling progress after this many completed prompts.",
+    )
     return parser.parse_args(argv)
 
 
@@ -601,6 +668,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ),
             attempt=args.attempt,
             hard_cap_usd=args.hard_cap_usd,
+            progress_every=args.progress_every,
         )
         if args.run:
             runner = run_e0 if args.stage == "formal" else run_e0a
