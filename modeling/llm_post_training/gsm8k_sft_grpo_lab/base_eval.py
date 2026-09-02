@@ -536,19 +536,21 @@ async def run_remote_evaluation(
         metrics = dict(scored.metrics)
         metrics.update(
             {
-                "eval/examples": float(len(samples)),
-                "eval/rollouts": float(len(scored.rows)),
-                "tokens/prompt": float(prompt_total),
-                "tokens/output": float(output_total),
-                "cost/estimated_max_token_usd": estimate_max_token_cost_usd(config),
-                "cost/estimated_actual_token_usd": actual_cost,
+                "run_stats/evaluated_examples": float(len(samples)),
+                "run_stats/generated_rollouts": float(len(scored.rows)),
+                "run_stats/prompt_tokens": float(prompt_total),
+                "run_stats/output_tokens": float(output_total),
+                "run_stats/estimated_max_token_usd": estimate_max_token_cost_usd(
+                    config
+                ),
+                "run_stats/estimated_actual_token_usd": actual_cost,
             }
         )
         progress("uploading W&B summary and rollout table")
         wandb_run.log(metrics)
         wandb_run.log(
             {
-                "eval/rollouts_table": wandb_module.Table(
+                "tables/rollouts": wandb_module.Table(
                     columns=list(TABLE_COLUMNS),
                     data=list(_prediction_rows(scored.rows, samples, config)),
                 )

@@ -238,9 +238,12 @@ def test_remote_evaluation_logs_metrics_and_raw_rollout_table():
     assert report["metrics"]["eval/pass_at_1"] == pytest.approx(0.5)
     assert wandb.init_kwargs["project"] == "mini-posttraining-lab"
     assert wandb.init_kwargs["group"] == "gsm8k-sft-grpo-v1"
-    table = wandb.run.logs[1]["eval/rollouts_table"]
+    tracking_metrics = wandb.run.logs[0]
+    table = wandb.run.logs[1]["tables/rollouts"]
     assert "advantage" in table.columns
     assert len(table.data) == 4
+    assert tracking_metrics["run_stats/evaluated_examples"] == 1.0
+    assert "eval/examples" not in tracking_metrics
     assert wandb.run.finished is True
     assert any("sampling 1/1 prompts" in message for message in progress)
     assert any(
