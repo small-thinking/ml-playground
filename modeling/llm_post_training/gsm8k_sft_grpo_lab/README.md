@@ -102,12 +102,33 @@ Run-level prediction and rollout tables preserve examples behind aggregate
 metrics. Dataset manifests, evaluation protocols, promoted checkpoints, and
 prediction tables are versioned artifacts.
 
-Long paid commands print a start record, W&B URL, completed prompts and
-rollouts, elapsed time, observed token cost, and a final aggregate summary to
-the terminal. These updates use stderr so stdout remains a parseable JSON
-report. The SFT runner will additionally print train step, NLL, perplexity,
-learning rate, and each validation result; it will not print raw prompts or
-responses.
+### Dashboard hierarchy
+
+The saved W&B view is [GSM8K Base → SFT → GRPO Comparison](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/workspace?nw=1tk8jr6cvwm).
+Its named sections encode this fixed priority:
+
+1. `01 Outcome`: `eval/pass_at_1`, then `eval/pass_at_4`.
+2. `02 Reliability`: `eval/format_accuracy`, then `eval/truncation_rate`.
+3. Later: GRPO learning signal, then process diagnostics.
+4. `run_stats/*` and `tables/rollouts` are supporting evidence, not headline
+   panels. They deliberately do not occupy the `eval` section.
+
+Use this saved view for Base/SFT/GRPO screenshots; keep the automated W&B
+workspace for ad-hoc debugging. W&B's automatic workspace paginates large
+sections, so it cannot guarantee a meaningful panel order.
+
+### Terminal progress
+
+Long paid commands print status to stderr and retain a parseable JSON report
+on stdout. Evaluation prints its run URL, completed prompts and rollouts,
+elapsed time, observed cost, scoring/upload boundaries, and final pass metrics.
+
+SFT and GRPO use the same cadence. Their progress lines must include current
+step or batch out of total, throughput, elapsed time, ETA after the first
+measured interval, and cumulative estimated cost. SFT additionally prints
+NLL, perplexity, learning rate, and validation boundaries/results. GRPO
+additionally prints rollout groups, reward mean, mixed-group fraction, and
+degenerate-group fraction. No progress line includes raw prompts or responses.
 
 ## Immediate execution plan
 
