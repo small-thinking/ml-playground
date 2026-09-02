@@ -146,24 +146,21 @@ NLL, perplexity, learning rate, and validation boundaries/results. GRPO
 additionally prints rollout groups, reward mean, mixed-group fraction, and
 degenerate-group fraction. No progress line includes raw prompts or responses.
 
-## Immediate execution plan
+## Completed execution ladder
 
-1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
+1. E0 Base formal evaluation established the 1,287-example, G4 baseline.
 2. E1 showed that NLL/PPL alone is insufficient for checkpoint selection:
    its SFT checkpoint regressed on the formal generation test despite lower NLL.
 3. E2 selected step 250 by its frozen generation monitor and improved the
    shared formal protocol over Base. Treat that result as a useful scoreboard,
    not an endlessly reusable pristine test set.
-4. Run E4 clean GRPO from E2 step 250 on `rl_train`; use the disjoint
-   `rl_monitor` only for checkpoint selection, then formally evaluate the
-   selected checkpoint on the shared `formal_test` partition.
-5. E5 directly targets E4's sparse binary-reward signal: it resamples fresh
-   RL prompts only until it obtains two mixed groups or exhausts a fixed budget,
-   and stops only after repeated material monitor regressions.
-6. E6 is the direct E4 comparison: keep E5's per-step signal packing, but run
-   until it obtains at least 56 mixed groups (E4 obtained 52) or reaches a
-   1,200-candidate global cap. It starts from the same E2 step-250 state, uses
-   the same G4, reward, LR, monitor, and selection rule as E4.
+4. E4 clean GRPO started from E2 step 250 and is the current best formal model.
+5. E5 tested per-step signal packing, but its selected checkpoint did not
+   exceed E4 on the shared formal protocol.
+6. E6 retained E5's signal packing and reached 56 mixed groups, exceeding
+   E4's 52, but its selected step-25 checkpoint still did not exceed E4.
+   This rejects the matched-effective-group-budget hypothesis, not GRPO as a
+   method or every possible reward design.
 
 ## E4 clean-GRPO command
 
@@ -327,6 +324,15 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
 The verified maximum is `$15.80384256`. The paid command is the same command
 with `--run --allow-paid` appended; it continues to use the E2 parent paths by
 default.
+
+### Observed E6 outcome
+
+The paid E6 run reached its 56-mixed-group boundary after 43 steps and 1,128
+candidate groups. The frozen monitor selected step 25 (`pass@1=0.8242`,
+`pass@4=0.8438`), so the matching formal evaluation used that sampler. It
+scored pass@1 `0.7034` and pass@4 `0.7343`, below E4's `0.7197` and `0.7506`.
+E6 therefore rejects the fixed-effective-budget continuation of E5; it does
+not establish a GRPO ceiling beyond this binary-reward, fixed-data setting.
 
 ## E1 SFT command
 
