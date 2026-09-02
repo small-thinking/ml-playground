@@ -9,6 +9,8 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
     build_manifest,
     content_id,
     dataset_profile,
+    read_manifest,
+    select_rows,
     write_manifest,
 )
 
@@ -85,13 +87,22 @@ def test_dataset_profile_reports_only_aggregate_data_facts():
 
 
 def test_committed_manifest_has_the_frozen_disjoint_protocol():
-    manifest = json.loads(DEFAULT_MANIFEST_PATH.read_text())
-    all_ids = manifest["sft_ids"] + manifest["rl_ids"] + manifest["eval_ids"]
+    manifest = read_manifest(DEFAULT_MANIFEST_PATH)
+    all_ids = manifest.sft_ids + manifest.rl_ids + manifest.eval_ids
 
-    assert len(manifest["sft_ids"]) == 512
-    assert len(manifest["rl_ids"]) == 1500
-    assert len(manifest["eval_ids"]) == 256
+    assert len(manifest.sft_ids) == 512
+    assert len(manifest.rl_ids) == 1500
+    assert len(manifest.eval_ids) == 256
     assert len(set(all_ids)) == len(all_ids)
+
+
+def test_select_rows_restores_manifest_order_and_rejects_missing_ids():
+    rows = _rows("test", 3)
+    selected = select_rows(rows, (content_id(rows[2]), content_id(rows[0])))
+
+    assert selected == (rows[2], rows[0])
+    with pytest.raises(ManifestError, match="missing manifest ID"):
+        select_rows(rows, ("gsm8k-missing",))
 
 
 def test_committed_profile_contains_only_aggregate_dataset_facts():

@@ -130,6 +130,71 @@ def write_manifest(manifest: SplitManifest, path: Path) -> None:
     path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n")
 
 
+def read_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> SplitManifest:
+    """Load a manifest only when its content hash and split invariants agree."""
+    try:
+        payload = json.loads(path.read_text())
+        manifest = SplitManifest(
+            schema_version=int(payload["schema_version"]),
+            dataset_id=str(payload["dataset_id"]),
+            dataset_config=str(payload["dataset_config"]),
+            dataset_revision=str(payload["dataset_revision"]),
+            seed=int(payload["seed"]),
+            sft_ids=tuple(payload["sft_ids"]),
+            rl_ids=tuple(payload["rl_ids"]),
+            eval_ids=tuple(payload["eval_ids"]),
+            manifest_hash=str(payload["manifest_hash"]),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"cannot read manifest at {path}") from exc
+
+    manifest.validate()
+    expected_hash = _manifest_hash(
+        {
+            "schema_version": manifest.schema_version,
+            "dataset_id": manifest.dataset_id,
+            "dataset_config": manifest.dataset_config,
+            "dataset_revision": manifest.dataset_revision,
+            "seed": manifest.seed,
+            "sft_ids": manifest.sft_ids,
+            "rl_ids": manifest.rl_ids,
+            "eval_ids": manifest.eval_ids,
+        }
+    )
+    if manifest.manifest_hash != expected_hash:
+        raise ManifestError("manifest hash does not match its content")
+    return manifest
+
+
+def select_rows(
+    rows: Iterable[Mapping[str, object]], example_ids: Sequence[str]
+) -> Tuple[Mapping[str, object], ...]:
+    """Return source rows in manifest order, failing on any provenance drift."""
+    indexed = {content_id(row): row for row in rows}
+    if len(indexed) < len(example_ids):
+        raise ManifestError("source rows are incomplete or contain duplicate IDs")
+    missing = [example_id for example_id in example_ids if example_id not in indexed]
+    if missing:
+        raise ManifestError(f"source rows are missing manifest ID {missing[0]}")
+    return tuple(indexed[example_id] for example_id in example_ids)
+
+
+def load_official_eval_rows(
+    manifest: SplitManifest,
+) -> Tuple[Mapping[str, object], ...]:
+    """Fetch the pinned GSM8K test revision and recover the held-out rows."""
+    from datasets import load_dataset
+
+    load_dotenv(ENV_FILE, override=False)
+    test_rows = load_dataset(
+        manifest.dataset_id,
+        manifest.dataset_config,
+        split="test",
+        revision=manifest.dataset_revision,
+    )
+    return select_rows(test_rows, manifest.eval_ids)
+
+
 def dataset_profile(
     rows: Sequence[Mapping[str, object]],
 ) -> Dict[str, Union[float, int]]:
