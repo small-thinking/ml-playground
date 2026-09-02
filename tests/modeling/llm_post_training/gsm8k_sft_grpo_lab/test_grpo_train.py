@@ -173,9 +173,21 @@ class _ResamplingTrainingClient(_FakeTrainingClient):
         return self.sampling_client
 
 
+class _AllCorrectTrainingClient(_FakeTrainingClient):
+    async def save_weights_and_get_sampling_client_async(self):
+        return _AllCorrectSamplingClient()
+
+
 class _ResamplingServiceClient(_FakeServiceClient):
     def __init__(self):
         self.training_client = _ResamplingTrainingClient()
+        self.loaded = None
+        self.created_from_base = None
+
+
+class _AllCorrectServiceClient(_FakeServiceClient):
+    def __init__(self):
+        self.training_client = _AllCorrectTrainingClient()
         self.loaded = None
         self.created_from_base = None
 
@@ -290,6 +302,37 @@ def test_e5_cli_records_signal_and_early_stop_controls():
     assert config.max_candidate_groups_per_step == 32
     assert config.early_stopping_patience == 2
     assert "sig2x4-es2" in config.run_name
+
+
+def test_e6_cli_records_a_bounded_total_signal_budget():
+    config = _config_from_args(
+        parse_args(
+            [
+                "--experiment-id",
+                "e6",
+                "--min-effective-groups",
+                "2",
+                "--max-resample-rounds",
+                "3",
+                "--target-total-effective-groups",
+                "56",
+                "--max-total-candidate-groups",
+                "1200",
+            ]
+        )
+    )
+
+    assert config.max_training_candidate_groups == 1200
+    assert "sig2x4-tot56-cap1200" in config.run_name
+
+
+def test_total_signal_budget_requires_a_matching_candidate_cap():
+    with pytest.raises(GRPOTrainingError, match="configured together"):
+        _config(
+            experiment_id="e6",
+            min_effective_groups=1,
+            target_total_effective_groups=2,
+        ).validate(_manifest())
 
 
 def test_grpo_training_restores_parent_state_and_masks_prompt_tokens():
@@ -417,6 +460,76 @@ def test_resampling_reaches_the_requested_effective_group_count():
     assert train_metrics["train/candidate_group_count"] == 2.0
     assert train_metrics["train/resample_rounds"] == 1.0
     assert train_metrics["train/target_effective_groups_reached"] == 1.0
+
+
+def test_e6_stops_at_the_total_signal_target_and_saves_the_terminal_step():
+    manifest = _manifest()
+    service = _FakeServiceClient()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(
+                experiment_id="e6",
+                steps=3,
+                batch_size=1,
+                min_effective_groups=1,
+                target_total_effective_groups=2,
+                max_total_candidate_groups=3,
+                checkpoint_every=3,
+            ),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    assert report["completed_training_steps"] == 2
+    assert report["training_stop_reason"] == "target_total_effective_groups"
+    assert report["effective_group_count"] == 2
+    assert report["training_rollouts"] == 8
+    assert report["max_training_rollouts"] == 12
+    assert [record["step"] for record in report["checkpoints"]] == [2]
+
+
+def test_e6_stops_when_the_candidate_cap_is_exhausted():
+    manifest = _manifest()
+    service = _AllCorrectServiceClient()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(
+                experiment_id="e6",
+                steps=3,
+                batch_size=1,
+                min_effective_groups=1,
+                target_total_effective_groups=2,
+                max_total_candidate_groups=2,
+                checkpoint_every=3,
+            ),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    assert report["completed_training_steps"] == 2
+    assert report["training_stop_reason"] == "candidate_group_budget"
+    assert report["effective_group_count"] == 0
+    assert [record["step"] for record in report["checkpoints"]] == [2]
 
 
 def test_early_stopping_uses_the_held_out_monitor_not_training_reward():

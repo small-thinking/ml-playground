@@ -45,7 +45,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
 
 
 EXPERIMENT_ID = "e4"
-GRPO_EXPERIMENT_IDS = ("e4", "e5")
+GRPO_EXPERIMENT_IDS = ("e4", "e5", "e6")
 PARENT_CHECKPOINT = "e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250"
 PARENT_STATE_PATH = (
     "tinker://5048e951-841f-53d9-9388-87cb865de0bb:train:0/weights/"
@@ -119,6 +119,8 @@ class GRPOConfig:
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY
     min_effective_groups: int = 0
     max_resample_rounds: int = 0
+    target_total_effective_groups: Optional[int] = None
+    max_total_candidate_groups: Optional[int] = None
     early_stopping_patience: Optional[int] = None
     early_stopping_max_regression: float = 0.0
     progress_every: int = DEFAULT_PROGRESS_EVERY
@@ -131,7 +133,7 @@ class GRPOConfig:
 
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if self.experiment_id not in GRPO_EXPERIMENT_IDS:
-            raise GRPOTrainingError("GRPO experiment_id must be e4 or e5")
+            raise GRPOTrainingError("GRPO experiment_id must be e4, e5, or e6")
         if not self.model_id or not self.project or not self.suite_id:
             raise GRPOTrainingError(
                 "model, project, and suite identifiers are required"
@@ -191,6 +193,33 @@ class GRPOConfig:
             raise GRPOTrainingError(
                 "max_resample_rounds requires min_effective_groups"
             )
+        total_budget = (
+            self.target_total_effective_groups,
+            self.max_total_candidate_groups,
+        )
+        if any(value is not None for value in total_budget):
+            if any(value is None for value in total_budget):
+                raise GRPOTrainingError(
+                    "target_total_effective_groups and max_total_candidate_groups "
+                    "must be configured together"
+                )
+            if self.min_effective_groups == 0:
+                raise GRPOTrainingError(
+                    "target_total_effective_groups requires min_effective_groups"
+                )
+            if self.target_total_effective_groups <= 0:
+                raise GRPOTrainingError(
+                    "target_total_effective_groups must be positive"
+                )
+            if self.max_total_candidate_groups <= 0:
+                raise GRPOTrainingError(
+                    "max_total_candidate_groups must be positive"
+                )
+            if self.target_total_effective_groups > self.max_total_candidate_groups:
+                raise GRPOTrainingError(
+                    "target_total_effective_groups cannot exceed "
+                    "max_total_candidate_groups"
+                )
         if self.early_stopping_patience is not None:
             if self.early_stopping_patience <= 0:
                 raise GRPOTrainingError("early_stopping_patience must be positive")
@@ -224,6 +253,11 @@ class GRPOConfig:
         )
         if self.min_effective_groups:
             name += f"-sig{self.min_effective_groups}x{self.max_resample_rounds + 1}"
+        if self.target_total_effective_groups is not None:
+            name += (
+                f"-tot{self.target_total_effective_groups}"
+                f"-cap{self.max_total_candidate_groups}"
+            )
         if self.early_stopping_patience is not None:
             name += f"-es{self.early_stopping_patience}"
         return name
@@ -241,6 +275,13 @@ class GRPOConfig:
     @property
     def max_candidate_groups_per_step(self) -> int:
         return self.batch_size * (1 + self.max_resample_rounds)
+
+    @property
+    def max_training_candidate_groups(self) -> int:
+        step_bound = self.steps * self.max_candidate_groups_per_step
+        if self.max_total_candidate_groups is None:
+            return step_bound
+        return min(step_bound, self.max_total_candidate_groups)
 
 
 @dataclass(frozen=True)
@@ -315,9 +356,7 @@ def _training_cost(input_tokens: int, config: GRPOConfig) -> float:
 def estimate_max_token_cost_usd(config: GRPOConfig, manifest: SplitManifest) -> float:
     """Bound rollout, optimization, and held-out monitor tokens before a run."""
     config.validate(manifest)
-    training_rollouts = (
-        config.steps * config.max_candidate_groups_per_step * config.group_size
-    )
+    training_rollouts = config.max_training_candidate_groups * config.group_size
     sample_cost = _sampling_cost(
         training_rollouts * config.max_prompt_tokens,
         training_rollouts * config.max_output_tokens,
@@ -327,7 +366,7 @@ def estimate_max_token_cost_usd(config: GRPOConfig, manifest: SplitManifest) -> 
         training_rollouts * (config.max_prompt_tokens + config.max_output_tokens),
         config,
     )
-    monitor_runs = 1 + len(config.checkpoint_steps()) if config.monitor_examples else 0
+    monitor_runs = _max_monitor_runs(config)
     monitor_rollouts = monitor_runs * config.monitor_examples * config.group_size
     monitor_cost = _sampling_cost(
         monitor_rollouts * config.max_prompt_tokens,
@@ -335,6 +374,13 @@ def estimate_max_token_cost_usd(config: GRPOConfig, manifest: SplitManifest) -> 
         config,
     )
     return sample_cost + optimization_cost + monitor_cost
+
+
+def _max_monitor_runs(config: GRPOConfig) -> int:
+    if not config.monitor_examples:
+        return 0
+    terminal_monitor = int(config.target_total_effective_groups is not None)
+    return 1 + len(config.checkpoint_steps()) + terminal_monitor
 
 
 def _monitor_ids_hash(config: GRPOConfig, manifest: SplitManifest) -> Optional[str]:
@@ -396,6 +442,12 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "min_effective_groups": config.min_effective_groups,
         "max_resample_rounds": config.max_resample_rounds,
         "max_candidate_groups_per_step": config.max_candidate_groups_per_step,
+        "target_total_effective_groups": config.target_total_effective_groups,
+        "max_total_candidate_groups": config.max_total_candidate_groups,
+        "max_training_candidate_groups": config.max_training_candidate_groups,
+        "formal_comparison_baseline": (
+            "e4-grpo-step75" if config.experiment_id == "e6" else None
+        ),
         "early_stopping_patience": config.early_stopping_patience,
         "early_stopping_max_regression": config.early_stopping_max_regression,
         "checkpoint_ttl_seconds": config.checkpoint_ttl_seconds,
@@ -406,7 +458,10 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "sample_usd_per_million": config.sample_usd_per_million,
         "git_sha": _git_sha(),
         "hypothesis": (
-            "On-policy binary-answer GRPO improves held-out RL-monitor pass@4 "
+            "Signal-packed GRPO with at least E4's total effective-group budget "
+            "improves the E4 formal result."
+            if config.experiment_id == "e6"
+            else "On-policy binary-answer GRPO improves held-out RL-monitor pass@4 "
             f"from the {config.init_source} initialization policy."
         ),
         "expected_failure": (
@@ -431,7 +486,7 @@ def build_doctor_report(
         _package_version("tinker") if tinker_version is None else tinker_version
     )
     wandb_sdk = _package_version("wandb") if wandb_version is None else wandb_version
-    monitor_runs = 1 + len(config.checkpoint_steps()) if config.monitor_examples else 0
+    monitor_runs = _max_monitor_runs(config)
     return {
         "mode": "local-grpo-preflight",
         "network_called": False,
@@ -456,11 +511,12 @@ def build_doctor_report(
         "batch_size": config.batch_size,
         "group_size": config.group_size,
         "training_rollouts": config.steps * config.batch_size * config.group_size,
-        "max_training_rollouts": (
-            config.steps * config.max_candidate_groups_per_step * config.group_size
-        ),
+        "max_training_rollouts": config.max_training_candidate_groups
+        * config.group_size,
         "min_effective_groups": config.min_effective_groups,
         "max_resample_rounds": config.max_resample_rounds,
+        "target_total_effective_groups": config.target_total_effective_groups,
+        "max_total_candidate_groups": config.max_total_candidate_groups,
         "early_stopping_patience": config.early_stopping_patience,
         "early_stopping_max_regression": config.early_stopping_max_regression,
         "checkpoint_steps": list(config.checkpoint_steps()),
@@ -941,6 +997,8 @@ async def run_grpo_training(
         regression_streak = 0
         early_stop_triggered = False
         completed_steps = 0
+        cumulative_effective_group_count = 0
+        training_stop_reason: Optional[str] = None
         if monitor_rows:
             progress(f"monitoring initialization policy prompts={len(monitor_rows)}")
             baseline_monitor = await _monitor_policy(
@@ -995,6 +1053,12 @@ async def run_grpo_training(
         checkpoint_steps = set(config.checkpoint_steps())
         train_cursor = 0
         for step in range(1, config.steps + 1):
+            if (
+                config.max_total_candidate_groups is not None
+                and sampled_training_group_count >= config.max_total_candidate_groups
+            ):
+                training_stop_reason = "candidate_group_budget"
+                break
             step_started_at = clock()
             sampling_client = (
                 await training_client.save_weights_and_get_sampling_client_async()
@@ -1002,11 +1066,21 @@ async def run_grpo_training(
             groups: list[RolloutGroup] = []
             resample_rounds = 0
             for resample_round in range(config.max_resample_rounds + 1):
+                remaining_candidate_groups = (
+                    config.max_total_candidate_groups
+                    - sampled_training_group_count
+                    - len(groups)
+                    if config.max_total_candidate_groups is not None
+                    else config.batch_size
+                )
+                if remaining_candidate_groups <= 0:
+                    break
+                round_batch_size = min(config.batch_size, remaining_candidate_groups)
                 batch = tuple(
                     train_rows[(train_cursor + offset) % len(train_rows)]
-                    for offset in range(config.batch_size)
+                    for offset in range(round_batch_size)
                 )
-                train_cursor = (train_cursor + config.batch_size) % len(train_rows)
+                train_cursor = (train_cursor + round_batch_size) % len(train_rows)
                 round_groups = await _sample_groups(
                     sampling_client,
                     batch,
@@ -1028,13 +1102,16 @@ async def run_grpo_training(
                     ),
                 )
                 groups.extend(round_groups)
+                resample_rounds = resample_round
                 if (
                     not config.min_effective_groups
                     or _group_metrics(groups, config)["train/effective_group_count"]
                     >= config.min_effective_groups
                 ):
                     break
-                resample_rounds = resample_round + 1
+            if not groups:
+                training_stop_reason = "candidate_group_budget"
+                break
             sampled_prompt_tokens += sum(
                 len(group.prompt_tokens) * config.group_size for group in groups
             )
@@ -1045,6 +1122,22 @@ async def run_grpo_training(
             )
             sampled_training_group_count += len(groups)
             metrics = _group_metrics(groups, config)
+            cumulative_effective_group_count += int(
+                metrics["train/effective_group_count"]
+            )
+            total_effective_target_reached = bool(
+                config.target_total_effective_groups is not None
+                and cumulative_effective_group_count
+                >= config.target_total_effective_groups
+            )
+            candidate_group_budget_exhausted = bool(
+                config.max_total_candidate_groups is not None
+                and sampled_training_group_count >= config.max_total_candidate_groups
+            )
+            if total_effective_target_reached:
+                training_stop_reason = "target_total_effective_groups"
+            elif candidate_group_budget_exhausted:
+                training_stop_reason = "candidate_group_budget"
             data, batch_input_tokens = _materialize_rl_datums(groups, tinker_module)
             optimized_input_tokens += batch_input_tokens
             loss_sum = 0.0
@@ -1078,6 +1171,21 @@ async def run_grpo_training(
                         not config.min_effective_groups
                         or metrics["train/effective_group_count"]
                         >= config.min_effective_groups
+                    ),
+                    "train/cumulative_effective_group_count": float(
+                        cumulative_effective_group_count
+                    ),
+                    "train/target_total_effective_groups": float(
+                        config.target_total_effective_groups or 0
+                    ),
+                    "train/target_total_effective_groups_reached": float(
+                        total_effective_target_reached
+                    ),
+                    "train/max_total_candidate_groups": float(
+                        config.max_total_candidate_groups or 0
+                    ),
+                    "train/candidate_group_budget_exhausted": float(
+                        candidate_group_budget_exhausted
                     ),
                     "train/learning_rate": config.learning_rate,
                     "timing/step_seconds": step_seconds,
@@ -1113,7 +1221,13 @@ async def run_grpo_training(
                     f"reward={metrics['train/reward_mean']:.4f} "
                     f"mixed={metrics['train/group_mixed_frac']:.3f} "
                     f"degenerate={metrics['train/degenerate_group_frac']:.3f} "
-                    f"datums={len(data)} throughput="
+                    f"effective_total={cumulative_effective_group_count}"
+                    + (
+                        f"/{config.target_total_effective_groups} "
+                        if config.target_total_effective_groups is not None
+                        else " "
+                    )
+                    + f"datums={len(data)} throughput="
                     f"{metrics['timing/rollout_tokens_per_second']:.1f}tok/s "
                     f"elapsed={elapsed_seconds:.1f}s eta={eta_seconds:.1f}s "
                     f"estimated_cost=${estimated_cost:.4f}"
@@ -1122,7 +1236,7 @@ async def run_grpo_training(
                 raise GRPOTrainingError(
                     "observed token cost exceeded the configured hard cap"
                 )
-            if step not in checkpoint_steps:
+            if step not in checkpoint_steps and training_stop_reason is None:
                 continue
 
             checkpoint_name = f"{config.run_name}-step{step}"
@@ -1239,12 +1353,24 @@ async def run_grpo_training(
                     f"{monitor.metrics['eval/pass_at_1']:.4f} pass_at_4="
                     f"{monitor.metrics['eval/pass_at_4']:.4f}"
                 )
+            if training_stop_reason is not None:
+                progress(
+                    f"stop step={step}/{config.steps} reason={training_stop_reason} "
+                    f"effective_total={cumulative_effective_group_count} "
+                    f"candidate_groups={sampled_training_group_count}"
+                )
+                break
             if early_stop_triggered:
                 progress(
                     f"early stop step={step}/{config.steps} streak={regression_streak} "
                     f"tolerance={config.early_stopping_max_regression:.6f}"
                 )
                 break
+
+        if training_stop_reason is None:
+            training_stop_reason = (
+                "monitor_regression" if early_stop_triggered else "max_steps"
+            )
 
         selected = _select_checkpoint(checkpoints, bool(monitor_rows))
         total_estimated_cost = _sampling_cost(
@@ -1273,9 +1399,12 @@ async def run_grpo_training(
             "training_steps": config.steps,
             "completed_training_steps": completed_steps,
             "training_rollouts": sampled_training_group_count * config.group_size,
-            "max_training_rollouts": (
-                config.steps * config.max_candidate_groups_per_step * config.group_size
-            ),
+            "max_training_rollouts": config.max_training_candidate_groups
+            * config.group_size,
+            "effective_group_count": cumulative_effective_group_count,
+            "target_total_effective_groups": config.target_total_effective_groups,
+            "max_total_candidate_groups": config.max_total_candidate_groups,
+            "training_stop_reason": training_stop_reason,
             "early_stopping_triggered": early_stop_triggered,
             "early_stopping_regression_streak": regression_streak,
             "baseline_monitor": asdict(baseline_monitor) if baseline_monitor else None,
@@ -1300,11 +1429,14 @@ async def run_grpo_training(
                 "early_stopping/triggered": early_stop_triggered,
                 "early_stopping/regression_streak": regression_streak,
                 "run_stats/completed_training_steps": completed_steps,
+                "run_stats/effective_group_count": cumulative_effective_group_count,
+                "run_stats/training_stop_reason": training_stop_reason,
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
         )
         progress(
             f"complete selected_step={selected.step} completed_steps={completed_steps} "
+            f"stop_reason={training_stop_reason} "
             f"estimated_cost=${total_estimated_cost:.4f}"
         )
         return report
@@ -1339,6 +1471,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--min-effective-groups", type=int, default=0)
     parser.add_argument("--max-resample-rounds", type=int, default=0)
+    parser.add_argument("--target-total-effective-groups", type=int)
+    parser.add_argument("--max-total-candidate-groups", type=int)
     parser.add_argument("--early-stopping-patience", type=int)
     parser.add_argument("--early-stopping-max-regression", type=float, default=0.0)
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY)
@@ -1370,6 +1504,8 @@ def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
         checkpoint_every=args.checkpoint_every,
         min_effective_groups=args.min_effective_groups,
         max_resample_rounds=args.max_resample_rounds,
+        target_total_effective_groups=args.target_total_effective_groups,
+        max_total_candidate_groups=args.max_total_candidate_groups,
         early_stopping_patience=args.early_stopping_patience,
         early_stopping_max_regression=args.early_stopping_max_regression,
         progress_every=args.progress_every,

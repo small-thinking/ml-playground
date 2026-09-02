@@ -24,8 +24,9 @@ tool defines the laboratory's identity or directory name.
 8. Classify the disjoint RL pool only after an SFT checkpoint is selected by
    generation validation.
 9. Run E4 clean GRPO from the promoted SFT checkpoint, then E5 signal-aware
-   GRPO with bounded resampling and monitor-based early stopping, E6 high learning rate,
-   and E7 exploitable reward. E8 process-aware reward is optional.
+   GRPO with bounded resampling and monitor-based early stopping. E6 keeps that
+   higher update density while restoring E4's total effective-gradient budget.
+   E7 may test a learning-rate change only after that comparison.
 10. Export only the promoted clean SFT and GRPO adapters, compare them locally,
    and publish the final experiment report.
 
@@ -102,8 +103,10 @@ The core metrics are:
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
   `train/degenerate_group_frac`, `train/effective_group_count`,
   `train/candidate_group_count`, `train/resample_rounds`, and
-  `train/group_reward_std`. E5 also logs its effective-group target and whether
-  the bounded resampling budget reached it.
+  `train/group_reward_std`. E5 also logs its per-step effective-group target and
+  whether bounded resampling reached it. E6 additionally logs cumulative
+  effective groups, the total target, the global candidate cap, and the stop
+  reason.
 - GRPO selection: fixed `rl_monitor/pass_at_4`, then pass@1, records every
   checkpoint table including step 0, and logs best-so-far monitor scores,
   material-regression streak, and stop decision when early stopping is enabled.
@@ -157,6 +160,10 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 5. E5 directly targets E4's sparse binary-reward signal: it resamples fresh
    RL prompts only until it obtains two mixed groups or exhausts a fixed budget,
    and stops only after repeated material monitor regressions.
+6. E6 is the direct E4 comparison: keep E5's per-step signal packing, but run
+   until it obtains at least 56 mixed groups (E4 obtained 52) or reaches a
+   1,200-candidate global cap. It starts from the same E2 step-250 state, uses
+   the same G4, reward, LR, monitor, and selection rule as E4.
 
 ## E4 clean-GRPO command
 
@@ -278,6 +285,47 @@ uses the bare model as the step-0 monitor. It ignores the SFT parent paths and
 names the W&B run with `from-base` (or a supplied `--init-label`). This is the
 direct Base→GRPO ablation; it must use the same `rl_train`, `rl_monitor`, and
 eventual formal protocol as the SFT→GRPO condition.
+
+## E6 fixed-effective-budget GRPO command
+
+E6 is deliberately named as a new experiment, not “E5.1.” E5 demonstrated that
+per-step signal packing alone was insufficient: it obtained 37 mixed groups in
+688 candidates and lost to E4 on the formal test. E6 keeps that packing rule
+(`2` mixed groups per optimizer step, at most four 8-prompt sampling rounds),
+but does **not** stop after 25 optimizer steps.
+
+The comparison baseline is E4, the current best formal model: both E4 and E6
+start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, and the
+same 64-prompt frozen monitor and checkpoint-selection rule. E4 sampled 800
+candidates, found 52 mixed groups, and selected step 75. E6 targets 56 mixed
+groups—slightly above E4's total learning signal—with a hard cap of 1,200
+candidates. Its 75 steps are only a maximum guard. It stops at the first of:
+
+1. 56 cumulative mixed groups;
+2. 1,200 cumulative candidate groups;
+3. monitor-based early stopping; or
+4. step 75.
+
+The preflight cost bound assumes all 1,200 candidate groups, all seven possible
+monitor passes (step 0, five scheduled checkpoints, and one unscheduled
+terminal checkpoint), and maximum token lengths.
+
+Preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e6 --steps 75 --batch-size 8 --group-size 4 \
+  --learning-rate 2e-5 --monitor-examples 64 --checkpoint-every 15 \
+  --min-effective-groups 2 --max-resample-rounds 3 \
+  --target-total-effective-groups 56 --max-total-candidate-groups 1200 \
+  --early-stopping-patience 2 --early-stopping-max-regression 0.03125 \
+  --hard-cap-usd 20
+```
+
+The verified maximum is `$16.15183872`. The paid command is the same command
+with `--run --allow-paid` appended; it continues to use the E2 parent paths by
+default.
 
 ## E1 SFT command
 
