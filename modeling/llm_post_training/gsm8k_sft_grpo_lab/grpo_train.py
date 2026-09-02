@@ -45,6 +45,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
 
 
 EXPERIMENT_ID = "e4"
+GRPO_EXPERIMENT_IDS = ("e4", "e5")
 PARENT_CHECKPOINT = "e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250"
 PARENT_STATE_PATH = (
     "tinker://5048e951-841f-53d9-9388-87cb865de0bb:train:0/weights/"
@@ -116,6 +117,10 @@ class GRPOConfig:
     max_output_tokens: int = MAX_OUTPUT_TOKENS
     monitor_examples: int = DEFAULT_MONITOR_EXAMPLES
     checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY
+    min_effective_groups: int = 0
+    max_resample_rounds: int = 0
+    early_stopping_patience: Optional[int] = None
+    early_stopping_max_regression: float = 0.0
     progress_every: int = DEFAULT_PROGRESS_EVERY
     checkpoint_ttl_seconds: int = CHECKPOINT_TTL_SECONDS
     hard_cap_usd: float = DEFAULT_HARD_CAP_USD
@@ -125,8 +130,8 @@ class GRPOConfig:
     seed: int = SEED
 
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
-        if self.experiment_id != EXPERIMENT_ID:
-            raise GRPOTrainingError("GRPO experiment_id must be e4")
+        if self.experiment_id not in GRPO_EXPERIMENT_IDS:
+            raise GRPOTrainingError("GRPO experiment_id must be e4 or e5")
         if not self.model_id or not self.project or not self.suite_id:
             raise GRPOTrainingError(
                 "model, project, and suite identifiers are required"
@@ -176,6 +181,25 @@ class GRPOConfig:
             raise GRPOTrainingError("token pricing inputs must be positive")
         if self.monitor_examples < 0:
             raise GRPOTrainingError("monitor_examples cannot be negative")
+        if not 0 <= self.min_effective_groups <= self.batch_size:
+            raise GRPOTrainingError(
+                "min_effective_groups must be between zero and batch_size"
+            )
+        if self.max_resample_rounds < 0:
+            raise GRPOTrainingError("max_resample_rounds cannot be negative")
+        if self.min_effective_groups == 0 and self.max_resample_rounds:
+            raise GRPOTrainingError(
+                "max_resample_rounds requires min_effective_groups"
+            )
+        if self.early_stopping_patience is not None:
+            if self.early_stopping_patience <= 0:
+                raise GRPOTrainingError("early_stopping_patience must be positive")
+            if not self.monitor_examples:
+                raise GRPOTrainingError("early stopping requires rl_monitor examples")
+        if self.early_stopping_max_regression < 0:
+            raise GRPOTrainingError(
+                "early_stopping_max_regression cannot be negative"
+            )
         if manifest is not None:
             manifest.validate()
             if self.batch_size > len(manifest.rl_train_ids):
@@ -193,11 +217,16 @@ class GRPOConfig:
             "base" if self.init_source == "base" else "e2s250"
         )
         source_slug = re.sub(r"[^a-zA-Z0-9]+", "-", source_label).strip("-").lower()
-        return (
+        name = (
             f"{self.experiment_id}-grpo-{model_slug}-r{self.lora_rank}"
             f"-b{self.batch_size}-g{self.group_size}-lr{lr_slug}"
             f"-from-{source_slug}-s{self.steps}-m{self.monitor_examples}-a{self.attempt:02d}"
         )
+        if self.min_effective_groups:
+            name += f"-sig{self.min_effective_groups}x{self.max_resample_rounds + 1}"
+        if self.early_stopping_patience is not None:
+            name += f"-es{self.early_stopping_patience}"
+        return name
 
     def checkpoint_steps(self) -> Tuple[int, ...]:
         scheduled = tuple(
@@ -208,6 +237,10 @@ class GRPOConfig:
             if scheduled and scheduled[-1] == self.steps
             else scheduled + (self.steps,)
         )
+
+    @property
+    def max_candidate_groups_per_step(self) -> int:
+        return self.batch_size * (1 + self.max_resample_rounds)
 
 
 @dataclass(frozen=True)
@@ -282,7 +315,9 @@ def _training_cost(input_tokens: int, config: GRPOConfig) -> float:
 def estimate_max_token_cost_usd(config: GRPOConfig, manifest: SplitManifest) -> float:
     """Bound rollout, optimization, and held-out monitor tokens before a run."""
     config.validate(manifest)
-    training_rollouts = config.steps * config.batch_size * config.group_size
+    training_rollouts = (
+        config.steps * config.max_candidate_groups_per_step * config.group_size
+    )
     sample_cost = _sampling_cost(
         training_rollouts * config.max_prompt_tokens,
         training_rollouts * config.max_output_tokens,
@@ -358,6 +393,11 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "max_prompt_tokens": config.max_prompt_tokens,
         "max_output_tokens": config.max_output_tokens,
         "checkpoint_steps": list(config.checkpoint_steps()),
+        "min_effective_groups": config.min_effective_groups,
+        "max_resample_rounds": config.max_resample_rounds,
+        "max_candidate_groups_per_step": config.max_candidate_groups_per_step,
+        "early_stopping_patience": config.early_stopping_patience,
+        "early_stopping_max_regression": config.early_stopping_max_regression,
         "checkpoint_ttl_seconds": config.checkpoint_ttl_seconds,
         "seed": config.seed,
         "hard_cap_usd": config.hard_cap_usd,
@@ -416,6 +456,13 @@ def build_doctor_report(
         "batch_size": config.batch_size,
         "group_size": config.group_size,
         "training_rollouts": config.steps * config.batch_size * config.group_size,
+        "max_training_rollouts": (
+            config.steps * config.max_candidate_groups_per_step * config.group_size
+        ),
+        "min_effective_groups": config.min_effective_groups,
+        "max_resample_rounds": config.max_resample_rounds,
+        "early_stopping_patience": config.early_stopping_patience,
+        "early_stopping_max_regression": config.early_stopping_max_regression,
         "checkpoint_steps": list(config.checkpoint_steps()),
         "monitor_runs": monitor_runs,
         "estimated_max_token_cost_usd": estimated_cost,
@@ -752,6 +799,26 @@ def _monitor_metrics(report: MonitorReport) -> Dict[str, float]:
     }
 
 
+def _monitor_score(report: MonitorReport) -> Tuple[float, float]:
+    return (
+        report.metrics["eval/pass_at_4"],
+        report.metrics["eval/pass_at_1"],
+    )
+
+
+def _is_material_monitor_regression(
+    current: MonitorReport,
+    best: MonitorReport,
+    max_regression: float,
+) -> bool:
+    current_pass_at_4, current_pass_at_1 = _monitor_score(current)
+    best_pass_at_4, best_pass_at_1 = _monitor_score(best)
+    return (
+        current_pass_at_4 < best_pass_at_4 - max_regression
+        and current_pass_at_1 < best_pass_at_1 - max_regression
+    )
+
+
 def _select_checkpoint(
     checkpoints: Sequence[CheckpointRecord], monitor_enabled: bool
 ) -> CheckpointRecord:
@@ -771,9 +838,9 @@ def _select_checkpoint(
     )
 
 
-def _report_path(run_id: str) -> Path:
+def _report_path(experiment_id: str, run_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", run_id)
-    return OUTPUT_DIR / f"{EXPERIMENT_ID}_grpo_report_{safe_id}.json"
+    return OUTPUT_DIR / f"{experiment_id}_grpo_report_{safe_id}.json"
 
 
 async def run_grpo_training(
@@ -867,8 +934,13 @@ async def run_grpo_training(
         sampled_prompt_tokens = 0
         sampled_output_tokens = 0
         optimized_input_tokens = 0
+        sampled_training_group_count = 0
         checkpoints: list[CheckpointRecord] = []
         baseline_monitor: Optional[MonitorReport] = None
+        best_monitor: Optional[MonitorReport] = None
+        regression_streak = 0
+        early_stop_triggered = False
+        completed_steps = 0
         if monitor_rows:
             progress(f"monitoring initialization policy prompts={len(monitor_rows)}")
             baseline_monitor = await _monitor_policy(
@@ -889,7 +961,13 @@ async def run_grpo_training(
                     sampled_prompt_tokens, sampled_output_tokens, config
                 ),
             }
+            if hasattr(wandb_module, "Table"):
+                baseline_metrics["tables/rl_monitor_rollouts"] = wandb_module.Table(
+                    columns=list(MONITOR_COLUMNS),
+                    data=list(baseline_monitor.table_rows),
+                )
             wandb_run.log(baseline_metrics, step=0)
+            best_monitor = baseline_monitor
             progress(
                 f"monitor step=0/{config.steps} pass_at_1="
                 f"{baseline_monitor.metrics['eval/pass_at_1']:.4f} pass_at_4="
@@ -915,26 +993,48 @@ async def run_grpo_training(
 
         started_at = clock()
         checkpoint_steps = set(config.checkpoint_steps())
+        train_cursor = 0
         for step in range(1, config.steps + 1):
-            batch_start = ((step - 1) * config.batch_size) % len(train_rows)
-            batch = tuple(
-                train_rows[(batch_start + offset) % len(train_rows)]
-                for offset in range(config.batch_size)
-            )
             step_started_at = clock()
             sampling_client = (
                 await training_client.save_weights_and_get_sampling_client_async()
             )
-            groups = await _sample_groups(
-                sampling_client,
-                batch,
-                tokenizer,
-                tinker_module,
-                config,
-                seed_offset=step * config.batch_size,
-                require_logprobs=True,
-                label=f"rollout step={step}/{config.steps}",
-            )
+            groups: list[RolloutGroup] = []
+            resample_rounds = 0
+            for resample_round in range(config.max_resample_rounds + 1):
+                batch = tuple(
+                    train_rows[(train_cursor + offset) % len(train_rows)]
+                    for offset in range(config.batch_size)
+                )
+                train_cursor = (train_cursor + config.batch_size) % len(train_rows)
+                round_groups = await _sample_groups(
+                    sampling_client,
+                    batch,
+                    tokenizer,
+                    tinker_module,
+                    config,
+                    seed_offset=(
+                        (
+                            (step - 1) * (config.max_resample_rounds + 1)
+                            + resample_round
+                            + 1
+                        )
+                        * config.batch_size
+                    ),
+                    require_logprobs=True,
+                    label=(
+                        f"rollout step={step}/{config.steps} "
+                        f"round={resample_round + 1}"
+                    ),
+                )
+                groups.extend(round_groups)
+                if (
+                    not config.min_effective_groups
+                    or _group_metrics(groups, config)["train/effective_group_count"]
+                    >= config.min_effective_groups
+                ):
+                    break
+                resample_rounds = resample_round + 1
             sampled_prompt_tokens += sum(
                 len(group.prompt_tokens) * config.group_size for group in groups
             )
@@ -943,6 +1043,7 @@ async def run_grpo_training(
                 for group in groups
                 for rollout in group.rollouts
             )
+            sampled_training_group_count += len(groups)
             metrics = _group_metrics(groups, config)
             data, batch_input_tokens = _materialize_rl_datums(groups, tinker_module)
             optimized_input_tokens += batch_input_tokens
@@ -968,6 +1069,16 @@ async def run_grpo_training(
                     "train/importance_sampling_loss_sum": loss_sum,
                     "train/update_applied": float(bool(data)),
                     "train/datums": float(len(data)),
+                    "train/candidate_group_count": float(len(groups)),
+                    "train/resample_rounds": float(resample_rounds),
+                    "train/target_effective_groups": float(
+                        config.min_effective_groups
+                    ),
+                    "train/target_effective_groups_reached": float(
+                        not config.min_effective_groups
+                        or metrics["train/effective_group_count"]
+                        >= config.min_effective_groups
+                    ),
                     "train/learning_rate": config.learning_rate,
                     "timing/step_seconds": step_seconds,
                     "timing/elapsed_seconds": elapsed_seconds,
@@ -987,13 +1098,18 @@ async def run_grpo_training(
                     "run_stats/cumulative_optimized_input_tokens": float(
                         optimized_input_tokens
                     ),
+                    "run_stats/cumulative_training_rollouts": float(
+                        sampled_training_group_count * config.group_size
+                    ),
                     "run_stats/estimated_cumulative_usd": estimated_cost,
                 }
             )
+            completed_steps = step
             wandb_run.log(metrics, step=step)
             if step == 1 or step % config.progress_every == 0 or step == config.steps:
                 progress(
-                    f"step={step}/{config.steps} groups={config.batch_size} "
+                    f"step={step}/{config.steps} groups={len(groups)} "
+                    f"resamples={resample_rounds} "
                     f"reward={metrics['train/reward_mean']:.4f} "
                     f"mixed={metrics['train/group_mixed_frac']:.3f} "
                     f"degenerate={metrics['train/degenerate_group_frac']:.3f} "
@@ -1072,6 +1188,44 @@ async def run_grpo_training(
                             ),
                         }
                     )
+                if best_monitor is None:
+                    best_monitor = monitor
+                    is_material_regression = False
+                elif _monitor_score(monitor) > _monitor_score(best_monitor):
+                    best_monitor = monitor
+                    regression_streak = 0
+                    is_material_regression = False
+                else:
+                    is_material_regression = _is_material_monitor_regression(
+                        monitor,
+                        best_monitor,
+                        config.early_stopping_max_regression,
+                    )
+                if is_material_regression:
+                    regression_streak += 1
+                elif _monitor_score(monitor) <= _monitor_score(best_monitor):
+                    regression_streak = 0
+                checkpoint_metrics.update(
+                    {
+                        "early_stopping/best_pass_at_1": best_monitor.metrics[
+                            "eval/pass_at_1"
+                        ],
+                        "early_stopping/best_pass_at_4": best_monitor.metrics[
+                            "eval/pass_at_4"
+                        ],
+                        "early_stopping/regression_streak": float(regression_streak),
+                        "early_stopping/is_material_regression": float(
+                            is_material_regression
+                        ),
+                    }
+                )
+                early_stop_triggered = bool(
+                    config.early_stopping_patience is not None
+                    and regression_streak >= config.early_stopping_patience
+                )
+                checkpoint_metrics["early_stopping/triggered"] = float(
+                    early_stop_triggered
+                )
                 if hasattr(wandb_module, "Table"):
                     checkpoint_metrics["tables/rl_monitor_rollouts"] = (
                         wandb_module.Table(
@@ -1085,6 +1239,12 @@ async def run_grpo_training(
                     f"{monitor.metrics['eval/pass_at_1']:.4f} pass_at_4="
                     f"{monitor.metrics['eval/pass_at_4']:.4f}"
                 )
+            if early_stop_triggered:
+                progress(
+                    f"early stop step={step}/{config.steps} streak={regression_streak} "
+                    f"tolerance={config.early_stopping_max_regression:.6f}"
+                )
+                break
 
         selected = _select_checkpoint(checkpoints, bool(monitor_rows))
         total_estimated_cost = _sampling_cost(
@@ -1111,7 +1271,13 @@ async def run_grpo_training(
             "rl_train_examples": len(train_rows),
             "rl_monitor_examples": len(monitor_rows),
             "training_steps": config.steps,
-            "training_rollouts": config.steps * config.batch_size * config.group_size,
+            "completed_training_steps": completed_steps,
+            "training_rollouts": sampled_training_group_count * config.group_size,
+            "max_training_rollouts": (
+                config.steps * config.max_candidate_groups_per_step * config.group_size
+            ),
+            "early_stopping_triggered": early_stop_triggered,
+            "early_stopping_regression_streak": regression_streak,
             "baseline_monitor": asdict(baseline_monitor) if baseline_monitor else None,
             "selected_checkpoint": asdict(selected),
             "checkpoints": [asdict(record) for record in checkpoints],
@@ -1120,7 +1286,7 @@ async def run_grpo_training(
             "wandb_run_url": getattr(wandb_run, "url", None),
         }
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        _report_path(str(getattr(wandb_run, "id", "run"))).write_text(
+        _report_path(config.experiment_id, str(getattr(wandb_run, "id", "run"))).write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n"
         )
         wandb_run.summary.update(
@@ -1131,11 +1297,14 @@ async def run_grpo_training(
                 "checkpoint/selected_sampler_path": selected.sampler_path,
                 "checkpoint/selected_monitor_pass_at_1": selected.monitor_pass_at_1,
                 "checkpoint/selected_monitor_pass_at_4": selected.monitor_pass_at_4,
+                "early_stopping/triggered": early_stop_triggered,
+                "early_stopping/regression_streak": regression_streak,
+                "run_stats/completed_training_steps": completed_steps,
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
         )
         progress(
-            f"complete selected_step={selected.step} completed_steps={config.steps} "
+            f"complete selected_step={selected.step} completed_steps={completed_steps} "
             f"estimated_cost=${total_estimated_cost:.4f}"
         )
         return report
@@ -1150,6 +1319,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preflight or run frozen GSM8K GRPO.")
     parser.add_argument("--run", action="store_true", help="Start the paid GRPO run.")
     parser.add_argument("--allow-paid", action="store_true")
+    parser.add_argument("--experiment-id", choices=GRPO_EXPERIMENT_IDS, default=EXPERIMENT_ID)
     parser.add_argument("--attempt", type=int, default=1)
     parser.add_argument("--init-source", choices=("sft", "base"), default="sft")
     parser.add_argument("--init-label")
@@ -1167,6 +1337,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint-every", type=int, default=DEFAULT_CHECKPOINT_EVERY
     )
+    parser.add_argument("--min-effective-groups", type=int, default=0)
+    parser.add_argument("--max-resample-rounds", type=int, default=0)
+    parser.add_argument("--early-stopping-patience", type=int)
+    parser.add_argument("--early-stopping-max-regression", type=float, default=0.0)
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY)
     parser.add_argument("--hard-cap-usd", type=float, default=DEFAULT_HARD_CAP_USD)
     parser.add_argument("--parent-state-path", default=PARENT_STATE_PATH)
@@ -1178,6 +1352,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
     return GRPOConfig(
         model_id=args.model_id,
+        experiment_id=args.experiment_id,
         attempt=args.attempt,
         init_source=args.init_source,
         initialization_label=args.init_label,
@@ -1193,6 +1368,10 @@ def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
         max_output_tokens=args.max_output_tokens,
         monitor_examples=args.monitor_examples,
         checkpoint_every=args.checkpoint_every,
+        min_effective_groups=args.min_effective_groups,
+        max_resample_rounds=args.max_resample_rounds,
+        early_stopping_patience=args.early_stopping_patience,
+        early_stopping_max_regression=args.early_stopping_max_regression,
         progress_every=args.progress_every,
         hard_cap_usd=args.hard_cap_usd,
     )

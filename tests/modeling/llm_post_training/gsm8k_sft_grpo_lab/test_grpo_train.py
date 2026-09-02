@@ -6,8 +6,10 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import build_manifest
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train import (
     GRPOConfig,
     GRPOTrainingError,
+    _config_from_args,
     build_doctor_report,
     estimate_max_token_cost_usd,
+    parse_args,
     run_grpo_training,
 )
 
@@ -73,6 +75,37 @@ class _FakeSamplingClient:
         return type("Result", (), {"sequences": sequences[:num_samples]})()
 
 
+class _AllCorrectSamplingClient(_FakeSamplingClient):
+    async def sample_async(self, prompt, num_samples, sampling_params):
+        sequences = [
+            type("Sequence", (), {"tokens": [1], "logprobs": [-0.2]})()
+            for _ in range(num_samples)
+        ]
+        return type("Result", (), {"sequences": sequences})()
+
+
+class _AllWrongSamplingClient(_FakeSamplingClient):
+    async def sample_async(self, prompt, num_samples, sampling_params):
+        sequences = [
+            type("Sequence", (), {"tokens": [0], "logprobs": [-0.2]})()
+            for _ in range(num_samples)
+        ]
+        return type("Result", (), {"sequences": sequences})()
+
+
+class _ResamplingClient(_FakeSamplingClient):
+    def __init__(self):
+        self.calls = 0
+
+    async def sample_async(self, prompt, num_samples, sampling_params):
+        self.calls += 1
+        if self.calls == 1:
+            return await _AllCorrectSamplingClient().sample_async(
+                prompt, num_samples, sampling_params
+            )
+        return await super().sample_async(prompt, num_samples, sampling_params)
+
+
 class _FakeTrainingClient:
     def __init__(self):
         self.forward_backward_calls = []
@@ -122,6 +155,29 @@ class _FakeServiceClient:
 
     async def create_sampling_client_async(self, **kwargs):
         return _FakeSamplingClient()
+
+
+class _RegressionServiceClient(_FakeServiceClient):
+    async def create_sampling_client_async(self, **kwargs):
+        if kwargs.get("model_path") == GRPOConfig().parent_sampler_path:
+            return _AllCorrectSamplingClient()
+        return _AllWrongSamplingClient()
+
+
+class _ResamplingTrainingClient(_FakeTrainingClient):
+    def __init__(self):
+        super().__init__()
+        self.sampling_client = _ResamplingClient()
+
+    async def save_weights_and_get_sampling_client_async(self):
+        return self.sampling_client
+
+
+class _ResamplingServiceClient(_FakeServiceClient):
+    def __init__(self):
+        self.training_client = _ResamplingTrainingClient()
+        self.loaded = None
+        self.created_from_base = None
 
 
 class _FakeRun:
@@ -210,6 +266,30 @@ def test_preflight_has_a_bound_and_never_calls_the_network():
 def test_group_size_below_four_rejects_comparison_breaking_monitoring():
     with pytest.raises(GRPOTrainingError, match="at least four"):
         _config(group_size=3).validate(_manifest())
+
+
+def test_e5_cli_records_signal_and_early_stop_controls():
+    config = _config_from_args(
+        parse_args(
+            [
+                "--experiment-id",
+                "e5",
+                "--min-effective-groups",
+                "2",
+                "--max-resample-rounds",
+                "3",
+                "--early-stopping-patience",
+                "2",
+                "--early-stopping-max-regression",
+                "0.03125",
+            ]
+        )
+    )
+
+    assert config.experiment_id == "e5"
+    assert config.max_candidate_groups_per_step == 32
+    assert config.early_stopping_patience == 2
+    assert "sig2x4-es2" in config.run_name
 
 
 def test_grpo_training_restores_parent_state_and_masks_prompt_tokens():
@@ -302,3 +382,69 @@ def test_direct_base_rl_uses_a_fresh_lora_and_never_loads_the_sft_state():
     assert report["initialization_source"] == "base"
     assert report["parent_state_path"] is None
     assert "from-base-ablation" in report["run_name"]
+
+
+def test_resampling_reaches_the_requested_effective_group_count():
+    manifest = _manifest()
+    service = _ResamplingServiceClient()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(
+                experiment_id="e5",
+                steps=1,
+                batch_size=1,
+                min_effective_groups=1,
+                max_resample_rounds=1,
+            ),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    train_metrics = next(payload for payload, step in wandb.run.logs if step == 1)
+    assert report["max_training_rollouts"] == 8
+    assert service.training_client.sampling_client.calls == 2
+    assert len(service.training_client.forward_backward_calls) == 1
+    assert train_metrics["train/candidate_group_count"] == 2.0
+    assert train_metrics["train/resample_rounds"] == 1.0
+    assert train_metrics["train/target_effective_groups_reached"] == 1.0
+
+
+def test_early_stopping_uses_the_held_out_monitor_not_training_reward():
+    manifest = _manifest()
+    service = _RegressionServiceClient()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(
+                steps=3,
+                monitor_examples=1,
+                early_stopping_patience=1,
+                early_stopping_max_regression=0.1,
+            ),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    assert report["completed_training_steps"] == 1
+    assert report["early_stopping_triggered"] is True
+    assert report["selected_checkpoint"]["step"] == 0
+    assert len(service.training_client.forward_backward_calls) == 1
