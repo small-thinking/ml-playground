@@ -96,7 +96,9 @@ The core metrics are:
   `sft_validation/nll`/perplexity and regressed formally. E2 additionally logs
   `sft_generation_validation/pass_at_1`, `pass_at_4`, format, truncation, and
   output length on a frozen subset, and selects by pass@4, then pass@1, then
-  NLL. Only a matching formal generation run is compared with E0 Base.
+  NLL. E3 also logs its best-so-far generation score, deltas, regression
+  streak, and explicit stop decision. Only a matching formal generation run is
+  compared with E0 Base.
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
   `train/degenerate_group_frac`, `train/effective_group_count`, and
   `train/group_reward_std`.
@@ -141,8 +143,10 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 1. Run E0 Base formal evaluation: all 1,287 `formal_test` IDs × G4.
 2. E1 showed that NLL/PPL alone is insufficient for checkpoint selection:
    its SFT checkpoint regressed on the formal generation test despite lower NLL.
-3. Run E2 SFT with a frozen generation-monitor subset of `sft_validation` at
-   each checkpoint, then reserve `formal_test` for one final comparison.
+3. E2 selected step 250 by the frozen generation monitor; formally evaluate
+   that sampler before drawing a conclusion.
+4. Use E3's buffered early stopping for the next SFT run, then reserve
+   `formal_test` for its selected sampler.
 
 ## E1 SFT command
 
@@ -242,6 +246,69 @@ uv run --extra tinker python -m \
 
 E2 checkpoints retain the existing 30-day TTL. Do not merge its PR until this
 manual paid run finishes successfully and its W&B monitor is visible.
+
+## E2 formal-evaluation command
+
+E2 selected step 250 by monitor pass@4, then pass@1, then NLL. The command
+below evaluates precisely that sampler with the unchanged E0 formal protocol;
+its resulting `eval/pass_at_1` and `eval/pass_at_4` are the only numbers that
+answer whether E2 improved on Base.
+
+First run the local-only preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_eval \
+  --experiment-id e2 \
+  --sampler-path 'tinker://5048e951-841f-53d9-9388-87cb865de0bb:train:0/sampler_weights/e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250' \
+  --source-training-run-url 'https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/etl4870w' \
+  --hard-cap-usd 7
+```
+
+Paid run:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_eval \
+  --experiment-id e2 \
+  --sampler-path 'tinker://5048e951-841f-53d9-9388-87cb865de0bb:train:0/sampler_weights/e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250' \
+  --source-training-run-url 'https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/etl4870w' \
+  --run --allow-paid --hard-cap-usd 7
+```
+
+The hard cap is a worst-case guardrail; the completed E0 formal run cost
+$3.24310.
+
+## E3 buffered-early-stop SFT command
+
+E3 keeps E2's data, rank 32, batch 8, peak LR `3e-4`, linear decay, fixed
+128-prompt G4 monitor, and selection rule. At each validation checkpoint it
+compares the monitor to the best score observed so far, including Base. A
+checkpoint counts as a regression only when both pass@1 and pass@4 are lower
+by more than `0.03125` (four of 128 prompts); one consecutive material
+regression stops later training. Both the tolerance and patience are recorded
+in W&B config and can be overridden from the command line.
+
+Preflight:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --recipe e3
+```
+
+Paid run:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.sft_train \
+  --recipe e3 --run --allow-paid --hard-cap-usd 18
+```
+
+For example, `--early-stopping-patience 2
+--early-stopping-max-regression 0.046875` requires two consecutive drops of
+more than six monitor prompts. The preflight retains E2's full-run worst-case
+bound; an early stop only lowers the actual cost.
 
 The E0 preflight is local-only:
 
