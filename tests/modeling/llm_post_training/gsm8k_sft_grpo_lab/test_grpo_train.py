@@ -4,6 +4,9 @@ import pytest
 
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import build_manifest
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train import (
+    E4_OPTIMIZED_INPUT_TOKENS,
+    E8_DEFAULT_STEPS,
+    E8_EXPECTED_OPTIMIZED_INPUT_TOKENS,
     GRPOConfig,
     GRPOTrainingError,
     _config_from_args,
@@ -367,6 +370,55 @@ def test_e7_rejects_mixed_group_resampling_controls():
             advantage_estimator="fixed-sign",
             min_effective_groups=1,
         ).validate(_manifest())
+
+
+def test_e8_defaults_to_a_fixed_sign_e4_token_matched_budget():
+    config = _config_from_args(
+        parse_args(
+            [
+                "--experiment-id",
+                "e8",
+                "--advantage-estimator",
+                "fixed-sign",
+            ]
+        )
+    )
+
+    assert config.steps == E8_DEFAULT_STEPS == 8
+    assert config.advantage_estimator == "fixed-sign"
+    assert f"tokmatch-e4-{E4_OPTIMIZED_INPUT_TOKENS}" in config.run_name
+    assert "seed20260901" in config.run_name
+    report = build_doctor_report(
+        _config(
+            experiment_id="e8",
+            advantage_estimator="fixed-sign",
+            steps=E8_DEFAULT_STEPS,
+        ),
+        _manifest(),
+        environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+        tinker_version="0.27.0",
+        wandb_version="0.21.1",
+    )
+    assert report["optimized_input_token_target"] == E4_OPTIMIZED_INPUT_TOKENS
+    assert report["expected_optimized_input_tokens"] == (
+        E8_EXPECTED_OPTIMIZED_INPUT_TOKENS
+    )
+
+
+def test_e8_rejects_an_unmatched_step_budget():
+    with pytest.raises(GRPOTrainingError, match="pre-registered"):
+        _config(
+            experiment_id="e8",
+            advantage_estimator="fixed-sign",
+            steps=E8_DEFAULT_STEPS + 1,
+        ).validate(_manifest())
+
+
+def test_cli_seed_changes_the_training_config_and_run_name():
+    config = _config_from_args(parse_args(["--seed", "20260902"]))
+
+    assert config.seed == 20260902
+    assert "seed20260902" in config.run_name
 
 
 def test_total_signal_budget_requires_a_matching_candidate_cap():

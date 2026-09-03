@@ -45,7 +45,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
 
 
 EXPERIMENT_ID = "e4"
-GRPO_EXPERIMENT_IDS = ("e4", "e5", "e6", "e7")
+GRPO_EXPERIMENT_IDS = ("e4", "e5", "e6", "e7", "e8")
 ADVANTAGE_ESTIMATORS = ("group-mean", "fixed-sign")
 PARENT_CHECKPOINT = "e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250"
 PARENT_STATE_PATH = (
@@ -68,6 +68,22 @@ DEFAULT_HARD_CAP_USD = 12.0
 TRAIN_USD_PER_MILLION = 1.463
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60
 REWARD_VERSION = "gsm8k-final-answer-binary-v1"
+
+# E8 is a compute-matched control, not an E7 replication. E4 optimized only
+# 54,760 input tokens because degenerate group-mean batches contributed no
+# datums. E7 optimized 696,641 input tokens across 100 steps. Eight fixed-sign
+# steps are therefore pre-registered to target 54,760 / (696,641 / 100) =
+# 7.86 E7-equivalent steps, or about 55,731 optimized input tokens. The actual
+# total is reported because sampled completion lengths still vary by seed.
+E4_OPTIMIZED_INPUT_TOKENS = 54_760
+E7_OPTIMIZED_INPUT_TOKENS = 696_641
+E7_FIXED_SIGN_STEPS = 100
+E8_DEFAULT_STEPS = round(
+    E4_OPTIMIZED_INPUT_TOKENS / (E7_OPTIMIZED_INPUT_TOKENS / E7_FIXED_SIGN_STEPS)
+)
+E8_EXPECTED_OPTIMIZED_INPUT_TOKENS = round(
+    E8_DEFAULT_STEPS * E7_OPTIMIZED_INPUT_TOKENS / E7_FIXED_SIGN_STEPS
+)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -144,15 +160,23 @@ class GRPOConfig:
             raise GRPOTrainingError(
                 f"advantage_estimator must be one of {allowed_estimators}"
             )
-        if self.experiment_id == "e7" and self.advantage_estimator != "fixed-sign":
+        if (
+            self.experiment_id in {"e7", "e8"}
+            and self.advantage_estimator != "fixed-sign"
+        ):
             raise GRPOTrainingError(
-                "E7 is pre-registered to use the fixed-sign advantage estimator"
+                f"{self.experiment_id.upper()} is pre-registered to use the "
+                "fixed-sign advantage estimator"
             )
-        if self.experiment_id != "e7" and self.advantage_estimator != "group-mean":
+        if (
+            self.experiment_id not in {"e7", "e8"}
+            and self.advantage_estimator != "group-mean"
+        ):
             raise GRPOTrainingError(
-                "fixed-sign advantage is reserved for the pre-registered E7 ablation"
+                "fixed-sign advantage is reserved for the pre-registered E7 and "
+                "E8 ablations"
             )
-        if self.experiment_id == "e7" and any(
+        if self.experiment_id in {"e7", "e8"} and any(
             value
             for value in (
                 self.min_effective_groups,
@@ -163,8 +187,15 @@ class GRPOConfig:
             )
         ):
             raise GRPOTrainingError(
-                "E7 uses every sampled group and cannot resample, target mixed "
-                "groups, or early stop"
+                f"{self.experiment_id.upper()} uses every sampled group and cannot "
+                "resample, target mixed groups, or early stop"
+            )
+        if self.experiment_id == "e8" and self.steps != E8_DEFAULT_STEPS:
+            raise GRPOTrainingError(
+                "E8 is pre-registered to run exactly "
+                f"{E8_DEFAULT_STEPS} fixed-sign steps so its expected optimized "
+                f"input-token count ({E8_EXPECTED_OPTIMIZED_INPUT_TOKENS}) matches "
+                f"E4 ({E4_OPTIMIZED_INPUT_TOKENS}) within one E7-equivalent step"
             )
         if not self.model_id or not self.project or not self.suite_id:
             raise GRPOTrainingError(
@@ -196,6 +227,8 @@ class GRPOConfig:
         for name, value in positive_ints.items():
             if value <= 0:
                 raise GRPOTrainingError(f"{name} must be positive")
+        if self.seed < 0:
+            raise GRPOTrainingError("seed cannot be negative")
         if self.group_size < 4:
             raise GRPOTrainingError(
                 "group_size must be at least four for pass@4 monitoring"
@@ -279,6 +312,9 @@ class GRPOConfig:
         )
         if self.advantage_estimator != "group-mean":
             name += f"-adv{self.advantage_estimator}"
+        if self.experiment_id == "e8":
+            name += f"-tokmatch-e4-{E4_OPTIMIZED_INPUT_TOKENS}"
+        name += f"-seed{self.seed}"
         if self.min_effective_groups:
             name += f"-sig{self.min_effective_groups}x{self.max_resample_rounds + 1}"
         if self.target_total_effective_groups is not None:
@@ -479,8 +515,14 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "target_total_effective_groups": config.target_total_effective_groups,
         "max_total_candidate_groups": config.max_total_candidate_groups,
         "max_training_candidate_groups": config.max_training_candidate_groups,
+        "optimized_input_token_target": (
+            E4_OPTIMIZED_INPUT_TOKENS if config.experiment_id == "e8" else None
+        ),
+        "expected_optimized_input_tokens": (
+            E8_EXPECTED_OPTIMIZED_INPUT_TOKENS if config.experiment_id == "e8" else None
+        ),
         "formal_comparison_baseline": (
-            "e4-grpo-step75" if config.experiment_id in {"e6", "e7"} else None
+            "e4-grpo-step75" if config.experiment_id in {"e6", "e7", "e8"} else None
         ),
         "early_stopping_patience": config.early_stopping_patience,
         "early_stopping_max_regression": config.early_stopping_max_regression,
@@ -492,23 +534,33 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "sample_usd_per_million": config.sample_usd_per_million,
         "git_sha": _git_sha(),
         "hypothesis": (
-            "Signal-packed GRPO with at least E4's total effective-group budget "
-            "improves the E4 formal result."
-            if config.experiment_id == "e6"
+            "At E4's optimized-input-token budget, fixed-sign advantages improve "
+            "the frozen RL monitor relative to the E2 initialization."
+            if config.experiment_id == "e8"
             else (
-                "Fixed-sign advantages prevent binary-reward group-mean "
-                "gradient starvation and improve the E4 formal result."
-                if config.experiment_id == "e7"
-                else "On-policy binary-answer GRPO improves held-out RL-monitor "
-                f"pass@4 from the {config.init_source} initialization policy."
+                "Signal-packed GRPO with at least E4's total effective-group budget "
+                "improves the E4 formal result."
+                if config.experiment_id == "e6"
+                else (
+                    "Fixed-sign advantages prevent binary-reward group-mean "
+                    "gradient starvation and improve the E4 formal result."
+                    if config.experiment_id == "e7"
+                    else "On-policy binary-answer GRPO improves held-out RL-monitor "
+                    f"pass@4 from the {config.init_source} initialization policy."
+                )
             )
         ),
         "expected_failure": (
-            "Fixed-sign updates on all-correct or all-wrong groups destabilize "
-            "the policy or fail to improve the frozen monitor."
-            if config.experiment_id == "e7"
-            else "Too many degenerate groups leave too little learning signal, or "
-            "monitor pass metrics regress despite rising training reward."
+            "Fixed-sign advantages need substantially more optimized tokens than "
+            "E4 to improve the frozen monitor."
+            if config.experiment_id == "e8"
+            else (
+                "Fixed-sign updates on all-correct or all-wrong groups destabilize "
+                "the policy or fail to improve the frozen monitor."
+                if config.experiment_id == "e7"
+                else "Too many degenerate groups leave too little learning signal, "
+                "or monitor pass metrics regress despite rising training reward."
+            )
         ),
     }
 
@@ -553,6 +605,13 @@ def build_doctor_report(
         "batch_size": config.batch_size,
         "group_size": config.group_size,
         "advantage_estimator": config.advantage_estimator,
+        "seed": config.seed,
+        "optimized_input_token_target": (
+            E4_OPTIMIZED_INPUT_TOKENS if config.experiment_id == "e8" else None
+        ),
+        "expected_optimized_input_tokens": (
+            E8_EXPECTED_OPTIMIZED_INPUT_TOKENS if config.experiment_id == "e8" else None
+        ),
         "training_rollouts": config.steps * config.batch_size * config.group_size,
         "max_training_rollouts": config.max_training_candidate_groups
         * config.group_size,
@@ -1159,8 +1218,7 @@ async def run_grpo_training(
                     ),
                     require_logprobs=True,
                     label=(
-                        f"rollout step={step}/{config.steps} "
-                        f"round={resample_round + 1}"
+                        f"rollout step={step}/{config.steps} round={resample_round + 1}"
                     ),
                 )
                 groups.extend(round_groups)
@@ -1472,6 +1530,16 @@ async def run_grpo_training(
             "max_training_rollouts": config.max_training_candidate_groups
             * config.group_size,
             "advantage_estimator": config.advantage_estimator,
+            "seed": config.seed,
+            "optimized_input_tokens": optimized_input_tokens,
+            "optimized_input_token_target": (
+                E4_OPTIMIZED_INPUT_TOKENS if config.experiment_id == "e8" else None
+            ),
+            "expected_optimized_input_tokens": (
+                E8_EXPECTED_OPTIMIZED_INPUT_TOKENS
+                if config.experiment_id == "e8"
+                else None
+            ),
             "effective_group_count": cumulative_effective_group_count,
             "nonzero_advantage_group_count": cumulative_nonzero_advantage_group_count,
             "target_total_effective_groups": config.target_total_effective_groups,
@@ -1505,6 +1573,7 @@ async def run_grpo_training(
                 "run_stats/nonzero_advantage_group_count": (
                     cumulative_nonzero_advantage_group_count
                 ),
+                "run_stats/optimized_input_tokens": optimized_input_tokens,
                 "run_stats/training_stop_reason": training_stop_reason,
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
@@ -1533,7 +1602,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--init-source", choices=("sft", "base"), default="sft")
     parser.add_argument("--init-label")
     parser.add_argument("--model-id", default=MODEL_ID)
-    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
+    parser.add_argument(
+        "--steps",
+        type=int,
+        help=(
+            f"Training updates (defaults to {E8_DEFAULT_STEPS} for E8 and "
+            f"{DEFAULT_STEPS} otherwise)."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--group-size", type=int, default=DEFAULT_GROUP_SIZE)
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
@@ -1559,6 +1635,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--early-stopping-max-regression", type=float, default=0.0)
     parser.add_argument("--progress-every", type=int, default=DEFAULT_PROGRESS_EVERY)
     parser.add_argument("--hard-cap-usd", type=float, default=DEFAULT_HARD_CAP_USD)
+    parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--parent-state-path", default=PARENT_STATE_PATH)
     parser.add_argument("--parent-sampler-path", default=PARENT_SAMPLER_PATH)
     parser.add_argument("--parent-checkpoint", default=PARENT_CHECKPOINT)
@@ -1566,6 +1643,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
+    steps = (
+        args.steps
+        if args.steps is not None
+        else (E8_DEFAULT_STEPS if args.experiment_id == "e8" else DEFAULT_STEPS)
+    )
     return GRPOConfig(
         model_id=args.model_id,
         experiment_id=args.experiment_id,
@@ -1575,7 +1657,7 @@ def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
         parent_checkpoint=args.parent_checkpoint,
         parent_state_path=args.parent_state_path,
         parent_sampler_path=args.parent_sampler_path,
-        steps=args.steps,
+        steps=steps,
         batch_size=args.batch_size,
         group_size=args.group_size,
         learning_rate=args.learning_rate,
@@ -1593,6 +1675,7 @@ def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
         early_stopping_max_regression=args.early_stopping_max_regression,
         progress_every=args.progress_every,
         hard_cap_usd=args.hard_cap_usd,
+        seed=args.seed,
     )
 
 
