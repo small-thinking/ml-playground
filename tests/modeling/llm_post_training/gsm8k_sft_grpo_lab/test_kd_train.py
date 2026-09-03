@@ -10,6 +10,8 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train import (
     KDConfig,
     KDTrainingError,
     TEACHER_SCORE,
+    _student_training_cost_ledger,
+    _teacher_cost_ledger,
     build_doctor_report,
     estimate_max_token_cost_usd,
     run_kd_training,
@@ -232,6 +234,24 @@ def test_teacher_response_masks_the_prompt_and_supervises_only_the_trace(tmp_pat
     assert example.supervised_tokens == sum(example.weights)
 
 
+def test_actual_token_cost_ledgers_apply_the_configured_rates(tmp_path):
+    config = _config(
+        tmp_path,
+        teacher_prefill_usd_per_million=1.0,
+        teacher_sample_usd_per_million=2.0,
+        train_usd_per_million=3.0,
+    )
+
+    teacher = _teacher_cost_ledger(1_000_000, 2_000_000, config)
+    student = _student_training_cost_ledger(1_000_000, 17, config)
+
+    assert teacher.input_usd == 1.0
+    assert teacher.output_usd == 4.0
+    assert teacher.total_usd == 5.0
+    assert student.supervised_target_tokens == 17
+    assert student.total_usd == 3.0
+
+
 def test_scalar_teacher_score_is_not_silently_routed_through_hard_kd(tmp_path):
     with pytest.raises(KDTrainingError, match="RLAIF"):
         _config(tmp_path, signal_kind=TEACHER_SCORE).validate(_manifest())
@@ -263,6 +283,7 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     config = _config(tmp_path)
     service = _FakeServiceClient()
     wandb = _FakeWandb()
+    progress_messages = []
 
     report = asyncio.run(
         run_kd_training(
@@ -275,7 +296,7 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
             service_client=service,
             train_rows=_full_candidate_rows(manifest),
             development_rows=_development_rows(manifest),
-            progress=lambda _: None,
+            progress=progress_messages.append,
         )
     )
 
@@ -300,7 +321,19 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     )
     assert report["selected_checkpoint"]["step"] == 0
     assert report["selected_checkpoint_is_initialization"] is True
-    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v2"
+    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v3"
+    actual_cost = report["actual_token_priced_cost_ledger"]
+    assert actual_cost["teacher_generation"]["input_tokens"] > 0
+    assert actual_cost["teacher_generation"]["output_tokens"] > 0
+    assert (
+        actual_cost["student_training"]["optimized_input_tokens"]
+        == report["student_optimized_input_tokens"]
+    )
+    assert actual_cost["development_inference"]["input_tokens"] > 0
+    assert actual_cost["development_inference"]["output_tokens"] > 0
+    assert actual_cost["total_usd"] == pytest.approx(
+        report["actual_token_priced_total_usd"]
+    )
     assert (tmp_path / "e9_teacher_traces_unit-test-run.jsonl").exists()
     assert (tmp_path / "e9_kd_report_unit-test-run.json").exists()
     assert (tmp_path / "e9_metric_dictionary_unit-test-run.md").exists()
@@ -313,6 +346,10 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     assert wandb.run.summary["dev/pass_at_4"] == 1.0
     assert wandb.run.summary["selection/selected_dev_pass_at_1"] == 1.0
     assert wandb.run.summary["selection/selected_dev_pass_at_4"] == 1.0
+    assert wandb.run.summary["cost/teacher_input_usd"] > 0
+    assert wandb.run.summary["cost/teacher_output_usd"] > 0
+    assert wandb.run.summary["cost/dev_input_usd"] > 0
+    assert wandb.run.summary["cost/dev_output_usd"] > 0
     development_tables = [
         payload["tables/development_rollouts"]
         for payload, _ in wandb.run.logs
@@ -322,6 +359,17 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     assert len(development_tables[0].data) == 4
     assert wandb.init_kwargs["config"]["initialization_source"] == "base_fresh_lora"
     assert wandb.run.finished is True
+    assert any(
+        message.startswith("cost[teacher actual]") for message in progress_messages
+    )
+    assert any(
+        message.startswith("cost[development step=0 initialization=Base actual]")
+        for message in progress_messages
+    )
+    assert any(
+        message.startswith("cost[student KD final actual]")
+        for message in progress_messages
+    )
 
 
 def test_e9_rejects_checkpoint_initialization(tmp_path):

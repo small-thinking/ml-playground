@@ -121,7 +121,7 @@ weighted-token ledgers, teacher/student/development cost ledgers, fixed
 behavioral development metrics, and the rule that `dev/pass_at_4` then
 `dev/pass_at_1` can select a checkpoint. The metric dictionary written beside
 each run records the definition, unit, decision role, and caveat for every
-chart. The v2 schema intentionally does not claim a held-out teacher-trace NLL:
+chart. The v3 schema intentionally does not claim a held-out teacher-trace NLL:
 until the runner implements and verifies a non-mutating forward-only path,
 behavioral student rollouts are the KD validation signal.
 
@@ -137,6 +137,17 @@ This is deliberately not one numerical score for every method. Training loss,
 teacher reward, judge score, and format are diagnostics or guardrails; they
 must never choose a checkpoint or justify a formal claim. The formal evaluation
 stays algorithm-independent inference on the frozen formal split.
+
+### Actual-token cost ledger
+
+The E9 terminal, W&B, and local report distinguish a conservative preflight
+maximum from the run's **actual-token-priced ledger**. Teacher generation and
+student development rollouts record observed input/output tokens separately and
+apply their respective configured input/output prices. KD optimization records
+actual optimized sequence tokens at Tinker's flat training-token rate; its
+teacher-response target tokens are recorded as a diagnostic rather than charged
+again as inference output. The local report preserves every token count, rate,
+component cost, and total so the pricing calculation can be audited after a run.
 
 ## Metrics
 
