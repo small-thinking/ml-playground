@@ -4,14 +4,14 @@ A diagnostics-first post-training study on `Qwen/Qwen3.5-9B-Base`. The question
 is not simply which checkpoint scores highest: it is which learning-signal
 change explains the result on a fixed GSM8K protocol.
 
-![Formal GSM8K results: Pass@1 and Pass@4 across Base, SFT, and GRPO experiments](figures/gsm8k-posttraining-formal-results-v1.png)
+![Formal GSM8K Pass@1 and Pass@4 for the E2-to-E7 ablation path](figures/gsm8k-posttraining-formal-results-v1.png)
 
 **Current result.** E7's fixed-sign advantage is the formal leader: Pass@1
 `0.7675`, Pass@4 `0.7879`. It exceeds E4 clean GRPO by `+4.78pp` and `+3.73pp`.
 This is meaningful evidence for the gradient-starvation hypothesis, not yet a
 general equal-compute or broad-generalization result.
 
-## Formal scorecard
+## Main results
 
 Every row uses the same `gsm8k-eval-v2-b1922d7384a3` protocol: 1,287 frozen
 test prompts, four independent samples per prompt, temperature 1.0, the same
@@ -22,35 +22,38 @@ frozen configurations.
 | Experiment | Change / question | Pass@1 | Pass@4 | Decision |
 | --- | --- | ---: | ---: | --- |
 | E0 Base | What does the untouched base model establish? | 0.6603 | 0.6884 | Baseline. |
-| E1 SFT | Does NLL-selected SFT preserve generation quality? | 0.5488 | 0.5843 | No—format improved, but reasoning regressed. |
 | E2 SFT | Does a frozen generation monitor select a better SFT state? | 0.6898 | 0.7195 | Yes—promote step 250 as the RL parent. |
 | E4 GRPO | Does clean binary-reward group-mean GRPO help E2? | 0.7197 | 0.7506 | Yes—initial GRPO leader. |
 | E5 GRPO | Does resampling to pack mixed groups improve E4? | 0.7038 | 0.7296 | No. |
 | E6 GRPO | Does restoring E4's mixed-group budget rescue E5? | 0.7034 | 0.7343 | No. |
 | E7 GRPO | Do fixed-sign advantages avoid zero-advantage groups? | **0.7675** | **0.7879** | **Yes for one seed; replicate next.** |
 
-## What E7 changed
+**Teaching note — E1, deliberately excluded from the main figure.** Selecting
+SFT by NLL alone gave Pass@1/Pass@4 `0.5488/0.5843` despite format accuracy
+`0.9905`. Keep it as the teaching counterexample: lower teacher-forcing loss
+and cleaner formatting are not valid generation-quality selection criteria.
 
-E4–E6 use group-relative advantages, `r - mean(r)`. With binary rewards, an
-all-correct or all-wrong G4 group has zero advantage and is skipped. E7 keeps
-the parent, prompts, rollout count, learning rate, monitor, and checkpoint
-cadence fixed, but uses `2r - 1`: correct completions receive `+1`, incorrect
-ones `-1`. Degenerate groups can therefore train.
+## Table 1 — controlled GRPO ablations after E2
 
-| W&B training evidence | E4 | E7 |
-| --- | ---: | ---: |
-| Selected monitor step | 75 | 100 |
-| Selected monitor Pass@1 / Pass@4 | 0.8516 / 0.8594 | 0.9219 / 0.9219 |
-| Mixed groups | 52 / 800 | 38 / 800 |
-| Groups with nonzero advantage | 52 / 800 | 800 / 800 |
-| Optimized input tokens | 54,760 | 696,641 |
+All rows start from E2 step 250, use G4, LR `2e-5`, exact binary reward, the
+same 64-prompt monitor, and the same formal evaluation. The changed component
+and learning-signal budget—not the experiment ID—define the ablation.
 
-E7 preserves the rollout budget but not training compute: it optimized about
-12.7× as many input tokens as E4. The direct paired formal comparison favors
-E7 on 146 prompts, favors E4 on 98, and ties on 1,043 (`Pass@4` exact sign
-test `p=0.00255`; 95% CI for the difference `[+1.36, +6.10]pp`). The next
-decision-quality experiment is one independent seed with the same E7 config,
-not a hyperparameter sweep.
+| ID | Method name | Changed component | Training signal | Selected step | Formal Pass@1 / Pass@4 | Result |
+| --- | --- | --- | --- | ---: | ---: | --- |
+| E4 | **Clean GRPO** | Baseline group-mean advantage, `r - mean(r)` | 52 / 800 mixed groups | 75 | 0.7197 / 0.7506 | Initial leader. |
+| E5 | **Signal-packed GRPO** | Up to four fresh batches; target two mixed groups per optimizer step | 37 / 688 mixed groups | 15 | 0.7038 / 0.7296 | More per-step signal did not help. |
+| E6 | **Fixed-effective-budget GRPO** | E5 packing, continued to a 56-mixed-group target (1,200 candidate cap) | 56 / 1,128 mixed groups | 25 | 0.7034 / 0.7343 | Matching E4's total mixed signal did not help. |
+| E7 | **Fixed-sign-advantage GRPO** | `2r - 1`; no mixed-group resampling | 38 / 800 mixed; **800 / 800 nonzero-advantage** | 100 | **0.7675 / 0.7879** | New leader; replicate. |
+
+E4–E6 skip all-correct and all-wrong groups because their group-relative
+advantage is zero. E7 lets those degenerate groups train: correct completions
+receive `+1`, incorrect ones `-1`. It therefore preserves the rollout budget
+but not training compute—E7 optimized about 12.7× as many input tokens as E4.
+The direct paired formal comparison favors E7 on 146 prompts, favors E4 on 98,
+and ties on 1,043 (`Pass@4` exact sign test `p=0.00255`; 95% CI
+`[+1.36, +6.10]pp`). The next decision-quality experiment is one independent
+seed with the same E7 config, not a hyperparameter sweep.
 
 ## Metrics
 
