@@ -55,6 +55,22 @@ and ties on 1,043 (`Pass@4` exact sign test `p=0.00255`; 95% CI
 `[+1.36, +6.10]pp`). The next decision-quality experiment is one independent
 seed with the same E7 config, not a hyperparameter sweep.
 
+## E8 — pre-registered compute-matched fixed-sign control
+
+E8 asks a narrower question than E7: does fixed-sign learning help when its
+**optimized input-token** budget is approximately E4's? It retains E2 step 250,
+G4, LR `2e-5`, temperature `1.0`, exact binary rewards, and fixed-sign
+advantages, but runs exactly eight steps. This was fixed before the run from
+the completed E7 accounting: `54,760 / (696,641 / 100) = 7.86`, so eight steps
+target about `55,731` optimized input tokens versus E4's `54,760` (+1.8%).
+The realized count is logged to W&B and the local report because completion
+lengths vary.
+
+E8 matches **optimization compute**, not the rollout count: it will sample 256
+rollouts, versus E4's 3,200. It tests whether fixed-sign provides a better
+learning signal per optimized token. A later rollout-matched sparse-update
+control is needed to isolate that separate axis.
+
 ## Metrics
 
 For a prompt `x` and a sampled completion `y ~ pi(. | x)`, standard Pass@1 is
@@ -80,6 +96,18 @@ Use the repository's uv environment for command help and local preflight:
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train --help
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.checkpoint_eval --help
+```
+
+E8's no-network preflight and paid command are:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e8 --advantage-estimator fixed-sign --seed 20260901 \
+  --hard-cap-usd 1.50
+
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --run --allow-paid --experiment-id e8 --advantage-estimator fixed-sign \
+  --seed 20260901 --hard-cap-usd 1.50
 ```
 
 Paid commands require an explicit `--run --allow-paid` authorization and a
