@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 
-DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v2"
+DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v3"
 
 HARD_RESPONSE = "teacher-response"
 TOPK_RESPONSE = "teacher-topk"
@@ -194,8 +194,34 @@ COMMON_METRICS = (
         direction="lower",
         unit="USD",
         decision_role=DECISION_REPORTING,
-        definition="Cumulative estimated teacher sampling/teacher-forcing cost.",
-        caveat="Record separately from student training to avoid hiding teacher compute.",
+        definition=(
+            "Cumulative token-priced teacher cost from observed teacher input and "
+            "output tokens."
+        ),
+        caveat=(
+            "Uses the run's configured per-million rates; reconcile against an "
+            "external invoice if a provider applies other charges."
+        ),
+    ),
+    MetricSpec(
+        key="cost/teacher_input_usd",
+        label="Teacher input-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Teacher prompt-token component of the observed token-priced cost.",
+        caveat="The configured teacher input rate may differ from the output rate.",
+    ),
+    MetricSpec(
+        key="cost/teacher_output_usd",
+        label="Teacher output-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Teacher completion-token component of the observed token-priced cost.",
+        caveat="Includes rejected teacher completions because they still incurred cost.",
     ),
     MetricSpec(
         key="cost/student_training_usd",
@@ -204,8 +230,11 @@ COMMON_METRICS = (
         direction="lower",
         unit="USD",
         decision_role=DECISION_REPORTING,
-        definition="Cumulative estimated student forward/backward cost.",
-        caveat="Does not include teacher generation or evaluation inference.",
+        definition="Cumulative token-priced student forward/backward cost.",
+        caveat=(
+            "Uses the configured flat training-token rate; it does not use "
+            "inference input/output prices."
+        ),
     ),
     MetricSpec(
         key="cost/dev_inference_usd",
@@ -214,8 +243,31 @@ COMMON_METRICS = (
         direction="lower",
         unit="USD",
         decision_role=DECISION_REPORTING,
-        definition="Cumulative estimated checkpoint-selection inference cost.",
+        definition=(
+            "Cumulative token-priced checkpoint-selection inference cost from "
+            "observed development input and output tokens."
+        ),
         caveat="Development evaluation must remain separate from formal evaluation.",
+    ),
+    MetricSpec(
+        key="cost/dev_input_usd",
+        label="Development input-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Development prompt-token component of cumulative inference cost.",
+        caveat="Uses the student inference input rate, not the KD training rate.",
+    ),
+    MetricSpec(
+        key="cost/dev_output_usd",
+        label="Development output-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Development sampled-token component of cumulative inference cost.",
+        caveat="Uses the student inference output rate, which can be higher than input.",
     ),
     MetricSpec(
         key="cost/cumulative_usd",
@@ -224,7 +276,10 @@ COMMON_METRICS = (
         direction="lower",
         unit="USD",
         decision_role=DECISION_REPORTING,
-        definition="Teacher, student training, and development-inference cost combined.",
+        definition=(
+            "Teacher, student training, and development-inference token-priced "
+            "cost combined."
+        ),
         caveat="Storage and external local-compute costs may not be included.",
     ),
     MetricSpec(
@@ -279,6 +334,26 @@ COMMON_METRICS = (
         decision_role=DECISION_REPORTING,
         definition="Number of student completions sampled for this development result.",
         caveat="Pass@4 requires exactly four rollouts per development prompt.",
+    ),
+    MetricSpec(
+        key="dev/prompt_tokens",
+        label="Development prompt tokens",
+        group="dev",
+        direction="none",
+        unit="tokens",
+        decision_role=DECISION_REPORTING,
+        definition="Observed prompt tokens in one G4 development-evaluation event.",
+        caveat="This is event-local; use cost/dev_input_usd for the cumulative ledger.",
+    ),
+    MetricSpec(
+        key="dev/output_tokens",
+        label="Development output tokens",
+        group="dev",
+        direction="none",
+        unit="tokens",
+        decision_role=DECISION_REPORTING,
+        definition="Observed sampled completion tokens in one G4 development event.",
+        caveat="This is event-local; use cost/dev_output_usd for the cumulative ledger.",
     ),
     MetricSpec(
         key="dev/pass_at_1",

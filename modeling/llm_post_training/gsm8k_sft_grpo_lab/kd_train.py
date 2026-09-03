@@ -327,8 +327,31 @@ class DevelopmentReport:
     metrics: Dict[str, float]
     prompt_tokens: int
     output_tokens: int
-    estimated_cost_usd: float
+    actual_token_priced_usd: float
     table_rows: Tuple[Tuple[Any, ...], ...]
+
+
+@dataclass(frozen=True)
+class InferenceCostLedger:
+    """One actual-token inference ledger priced with separate input/output rates."""
+
+    input_tokens: int
+    output_tokens: int
+    input_usd_per_million: float
+    output_usd_per_million: float
+    input_usd: float
+    output_usd: float
+    total_usd: float
+
+
+@dataclass(frozen=True)
+class TrainingCostLedger:
+    """One actual-token training ledger priced with Tinker's flat training rate."""
+
+    optimized_input_tokens: int
+    supervised_target_tokens: int
+    usd_per_million_optimized_input_tokens: float
+    total_usd: float
 
 
 @dataclass(frozen=True)
@@ -448,21 +471,107 @@ def _perplexity(nll: float) -> float:
     return math.exp(min(nll, 80.0))
 
 
+def _inference_cost_ledger(
+    input_tokens: int,
+    output_tokens: int,
+    input_usd_per_million: float,
+    output_usd_per_million: float,
+) -> InferenceCostLedger:
+    """Price observed inference tokens without treating an upper bound as actual use."""
+    input_usd = input_tokens * input_usd_per_million / 1_000_000
+    output_usd = output_tokens * output_usd_per_million / 1_000_000
+    return InferenceCostLedger(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        input_usd_per_million=input_usd_per_million,
+        output_usd_per_million=output_usd_per_million,
+        input_usd=input_usd,
+        output_usd=output_usd,
+        total_usd=input_usd + output_usd,
+    )
+
+
+def _teacher_cost_ledger(
+    prompt_tokens: int, output_tokens: int, config: KDConfig
+) -> InferenceCostLedger:
+    return _inference_cost_ledger(
+        prompt_tokens,
+        output_tokens,
+        config.teacher_prefill_usd_per_million,
+        config.teacher_sample_usd_per_million,
+    )
+
+
 def _teacher_cost(prompt_tokens: int, output_tokens: int, config: KDConfig) -> float:
-    return (
-        prompt_tokens * config.teacher_prefill_usd_per_million
-        + output_tokens * config.teacher_sample_usd_per_million
-    ) / 1_000_000
+    return _teacher_cost_ledger(prompt_tokens, output_tokens, config).total_usd
+
+
+def _student_monitor_cost_ledger(
+    prompt_tokens: int, output_tokens: int
+) -> InferenceCostLedger:
+    return _inference_cost_ledger(
+        prompt_tokens,
+        output_tokens,
+        PREFILL_USD_PER_MILLION,
+        SAMPLE_USD_PER_MILLION,
+    )
 
 
 def _student_monitor_cost(prompt_tokens: int, output_tokens: int) -> float:
-    return (
-        prompt_tokens * PREFILL_USD_PER_MILLION + output_tokens * SAMPLE_USD_PER_MILLION
-    ) / 1_000_000
+    return _student_monitor_cost_ledger(prompt_tokens, output_tokens).total_usd
+
+
+def _student_training_cost_ledger(
+    optimized_input_tokens: int, supervised_target_tokens: int, config: KDConfig
+) -> TrainingCostLedger:
+    return TrainingCostLedger(
+        optimized_input_tokens=optimized_input_tokens,
+        supervised_target_tokens=supervised_target_tokens,
+        usd_per_million_optimized_input_tokens=config.train_usd_per_million,
+        total_usd=optimized_input_tokens * config.train_usd_per_million / 1_000_000,
+    )
 
 
 def _student_train_cost(input_tokens: int, config: KDConfig) -> float:
-    return input_tokens * config.train_usd_per_million / 1_000_000
+    return _student_training_cost_ledger(input_tokens, 0, config).total_usd
+
+
+def _format_inference_cost(label: str, ledger: InferenceCostLedger) -> str:
+    return (
+        f"cost[{label}] input={ledger.input_tokens} @${ledger.input_usd_per_million:.3f}/M"
+        f"=${ledger.input_usd:.4f}; output={ledger.output_tokens} "
+        f"@${ledger.output_usd_per_million:.3f}/M=${ledger.output_usd:.4f}; "
+        f"total=${ledger.total_usd:.4f}"
+    )
+
+
+def _format_training_cost(label: str, ledger: TrainingCostLedger) -> str:
+    return (
+        f"cost[{label}] optimized_input={ledger.optimized_input_tokens} "
+        f"@${ledger.usd_per_million_optimized_input_tokens:.3f}/M="
+        f"${ledger.total_usd:.4f}; supervised_targets="
+        f"{ledger.supervised_target_tokens} (diagnostic, not separately billed)"
+    )
+
+
+def _cost_metric_payload(
+    teacher: InferenceCostLedger,
+    student_training: TrainingCostLedger,
+    development: InferenceCostLedger,
+) -> Dict[str, float]:
+    """Expose one consistent actual-token cost ledger to every W&B event."""
+    return {
+        "cost/teacher_generation_usd": teacher.total_usd,
+        "cost/teacher_input_usd": teacher.input_usd,
+        "cost/teacher_output_usd": teacher.output_usd,
+        "cost/student_training_usd": student_training.total_usd,
+        "cost/dev_inference_usd": development.total_usd,
+        "cost/dev_input_usd": development.input_usd,
+        "cost/dev_output_usd": development.output_usd,
+        "cost/cumulative_usd": (
+            teacher.total_usd + student_training.total_usd + development.total_usd
+        ),
+    }
 
 
 def _trace_digest(traces: Sequence[AcceptedTeacherTrace]) -> str:
@@ -632,6 +741,10 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "teacher_pricing_per_million": {
             "prefill": config.teacher_prefill_usd_per_million,
             "sample": config.teacher_sample_usd_per_million,
+        },
+        "student_inference_pricing_per_million": {
+            "prefill": PREFILL_USD_PER_MILLION,
+            "sample": SAMPLE_USD_PER_MILLION,
         },
         "student_train_usd_per_million": config.train_usd_per_million,
         "hard_cap_usd": config.hard_cap_usd,
@@ -1012,15 +1125,17 @@ async def _generation_development(
     output_total = sum(
         output_tokens for sample in samples for _, output_tokens in sample["responses"]
     )
+    cost_ledger = _student_monitor_cost_ledger(prompt_total, output_total)
     progress(
         f"development {label} pass_at_1={report.metrics['eval/pass_at_1']:.4f} "
         f"pass_at_4={report.metrics['eval/pass_at_4']:.4f}"
     )
+    progress(_format_inference_cost(f"development {label} actual", cost_ledger))
     return DevelopmentReport(
         metrics=dict(report.metrics),
         prompt_tokens=prompt_total,
         output_tokens=output_total,
-        estimated_cost_usd=_student_monitor_cost(prompt_total, output_total),
+        actual_token_priced_usd=cost_ledger.total_usd,
         table_rows=_development_table_rows(report, samples, checkpoint_step, config),
     )
 
@@ -1242,9 +1357,14 @@ async def run_kd_training(
         selected_supervised_tokens = sum(
             example.supervised_tokens for example in prepared
         )
-        teacher_cost = _teacher_cost(
+        teacher_cost_ledger = _teacher_cost_ledger(
             teacher_prompt_tokens, teacher_output_tokens, config
         )
+        teacher_cost = teacher_cost_ledger.total_usd
+        initial_student_cost_ledger = _student_training_cost_ledger(0, 0, config)
+        development_prompt_tokens = 0
+        development_output_tokens = 0
+        development_cost_ledger = _student_monitor_cost_ledger(0, 0)
         _log_schema_metrics(
             wandb_run,
             config,
@@ -1269,10 +1389,11 @@ async def run_kd_training(
                 ),
                 "data/teacher_prompt_tokens": float(teacher_prompt_tokens),
                 "data/teacher_output_tokens": float(teacher_output_tokens),
-                "cost/teacher_generation_usd": teacher_cost,
-                "cost/student_training_usd": 0.0,
-                "cost/dev_inference_usd": 0.0,
-                "cost/cumulative_usd": teacher_cost,
+                **_cost_metric_payload(
+                    teacher_cost_ledger,
+                    initial_student_cost_ledger,
+                    development_cost_ledger,
+                ),
             },
             step=0,
         )
@@ -1281,8 +1402,8 @@ async def run_kd_training(
             f"{selected_input_tokens} policy=all_accepted_once "
             f"teacher_cost=${teacher_cost:.4f}"
         )
+        progress(_format_inference_cost("teacher actual", teacher_cost_ledger))
 
-        development_cost = 0.0
         checkpoints = []
         if development_rows:
             parent_development = await _generation_development(
@@ -1295,7 +1416,11 @@ async def run_kd_training(
                 "step=0 initialization=Base",
                 progress,
             )
-            development_cost += parent_development.estimated_cost_usd
+            development_prompt_tokens += parent_development.prompt_tokens
+            development_output_tokens += parent_development.output_tokens
+            development_cost_ledger = _student_monitor_cost_ledger(
+                development_prompt_tokens, development_output_tokens
+            )
             parent_record = CheckpointRecord(
                 step=0,
                 state_path=None,
@@ -1310,11 +1435,14 @@ async def run_kd_training(
                 "dev/checkpoint_step": 0.0,
                 "dev/optimized_input_tokens": 0.0,
                 "dev/generated_rollouts": float(len(parent_development.table_rows)),
+                "dev/prompt_tokens": float(parent_development.prompt_tokens),
+                "dev/output_tokens": float(parent_development.output_tokens),
                 "dev/is_initialization_policy": 1.0,
-                "cost/teacher_generation_usd": teacher_cost,
-                "cost/student_training_usd": 0.0,
-                "cost/dev_inference_usd": development_cost,
-                "cost/cumulative_usd": teacher_cost + development_cost,
+                **_cost_metric_payload(
+                    teacher_cost_ledger,
+                    initial_student_cost_ledger,
+                    development_cost_ledger,
+                ),
             }
             if hasattr(wandb_module, "Table"):
                 parent_metrics["tables/development_rollouts"] = wandb_module.Table(
@@ -1345,10 +1473,8 @@ async def run_kd_training(
             nll = _loss_sum(forward_backward_result) / batch_supervised_tokens
             step_seconds = max(clock() - step_started_at, 1e-9)
             elapsed_seconds = clock() - elapsed_started_at
-            total_estimate = (
-                teacher_cost
-                + development_cost
-                + _student_train_cost(completed_input_tokens, config)
+            student_cost_ledger = _student_training_cost_ledger(
+                completed_input_tokens, completed_supervised_tokens, config
             )
             _log_schema_metrics(
                 wandb_run,
@@ -1364,12 +1490,11 @@ async def run_kd_training(
                     ),
                     "timing/step_seconds": step_seconds,
                     "timing/elapsed_seconds": elapsed_seconds,
-                    "cost/teacher_generation_usd": teacher_cost,
-                    "cost/student_training_usd": _student_train_cost(
-                        completed_input_tokens, config
+                    **_cost_metric_payload(
+                        teacher_cost_ledger,
+                        student_cost_ledger,
+                        development_cost_ledger,
                     ),
-                    "cost/dev_inference_usd": development_cost,
-                    "cost/cumulative_usd": total_estimate,
                 },
                 step=step,
             )
@@ -1381,7 +1506,11 @@ async def run_kd_training(
                 progress(
                     f"step={step}/{len(train_batches)} nll={nll:.5f} "
                     f"input_tokens={completed_input_tokens}/{selected_input_tokens} "
-                    f"estimated_cost=${total_estimate:.4f}"
+                    f"actual_token_priced_cost=$"
+                    f"{_cost_metric_payload(teacher_cost_ledger, student_cost_ledger, development_cost_ledger)['cost/cumulative_usd']:.4f}"
+                )
+                progress(
+                    _format_training_cost("student KD actual", student_cost_ledger)
                 )
             development_due = bool(development_rows) and (
                 completed_input_tokens >= next_development_token_threshold
@@ -1414,7 +1543,11 @@ async def run_kd_training(
                     f"step={step}",
                     progress,
                 )
-                development_cost += development.estimated_cost_usd
+                development_prompt_tokens += development.prompt_tokens
+                development_output_tokens += development.output_tokens
+                development_cost_ledger = _student_monitor_cost_ledger(
+                    development_prompt_tokens, development_output_tokens
+                )
             record = CheckpointRecord(
                 step=step,
                 state_path=str(state_result.path),
@@ -1442,19 +1575,24 @@ async def run_kd_training(
                 "dev/is_initialization_policy": 0.0,
                 "checkpoint/state_path": record.state_path,
                 "checkpoint/sampler_path": record.sampler_path,
-                "cost/teacher_generation_usd": teacher_cost,
-                "cost/student_training_usd": _student_train_cost(
-                    completed_input_tokens, config
+                **_cost_metric_payload(
+                    teacher_cost_ledger,
+                    _student_training_cost_ledger(
+                        completed_input_tokens, completed_supervised_tokens, config
+                    ),
+                    development_cost_ledger,
                 ),
-                "cost/dev_inference_usd": development_cost,
-                "cost/cumulative_usd": teacher_cost
-                + development_cost
-                + _student_train_cost(completed_input_tokens, config),
             }
             if development is not None:
                 checkpoint_metrics.update(record.development_metrics or {})
                 checkpoint_metrics["dev/generated_rollouts"] = float(
                     len(development.table_rows)
+                )
+                checkpoint_metrics["dev/prompt_tokens"] = float(
+                    development.prompt_tokens
+                )
+                checkpoint_metrics["dev/output_tokens"] = float(
+                    development.output_tokens
                 )
                 if hasattr(wandb_module, "Table"):
                     checkpoint_metrics["tables/development_rollouts"] = (
@@ -1479,11 +1617,15 @@ async def run_kd_training(
             for candidate in checkpoints[1:]:
                 if _is_better_checkpoint(candidate, selected):
                     selected = candidate
-        total_cost = (
-            teacher_cost
-            + development_cost
-            + _student_train_cost(completed_input_tokens, config)
+        final_student_cost_ledger = _student_training_cost_ledger(
+            completed_input_tokens, completed_supervised_tokens, config
         )
+        final_cost_metrics = _cost_metric_payload(
+            teacher_cost_ledger,
+            final_student_cost_ledger,
+            development_cost_ledger,
+        )
+        total_cost = final_cost_metrics["cost/cumulative_usd"]
         if total_cost > config.hard_cap_usd:
             raise KDTrainingError(
                 "observed token cost exceeded the configured hard cap"
@@ -1506,7 +1648,7 @@ async def run_kd_training(
             "teacher_outcomes": outcomes,
             "teacher_prompt_tokens": teacher_prompt_tokens,
             "teacher_output_tokens": teacher_output_tokens,
-            "teacher_estimated_generation_usd": teacher_cost,
+            "teacher_actual_token_priced_usd": teacher_cost_ledger.total_usd,
             "accepted_teacher_trace_digest": trace_digest,
             "accepted_teacher_trace_path": str(trace_path),
             "student_model_id": config.model_id,
@@ -1525,6 +1667,7 @@ async def run_kd_training(
             "student_selected_supervised_tokens": selected_supervised_tokens,
             "student_optimized_input_tokens": completed_input_tokens,
             "student_supervised_tokens": completed_supervised_tokens,
+            "student_actual_token_priced_usd": final_student_cost_ledger.total_usd,
             "training_steps": len(train_batches),
             "completed_training_steps": len(train_batches),
             "development_partition": config.development_partition,
@@ -1532,13 +1675,21 @@ async def run_kd_training(
             "development_ids_hash": _development_ids_hash(config, manifest),
             "development_group_size": config.development_group_size,
             "development_input_token_interval": config.development_input_token_interval,
-            "development_estimated_cost_usd": development_cost,
+            "development_prompt_tokens": development_prompt_tokens,
+            "development_output_tokens": development_output_tokens,
+            "development_actual_token_priced_usd": development_cost_ledger.total_usd,
             "selected_checkpoint": asdict(selected),
             "selected_checkpoint_is_initialization": selected.step == 0,
             "checkpoints": [asdict(record) for record in checkpoints],
             "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
             "reference_e4_formal_pass_at_4": E4_FORMAL_PASS_AT_4,
-            "estimated_total_usd": total_cost,
+            "actual_token_priced_cost_ledger": {
+                "teacher_generation": asdict(teacher_cost_ledger),
+                "student_training": asdict(final_student_cost_ledger),
+                "development_inference": asdict(development_cost_ledger),
+                "total_usd": total_cost,
+            },
+            "actual_token_priced_total_usd": total_cost,
             "hard_cap_usd": config.hard_cap_usd,
             "wandb_run_url": getattr(wandb_run, "url", None),
         }
@@ -1550,11 +1701,10 @@ async def run_kd_training(
             "schema/method": config.signal_kind,
             "data/teacher_accepted_count": len(prepared),
             "data/teacher_trace_digest": trace_digest,
-            "cost/teacher_generation_usd": teacher_cost,
             "train/optimized_input_tokens": completed_input_tokens,
             "selection/selected_checkpoint_step": selected.step,
             "selection/selected_is_initialization": float(selected.step == 0),
-            "cost/cumulative_usd": total_cost,
+            **final_cost_metrics,
         }
         if selected.development_metrics is not None:
             selected_dev_pass_at_1 = selected.development_metrics["dev/pass_at_1"]
@@ -1572,10 +1722,19 @@ async def run_kd_training(
         if selected.sampler_path is not None:
             summary["checkpoint/selected_sampler_path"] = selected.sampler_path
         wandb_run.summary.update(summary)
+        progress(_format_inference_cost("teacher final actual", teacher_cost_ledger))
+        progress(
+            _format_training_cost("student KD final actual", final_student_cost_ledger)
+        )
+        progress(
+            _format_inference_cost(
+                "development cumulative actual", development_cost_ledger
+            )
+        )
         progress(
             f"complete selected_step={selected.step} selected_initialization="
             f"{selected.step == 0} optimized_input_tokens={completed_input_tokens} "
-            f"estimated_cost=${total_cost:.4f}"
+            f"actual_token_priced_cost=${total_cost:.4f}"
         )
         return report
     finally:
