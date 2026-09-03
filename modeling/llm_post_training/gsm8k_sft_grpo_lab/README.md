@@ -76,33 +76,41 @@ advantage at this approximate student optimization-token budget; it also
 changed update granularity and prompt coverage, so it is not a pure estimator
 isolation.
 
-## E9 — Base-to-verifier-filtered teacher-response KD
+## E9 — Base-to-full-corpus verifier-filtered teacher-response KD
 
 E9 is the first knowledge-distillation baseline, not RLAIF. A frozen
-`Qwen/Qwen3.5-397B-A17B` teacher writes one solution for each candidate prompt
-from frozen `rl_train`; the exact GSM8K verifier keeps only correct,
-non-truncated responses with a numeric `\boxed{...}` conclusion. The student
-creates a **fresh rank-32 LoRA on the untouched Base model**, with a fresh KD
-optimizer, then applies ordinary cross-entropy only on the accepted
-teacher-response tokens.
+`Qwen/Qwen3.5-397B-A17B` teacher writes one solution for each of the 6,800
+allowed training prompts: the ordered union of frozen `sft_train` (5,000) and
+`rl_train` (1,800). The exact GSM8K verifier uses the original answer only to
+keep correct, non-truncated responses with a numeric `\boxed{...}` conclusion;
+the student never receives that original answer. It creates a **fresh rank-32
+LoRA on the untouched Base model**, with a fresh KD optimizer, then applies
+ordinary cross-entropy only on every accepted teacher-response token, once.
 
-The student target is `54,760` optimized input tokens, E4's realized GRPO
-total. This matches the **student update-token ledger**, not teacher generation
-cost and not initialization history. The implementation allows a single final
-datum to cross that target and records the exact excess, rather than truncating
-a correct solution. Teacher generation input/output tokens and student CE input
-tokens are logged and costed separately.
+This is intentionally `Base → KD`, not E4 continuation and not a token-matched
+probe. Its purpose is to compare an end-to-end KD route against the existing
+`Base → SFT → GRPO` route. Candidate IDs are checked against the exact ordered
+manifest union before any paid call, and the report records its hash, accepted
+trace digest, actual optimized/supervised tokens, and teacher/student/development
+costs separately.
+
+There is an important **coverage caveat**: historical E4 trained the full SFT
+run but only 800 `rl_train` prompt groups during its 100 GRPO steps (the selected
+step-75 state had seen 600). E9's 6,800-prompt full-corpus recipe is therefore
+the correct parallel *method* alternative, but is not a same-data-coverage
+causal control for that historical E4 checkpoint. A future full-corpus SFT+RL
+control is required to isolate algorithmic differences at matched coverage.
 
 KD development selection is deliberately separated from KD training: the
-teacher may only generate targets from `rl_train`, while student-only G4
-rollouts run on a fixed 128-prompt prefix of `sft_validation` at initialization
-and every 20,000 optimized student input tokens (plus the terminal checkpoint).
-Each event logs Pass@1, Pass@4, rollout count, response-diversity diagnostics,
-and a W&B table of the four raw responses per prompt. The selected checkpoint's
-Pass@1/Pass@4 are written explicitly to the W&B summary. This development set
-is held out from KD training but has been reused elsewhere in the study, so it
-selects checkpoints within a run and never substitutes for the frozen formal
-evaluation.
+teacher may generate targets only from `sft_train + rl_train`, while
+student-only G4 rollouts run on a fixed 64-prompt prefix of `sft_validation` at
+initialization and every 500,000 optimized student input tokens (plus the
+terminal checkpoint). Each event logs Pass@1, Pass@4, rollout count,
+response-diversity diagnostics, and a W&B table of the four raw responses per
+prompt. The selected checkpoint's Pass@1/Pass@4 are written explicitly to the
+W&B summary. This development set is held out from KD training but has been
+reused elsewhere in the study, so it selects checkpoints within a run and never
+substitutes for the frozen formal evaluation.
 
 ### A shared schema for the entire KD ladder
 
@@ -161,23 +169,16 @@ E9's no-network preflight and paid command are:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train \
-  --hard-cap-usd 8.00
+  --hard-cap-usd 60.00
 
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train \
-  --attempt 2 --run --allow-paid --hard-cap-usd 8.00
+  --run --allow-paid --hard-cap-usd 60.00
 ```
 
-Before any E9 formal evaluation, audit the completed a01 sampler on the
-separate frozen calibration test split. The first command is local-only; add
-`--run --allow-paid` only after inspecting its bounded cost.
-
-```bash
-UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.checkpoint_eval \
-  --sampler-path 'tinker://ed5d6793-4a81-5a1b-b8af-b618f2dbf1aa:train:0/sampler_weights/e9-kd-teacher-response-qwen-qwen3-5-9b-base-teacher-qwen3-5-397b-a17b-from-base-fresh-lora-r32-b8-lr3e-4-tokmatch-e4-54760-cap800-m64-a01-seed20260901-step23' \
-  --source-training-run-url 'https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/n7pmhvou' \
-  --experiment-id e9 --evaluation-stage kd --parent-checkpoint base-fresh-lora \
-  --evaluation-split calibration --hard-cap-usd 0.25
-```
+The first command is local-only. Add `--run --allow-paid` only after inspecting
+its bounded cost; after training, first audit the selected checkpoint on the
+separate frozen calibration split before deciding whether a formal evaluation is
+warranted.
 
 Paid commands require an explicit `--run --allow-paid` authorization and a
 bounded preflight; raw rollouts, local checkpoints, and exports stay in ignored
