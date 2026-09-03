@@ -1,4 +1,4 @@
-# GSM8K SFT → GRPO Lab
+# GSM8K SFT → GRPO → KD Lab
 
 A diagnostics-first post-training study on `Qwen/Qwen3.5-9B-Base`. The question
 is not simply which checkpoint scores highest: it is which learning-signal
@@ -6,10 +6,11 @@ change explains the result on a fixed GSM8K protocol.
 
 ![Formal GSM8K Pass@1 and Pass@4 for the E2-to-E7 ablation path](figures/gsm8k-posttraining-formal-results-v1.png)
 
-**Current result.** E7's fixed-sign advantage is the formal leader: Pass@1
-`0.7675`, Pass@4 `0.7879`. It exceeds E4 clean GRPO by `+4.78pp` and `+3.73pp`.
-This is meaningful evidence for the gradient-starvation hypothesis, not yet a
-general equal-compute or broad-generalization result.
+**Current decision baseline.** E4 clean GRPO is the reference for the next
+phase: Pass@1 `0.7197`, Pass@4 `0.7506`. E7 has the highest point estimate on
+the reused formal protocol, but it optimized 12.7× as many input tokens; E8's
+approximately token-matched control did not beat E4. Treat E4—not E7—as the
+starting checkpoint for the controlled distillation ladder.
 
 ## Main results
 
@@ -26,7 +27,8 @@ frozen configurations.
 | E4 GRPO | Does clean binary-reward group-mean GRPO help E2? | 0.7197 | 0.7506 | Yes—initial GRPO leader. |
 | E5 GRPO | Does resampling to pack mixed groups improve E4? | 0.7038 | 0.7296 | No. |
 | E6 GRPO | Does restoring E4's mixed-group budget rescue E5? | 0.7034 | 0.7343 | No. |
-| E7 GRPO | Do fixed-sign advantages avoid zero-advantage groups? | **0.7675** | **0.7879** | **Yes for one seed; replicate next.** |
+| E7 GRPO | Do fixed-sign advantages avoid zero-advantage groups? | 0.7675 | 0.7879 | Higher point estimate, but 12.7× E4 optimization tokens. |
+| E8 GRPO | Does fixed-sign help at approximately E4's token budget? | 0.7020 | 0.7296 | No—do not promote it over E4. |
 
 **Teaching note — E1, deliberately excluded from the main figure.** Selecting
 SFT by NLL alone gave Pass@1/Pass@4 `0.5488/0.5843` despite format accuracy
@@ -66,10 +68,53 @@ target about `55,731` optimized input tokens versus E4's `54,760` (+1.8%).
 The realized count is logged to W&B and the local report because completion
 lengths vary.
 
-E8 matches **optimization compute**, not the rollout count: it will sample 256
-rollouts, versus E4's 3,200. It tests whether fixed-sign provides a better
-learning signal per optimized token. A later rollout-matched sparse-update
-control is needed to isolate that separate axis.
+E8 matches **optimization compute**, not the rollout count: it samples 256
+rollouts, versus E4's 3,200. Its realized formal Pass@1/Pass@4 was
+`0.7020/0.7296`, below E4's `0.7197/0.7506`. It does not show a fixed-sign
+advantage at this approximate student optimization-token budget; it also
+changed update granularity and prompt coverage, so it is not a pure estimator
+isolation.
+
+## E9 — verifier-filtered teacher-response KD from E4
+
+E9 is the first knowledge-distillation baseline, not RLAIF. A frozen
+`Qwen/Qwen3.5-397B-A17B` teacher writes one solution for each candidate prompt
+from frozen `rl_train`; the exact GSM8K verifier keeps only correct,
+non-truncated responses with a numeric `\boxed{...}` conclusion. The student
+restores the **E4 step-75 training state**, then applies ordinary
+cross-entropy only on the accepted teacher-response tokens.
+
+The student target is `54,760` optimized input tokens, E4's realized GRPO
+total. The implementation allows a single final datum to cross that target and
+records the exact excess, rather than truncating a correct solution. Teacher
+generation input/output tokens and student CE input tokens are logged and
+costed separately. The existing 64-prompt `rl_monitor` remains a legacy
+within-run checkpoint selector only; a selected KD sampler still needs a
+formal comparison against frozen E4 before any promotion.
+
+### A shared schema for the entire KD ladder
+
+E9 is the first **implemented recipe**, not a bespoke metric universe. The
+[`distillation_schema.py`](distillation_schema.py) registry gives every later
+KD method the same core contract: initialization provenance, optimized and
+weighted-token ledgers, teacher/student/development cost ledgers, fixed
+behavioral development metrics, and the rule that `dev/pass_at_4` then
+`dev/pass_at_1` can select a checkpoint. The metric dictionary written beside
+each run records the definition, unit, decision role, and caveat for every
+chart.
+
+Each method then adds only its semantically meaningful diagnostics. E9 adds
+teacher acceptance/rejection statistics and hard-KD NLL; a future Top-K route
+adds retained-probability mass and Top-K CE; a teacher judge/RLAIF route adds
+judge-verifier agreement and reward/advantage diagnostics; preference and
+on-policy Top-K routes are also registered. Only `teacher-response` currently
+has an executable signal-to-Tinker-`Datum` adapter. Selecting an unimplemented
+route fails before any paid call, rather than silently treating it as E9.
+
+This is deliberately not one numerical score for every method. Training loss,
+teacher reward, judge score, and format are diagnostics or guardrails; they
+must never choose a checkpoint or justify a formal claim. The formal evaluation
+stays algorithm-independent inference on the frozen formal split.
 
 ## Metrics
 
@@ -89,7 +134,7 @@ improved while task success fell.
 
 - [E7 training in W&B](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/p0035t59) and [E7 formal evaluation](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/h3gmmogp)
 - [E4 formal comparison](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/2p1o07v4)
-- [Frozen split manifest](manifests/gsm8k_splits.json), [evaluation harness](evaluation.py), [training entry point](grpo_train.py), and [full experiment ledger](experiment_log.md)
+- [Frozen split manifest](manifests/gsm8k_splits.json), [evaluation harness](evaluation.py), [GRPO training entry point](grpo_train.py), [KD training entry point](kd_train.py), and [full experiment ledger](experiment_log.md)
 
 Use the repository's uv environment for command help and local preflight:
 
@@ -98,16 +143,14 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_trainin
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.checkpoint_eval --help
 ```
 
-E8's no-network preflight and paid command are:
+E9's no-network preflight and paid command are:
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
-  --experiment-id e8 --advantage-estimator fixed-sign --seed 20260901 \
-  --hard-cap-usd 1.50
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train \
+  --hard-cap-usd 8.00
 
-UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
-  --run --allow-paid --experiment-id e8 --advantage-estimator fixed-sign \
-  --seed 20260901 --hard-cap-usd 1.50
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train \
+  --run --allow-paid --hard-cap-usd 8.00
 ```
 
 Paid commands require an explicit `--run --allow-paid` authorization and a
