@@ -10,7 +10,8 @@ change explains the result on a fixed GSM8K protocol.
 phase: Pass@1 `0.7197`, Pass@4 `0.7506`. E7 has the highest point estimate on
 the reused formal protocol, but it optimized 12.7× as many input tokens; E8's
 approximately token-matched control did not beat E4. Treat E4—not E7—as the
-starting checkpoint for the controlled distillation ladder.
+frozen **comparison baseline** for the controlled distillation ladder. E9
+itself intentionally initializes from Base.
 
 ## Main results
 
@@ -75,22 +76,25 @@ advantage at this approximate student optimization-token budget; it also
 changed update granularity and prompt coverage, so it is not a pure estimator
 isolation.
 
-## E9 — verifier-filtered teacher-response KD from E4
+## E9 — Base-to-verifier-filtered teacher-response KD
 
 E9 is the first knowledge-distillation baseline, not RLAIF. A frozen
 `Qwen/Qwen3.5-397B-A17B` teacher writes one solution for each candidate prompt
 from frozen `rl_train`; the exact GSM8K verifier keeps only correct,
 non-truncated responses with a numeric `\boxed{...}` conclusion. The student
-restores the **E4 step-75 training state**, then applies ordinary
-cross-entropy only on the accepted teacher-response tokens.
+creates a **fresh rank-32 LoRA on the untouched Base model**, with a fresh KD
+optimizer, then applies ordinary cross-entropy only on the accepted
+teacher-response tokens.
 
 The student target is `54,760` optimized input tokens, E4's realized GRPO
-total. The implementation allows a single final datum to cross that target and
-records the exact excess, rather than truncating a correct solution. Teacher
-generation input/output tokens and student CE input tokens are logged and
-costed separately. The existing 64-prompt `rl_monitor` remains a legacy
-within-run checkpoint selector only; a selected KD sampler still needs a
-formal comparison against frozen E4 before any promotion.
+total. This matches the **student update-token ledger**, not teacher generation
+cost and not initialization history. The implementation allows a single final
+datum to cross that target and records the exact excess, rather than truncating
+a correct solution. Teacher generation input/output tokens and student CE input
+tokens are logged and costed separately. The existing 64-prompt `rl_monitor`
+remains a legacy within-run selector between the Base initialization and KD
+checkpoints only; a selected KD sampler still needs a formal comparison against
+frozen E4 before any promotion.
 
 ### A shared schema for the entire KD ladder
 

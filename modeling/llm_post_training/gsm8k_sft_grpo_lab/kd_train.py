@@ -4,7 +4,8 @@ E9 is deliberately the hard-target baseline in the distillation ladder:
 
 * a frozen teacher writes a solution for an existing training prompt;
 * the GSM8K answer verifier keeps only correct, boxed traces; and
-* the E4 step-75 student is trained with ordinary token cross-entropy.
+* a fresh LoRA on the untouched Base student is trained with ordinary token
+  cross-entropy.
 
 The ``signal_kind`` routing is intentionally explicit.  A teacher response is
 hard-target KD; a teacher score over a student rollout is a future RLAIF branch,
@@ -78,20 +79,15 @@ TEACHER_TEMPERATURE = 0.7
 TEACHER_PREFILL_USD_PER_MILLION = 3.0
 TEACHER_SAMPLE_USD_PER_MILLION = 7.5
 
-# The E4 state is the experiment's immutable student initialization, not a
-# model-name inference.  Its sampler path is retained for the step-0 monitor.
-E4_CHECKPOINT = "e4-grpo-qwen-qwen3-5-9b-base-r32-b8-g4-lr2e-5-s100-m64-a01-step75"
-E4_STATE_PATH = (
-    "tinker://fe6861a7-c997-538b-807f-a1e2f8e2fa2c:train:0/weights/"
-    "e4-grpo-qwen-qwen3-5-9b-base-r32-b8-g4-lr2e-5-s100-m64-a01-step75"
-)
-E4_SAMPLER_PATH = (
-    "tinker://fe6861a7-c997-538b-807f-a1e2f8e2fa2c:train:0/sampler_weights/"
+# E4 is the frozen formal comparison reference, not the E9 initialization.
+E4_COMPARISON_CHECKPOINT = (
     "e4-grpo-qwen-qwen3-5-9b-base-r32-b8-g4-lr2e-5-s100-m64-a01-step75"
 )
 E4_FORMAL_PASS_AT_1 = 0.71969697
 E4_FORMAL_PASS_AT_4 = 0.75058275
 E4_OPTIMIZED_INPUT_TOKENS = 54_760
+INITIALIZATION_SOURCE = "base_fresh_lora"
+INITIALIZATION_LABEL = "base-fresh-lora"
 
 LORA_RANK = 32
 DEFAULT_BATCH_SIZE = 8
@@ -140,10 +136,8 @@ class KDConfig:
     require_teacher_boxed_format: bool = True
     teacher_prefill_usd_per_million: float = TEACHER_PREFILL_USD_PER_MILLION
     teacher_sample_usd_per_million: float = TEACHER_SAMPLE_USD_PER_MILLION
-    parent_checkpoint: str = E4_CHECKPOINT
-    parent_state_path: str = E4_STATE_PATH
-    parent_sampler_path: str = E4_SAMPLER_PATH
-    initialization_label: str = "e4-grpo-step75"
+    initialization_source: str = INITIALIZATION_SOURCE
+    initialization_label: str = INITIALIZATION_LABEL
     lora_rank: int = LORA_RANK
     batch_size: int = DEFAULT_BATCH_SIZE
     learning_rate: float = DEFAULT_LEARNING_RATE
@@ -192,10 +186,13 @@ class KDConfig:
             )
         ):
             raise KDTrainingError("model, teacher, suite, and initialization IDs are required")
-        if "/weights/" not in self.parent_state_path:
-            raise KDTrainingError("parent_state_path must be a Tinker training-state URI")
-        if "/sampler_weights/" not in self.parent_sampler_path:
-            raise KDTrainingError("parent_sampler_path must be a Tinker sampler URI")
+        if (
+            self.initialization_source != INITIALIZATION_SOURCE
+            or self.initialization_label != INITIALIZATION_LABEL
+        ):
+            raise KDTrainingError(
+                "E9 is the Base-to-KD baseline and must use the declared fresh Base LoRA"
+            )
         positive_ints = {
             "attempt": self.attempt,
             "teacher_max_candidate_prompts": self.teacher_max_candidate_prompts,
@@ -307,11 +304,11 @@ class MonitorReport:
 
 @dataclass(frozen=True)
 class CheckpointRecord:
-    """One generation-scored checkpoint, including E4 at step zero."""
+    """One generation-scored checkpoint, including initialization at step zero."""
 
     step: int
-    state_path: str
-    sampler_path: str
+    state_path: Optional[str]
+    sampler_path: Optional[str]
     monitor_pass_at_1: Optional[float]
     monitor_pass_at_4: Optional[float]
 
@@ -525,11 +522,12 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "teacher_max_candidate_prompts": config.teacher_max_candidate_prompts,
         "teacher_candidate_ids_hash": None,
         "student_model_id": config.model_id,
-        "initialization_source": "e4_grpo_step75",
+        "initialization_source": config.initialization_source,
         "initialization_label": config.initialization_label,
-        "parent_checkpoint": config.parent_checkpoint,
-        "parent_state_path": config.parent_state_path,
-        "parent_sampler_path": config.parent_sampler_path,
+        "parent_checkpoint": None,
+        "parent_state_path": None,
+        "parent_sampler_path": None,
+        "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
         "student_input_token_target": config.student_input_token_target,
         "reference_e4_optimized_input_tokens": E4_OPTIMIZED_INPUT_TOKENS,
         "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
@@ -555,12 +553,12 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
         "hypothesis": (
-            "Verifier-filtered stronger-teacher traces improve E4 at an E4-matched "
-            "student optimization-token target."
+            "Verifier-filtered stronger-teacher traces improve a Base student at an "
+            "E4-matched student optimization-token target."
         ),
         "expected_failure": (
-            "Teacher traces are correct but do not improve the reused monitor or "
-            "formal performance over E4."
+            "Teacher traces are correct but the Base-to-KD student does not improve "
+            "the reused monitor or formal performance over E4."
         ),
     }
 
@@ -590,10 +588,12 @@ def build_doctor_report(
         "teacher_candidate_partition": "rl_train",
         "teacher_max_candidate_prompts": config.teacher_max_candidate_prompts,
         "student_model_id": config.model_id,
-        "initialization_source": "e4_grpo_step75",
-        "parent_checkpoint": config.parent_checkpoint,
-        "parent_state_path": config.parent_state_path,
-        "parent_sampler_path": config.parent_sampler_path,
+        "initialization_source": config.initialization_source,
+        "initialization_label": config.initialization_label,
+        "parent_checkpoint": None,
+        "parent_state_path": None,
+        "parent_sampler_path": None,
+        "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
         "student_input_token_target": config.student_input_token_target,
         "reference_e4_optimized_input_tokens": E4_OPTIMIZED_INPUT_TOKENS,
         "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
@@ -796,7 +796,7 @@ async def _collect_teacher_traces(
 
 async def _generation_monitor(
     service_client: Any,
-    model_path: str,
+    model_path: Optional[str],
     rows: Sequence[Mapping[str, object]],
     tinker_module: Any,
     config: KDConfig,
@@ -804,7 +804,12 @@ async def _generation_monitor(
     progress: Callable[[str], None],
 ) -> MonitorReport:
     """Evaluate one checkpoint on the existing frozen G=4 monitor only."""
-    client = await service_client.create_sampling_client_async(model_path=model_path)
+    if model_path is None:
+        client = await service_client.create_sampling_client_async(
+            base_model=config.model_id
+        )
+    else:
+        client = await service_client.create_sampling_client_async(model_path=model_path)
     tokenizer = client.get_tokenizer()
 
     async def sample_group(index: int, row: Mapping[str, object]) -> Dict[str, Any]:
@@ -1000,10 +1005,11 @@ async def run_kd_training(
             f"{config.student_input_token_target} max_cost="
             f"${estimate_max_token_cost_usd(config, manifest):.4f}"
         )
-        progress("restoring E4 step-75 state with a fresh KD optimizer")
-        training_client = await service_client.create_training_client_from_state_async(
-            config.parent_state_path,
+        progress("initializing a fresh Base LoRA with a fresh KD optimizer")
+        training_client = await service_client.create_lora_training_client_async(
             base_model=config.model_id,
+            rank=config.lora_rank,
+            seed=config.seed,
             user_metadata={"experiment_id": config.experiment_id},
         )
         student_tokenizer = training_client.get_tokenizer()
@@ -1013,7 +1019,7 @@ async def run_kd_training(
             name=config.run_name,
             group=config.suite_id,
             job_type="teacher-response-kd",
-            tags=["gsm8k", "kd", config.experiment_id, config.signal_kind, "from-e4"],
+            tags=["gsm8k", "kd", config.experiment_id, config.signal_kind, "from-base"],
             config=_tracking_config(config, manifest),
         )
         configure_wandb_metrics(wandb_run, config.signal_kind)
@@ -1096,18 +1102,18 @@ async def run_kd_training(
         if monitor_rows:
             parent_monitor = await _generation_monitor(
                 service_client,
-                config.parent_sampler_path,
+                None,
                 monitor_rows,
                 tinker_module,
                 config,
-                "step=0 parent=E4",
+                "step=0 initialization=Base",
                 progress,
             )
             monitor_cost += parent_monitor.estimated_cost_usd
             parent_record = CheckpointRecord(
                 step=0,
-                state_path=config.parent_state_path,
-                sampler_path=config.parent_sampler_path,
+                state_path=None,
+                sampler_path=None,
                 monitor_pass_at_1=parent_monitor.metrics["eval/pass_at_1"],
                 monitor_pass_at_4=parent_monitor.metrics["eval/pass_at_4"],
             )
@@ -1118,7 +1124,7 @@ async def run_kd_training(
                 {
                     **_monitor_metrics(parent_monitor),
                     "dev/checkpoint_step": 0.0,
-                    "dev/is_parent_checkpoint": 1.0,
+                    "dev/is_initialization_policy": 1.0,
                     "cost/teacher_generation_usd": teacher_cost,
                     "cost/student_training_usd": 0.0,
                     "cost/dev_inference_usd": monitor_cost,
@@ -1218,7 +1224,7 @@ async def run_kd_training(
             checkpoints.append(record)
             checkpoint_metrics = {
                 "dev/checkpoint_step": float(step),
-                "dev/is_parent_checkpoint": 0.0,
+                "dev/is_initialization_policy": 0.0,
                 "checkpoint/state_path": record.state_path,
                 "checkpoint/sampler_path": record.sampler_path,
                 "cost/teacher_generation_usd": teacher_cost,
@@ -1237,8 +1243,8 @@ async def run_kd_training(
         if not checkpoints:
             selected = CheckpointRecord(
                 step=len(train_batches),
-                state_path="",
-                sampler_path="",
+                state_path=None,
+                sampler_path=None,
                 monitor_pass_at_1=None,
                 monitor_pass_at_4=None,
             )
@@ -1274,10 +1280,12 @@ async def run_kd_training(
             "accepted_teacher_trace_digest": trace_digest,
             "accepted_teacher_trace_path": str(trace_path),
             "student_model_id": config.model_id,
-            "initialization_source": "e4_grpo_step75",
-            "parent_checkpoint": config.parent_checkpoint,
-            "parent_state_path": config.parent_state_path,
-            "parent_sampler_path": config.parent_sampler_path,
+            "initialization_source": config.initialization_source,
+            "initialization_label": config.initialization_label,
+            "parent_checkpoint": None,
+            "parent_state_path": None,
+            "parent_sampler_path": None,
+            "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
             "student_selected_examples": len(prepared),
             "student_input_token_target": config.student_input_token_target,
             "student_selected_input_tokens": selected_input_tokens,
@@ -1293,7 +1301,7 @@ async def run_kd_training(
             "legacy_monitor_examples": len(monitor_rows),
             "legacy_monitor_estimated_cost_usd": monitor_cost,
             "selected_checkpoint": asdict(selected),
-            "selected_checkpoint_is_parent_e4": selected.step == 0,
+            "selected_checkpoint_is_initialization": selected.step == 0,
             "checkpoints": [asdict(record) for record in checkpoints],
             "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
             "reference_e4_formal_pass_at_4": E4_FORMAL_PASS_AT_4,
@@ -1304,26 +1312,27 @@ async def run_kd_training(
         report_path = _report_path(config, str(getattr(wandb_run, "id", "run")))
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-        wandb_run.summary.update(
-            {
-                "schema/version": DISTILLATION_SCHEMA_VERSION,
-                "schema/method": config.signal_kind,
-                "data/teacher_accepted_count": len(prepared),
-                "data/teacher_trace_digest": trace_digest,
-                "cost/teacher_generation_usd": teacher_cost,
-                "train/optimized_input_tokens": completed_input_tokens,
-                "train/input_token_delta_from_e4": (
-                    completed_input_tokens - E4_OPTIMIZED_INPUT_TOKENS
-                ),
-                "selection/selected_checkpoint_step": selected.step,
-                "checkpoint/selected_state_path": selected.state_path,
-                "checkpoint/selected_sampler_path": selected.sampler_path,
-                "selection/selected_is_parent": float(selected.step == 0),
-                "cost/cumulative_usd": total_cost,
-            }
-        )
+        summary = {
+            "schema/version": DISTILLATION_SCHEMA_VERSION,
+            "schema/method": config.signal_kind,
+            "data/teacher_accepted_count": len(prepared),
+            "data/teacher_trace_digest": trace_digest,
+            "cost/teacher_generation_usd": teacher_cost,
+            "train/optimized_input_tokens": completed_input_tokens,
+            "train/input_token_delta_from_e4": (
+                completed_input_tokens - E4_OPTIMIZED_INPUT_TOKENS
+            ),
+            "selection/selected_checkpoint_step": selected.step,
+            "selection/selected_is_initialization": float(selected.step == 0),
+            "cost/cumulative_usd": total_cost,
+        }
+        if selected.state_path is not None:
+            summary["checkpoint/selected_state_path"] = selected.state_path
+        if selected.sampler_path is not None:
+            summary["checkpoint/selected_sampler_path"] = selected.sampler_path
+        wandb_run.summary.update(summary)
         progress(
-            f"complete selected_step={selected.step} selected_parent="
+            f"complete selected_step={selected.step} selected_initialization="
             f"{selected.step == 0} optimized_input_tokens={completed_input_tokens} "
             f"estimated_cost=${total_cost:.4f}"
         )

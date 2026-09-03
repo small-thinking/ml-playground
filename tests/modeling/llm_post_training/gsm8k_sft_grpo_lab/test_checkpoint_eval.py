@@ -63,8 +63,8 @@ def test_kd_checkpoint_uses_the_same_formal_protocol():
         TRAINING_RUN_URL,
         experiment_id="e9",
         evaluation_stage="kd",
-        parent_checkpoint="e4-grpo-step75",
+        parent_checkpoint="base-fresh-lora",
     ).base_config()
 
     assert config.evaluation_stage == "kd"
-    assert config.parent_checkpoint == "e4-grpo-step75"
+    assert config.parent_checkpoint == "base-fresh-lora"

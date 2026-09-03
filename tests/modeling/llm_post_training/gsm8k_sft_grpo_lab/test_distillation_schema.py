@@ -26,9 +26,9 @@ def test_every_registered_kd_method_has_the_same_core_experiment_ledger():
         "cost/cumulative_usd",
         "dev/pass_at_1",
         "dev/pass_at_4",
-        "dev/is_parent_checkpoint",
+        "dev/is_initialization_policy",
         "selection/selected_checkpoint_step",
-        "selection/selected_is_parent",
+        "selection/selected_is_initialization",
     }
 
     for signal_kind in DISTILLATION_SIGNAL_KINDS:
