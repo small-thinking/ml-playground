@@ -91,10 +91,18 @@ total. This matches the **student update-token ledger**, not teacher generation
 cost and not initialization history. The implementation allows a single final
 datum to cross that target and records the exact excess, rather than truncating
 a correct solution. Teacher generation input/output tokens and student CE input
-tokens are logged and costed separately. The existing 64-prompt `rl_monitor`
-remains a legacy within-run selector between the Base initialization and KD
-checkpoints only; a selected KD sampler still needs a formal comparison against
-frozen E4 before any promotion.
+tokens are logged and costed separately.
+
+KD development selection is deliberately separated from KD training: the
+teacher may only generate targets from `rl_train`, while student-only G4
+rollouts run on a fixed 128-prompt prefix of `sft_validation` at initialization
+and every 20,000 optimized student input tokens (plus the terminal checkpoint).
+Each event logs Pass@1, Pass@4, rollout count, response-diversity diagnostics,
+and a W&B table of the four raw responses per prompt. The selected checkpoint's
+Pass@1/Pass@4 are written explicitly to the W&B summary. This development set
+is held out from KD training but has been reused elsewhere in the study, so it
+selects checkpoints within a run and never substitutes for the frozen formal
+evaluation.
 
 ### A shared schema for the entire KD ladder
 
@@ -105,7 +113,9 @@ weighted-token ledgers, teacher/student/development cost ledgers, fixed
 behavioral development metrics, and the rule that `dev/pass_at_4` then
 `dev/pass_at_1` can select a checkpoint. The metric dictionary written beside
 each run records the definition, unit, decision role, and caveat for every
-chart.
+chart. The v2 schema intentionally does not claim a held-out teacher-trace NLL:
+until the runner implements and verifies a non-mutating forward-only path,
+behavioral student rollouts are the KD validation signal.
 
 Each method then adds only its semantically meaningful diagnostics. E9 adds
 teacher acceptance/rejection statistics and hard-KD NLL; a future Top-K route
@@ -154,7 +164,19 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_trainin
   --hard-cap-usd 8.00
 
 UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train \
-  --run --allow-paid --hard-cap-usd 8.00
+  --attempt 2 --run --allow-paid --hard-cap-usd 8.00
+```
+
+Before any E9 formal evaluation, audit the completed a01 sampler on the
+separate frozen calibration test split. The first command is local-only; add
+`--run --allow-paid` only after inspecting its bounded cost.
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.checkpoint_eval \
+  --sampler-path 'tinker://ed5d6793-4a81-5a1b-b8af-b618f2dbf1aa:train:0/sampler_weights/e9-kd-teacher-response-qwen-qwen3-5-9b-base-teacher-qwen3-5-397b-a17b-from-base-fresh-lora-r32-b8-lr3e-4-tokmatch-e4-54760-cap800-m64-a01-seed20260901-step23' \
+  --source-training-run-url 'https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/n7pmhvou' \
+  --experiment-id e9 --evaluation-stage kd --parent-checkpoint base-fresh-lora \
+  --evaluation-split calibration --hard-cap-usd 0.25
 ```
 
 Paid commands require an explicit `--run --allow-paid` authorization and a

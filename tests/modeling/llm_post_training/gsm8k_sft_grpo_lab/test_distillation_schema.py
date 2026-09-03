@@ -26,8 +26,13 @@ def test_every_registered_kd_method_has_the_same_core_experiment_ledger():
         "cost/cumulative_usd",
         "dev/pass_at_1",
         "dev/pass_at_4",
+        "dev/optimized_input_tokens",
+        "dev/generated_rollouts",
+        "dev/group_unique_response_frac",
         "dev/is_initialization_policy",
         "selection/selected_checkpoint_step",
+        "selection/selected_dev_pass_at_1",
+        "selection/selected_dev_pass_at_4",
         "selection/selected_is_initialization",
     }
 
@@ -51,10 +56,13 @@ def test_schema_marks_only_dev_behavior_as_a_checkpoint_selector():
 
     assert schema["selection_policy"]["primary"] == "dev/pass_at_4"
     assert "train/hard_kd_nll" in schema["selection_policy"]["prohibited"]
-    assert "algorithm-independent frozen formal inference" in schema[
-        "selection_policy"
-    ]["formal_rule"]
-    assert "Held-out teacher-trace NLL" in metric_dictionary_markdown(HARD_RESPONSE)
+    assert (
+        "algorithm-independent frozen formal inference"
+        in schema["selection_policy"]["formal_rule"]
+    )
+    assert "Development unique-response fraction" in metric_dictionary_markdown(
+        HARD_RESPONSE
+    )
 
 
 def test_wandb_configuration_uses_shared_axes_and_method_specific_summaries():
@@ -65,16 +73,19 @@ def test_wandb_configuration_uses_shared_axes_and_method_specific_summaries():
     configure_wandb_metrics(judge_run, TEACHER_JUDGE)
 
     assert ("train/*", {"step_metric": "train/optimizer_step"}) in hard_run.calls
-    assert ("dev/*", {"step_metric": "dev/checkpoint_step"}) in hard_run.calls
+    assert ("dev/*", {"step_metric": "dev/optimized_input_tokens"}) in hard_run.calls
     assert ("train/hard_kd_nll", {"summary": "min"}) in hard_run.calls
     assert ("train/hard_kd_nll", {"summary": "min"}) not in judge_run.calls
 
 
 def test_schema_validation_rejects_unknown_dashboard_keys():
-    assert validate_logged_metric_keys(
-        HARD_RESPONSE,
-        ["train/hard_kd_nll", "checkpoint/state_path"],
-    ) == ()
+    assert (
+        validate_logged_metric_keys(
+            HARD_RESPONSE,
+            ["train/hard_kd_nll", "checkpoint/state_path"],
+        )
+        == ()
+    )
     assert validate_logged_metric_keys(HARD_RESPONSE, ["teacher/old_name"]) == (
         "teacher/old_name",
     )

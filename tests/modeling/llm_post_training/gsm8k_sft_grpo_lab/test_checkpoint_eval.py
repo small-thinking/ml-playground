@@ -68,3 +68,20 @@ def test_kd_checkpoint_uses_the_same_formal_protocol():
 
     assert config.evaluation_stage == "kd"
     assert config.parent_checkpoint == "base-fresh-lora"
+
+
+def test_checkpoint_eval_supports_a_bounded_calibration_audit():
+    config = CheckpointFormalEvalConfig(
+        SAMPLER_PATH,
+        TRAINING_RUN_URL,
+        experiment_id="e9",
+        evaluation_stage="kd",
+        parent_checkpoint="base-fresh-lora",
+        evaluation_split="calibration",
+        eval_examples=32,
+        hard_cap_usd=0.25,
+    ).base_config()
+
+    assert config.evaluation_split == "calibration"
+    assert config.eval_examples == 32
+    assert config.group_size == 4

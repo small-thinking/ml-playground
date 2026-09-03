@@ -68,6 +68,7 @@ METRIC_KEYS = (
     "eval/group_all_wrong_frac",
     "eval/group_mixed_frac",
     "eval/group_reward_std_mean",
+    "eval/group_unique_response_frac",
     "eval/process_check_coverage",
     "eval/process_validity_rate",
     "eval/final_correct_process_invalid",
@@ -137,9 +138,13 @@ class BaseEvalConfig:
         if self.evaluation_stage == "base" and self.model_path is not None:
             raise BaseEvalError("base evaluation must use a base model, not model_path")
         if self.evaluation_stage != "base" and not self.model_path:
-            raise BaseEvalError("post-training evaluation requires a sampler model_path")
+            raise BaseEvalError(
+                "post-training evaluation requires a sampler model_path"
+            )
         if self.model_path and "/sampler_weights/" not in self.model_path:
-            raise BaseEvalError("model_path must be a Tinker sampler_weights checkpoint")
+            raise BaseEvalError(
+                "model_path must be a Tinker sampler_weights checkpoint"
+            )
         if self.attempt <= 0 or self.eval_examples <= 0 or self.group_size != 4:
             raise BaseEvalError("evaluation requires a positive example count and G=4")
         if self.evaluation_split not in {"calibration", "formal"}:

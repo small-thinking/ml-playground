@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 
-DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v1"
+DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v2"
 
 HARD_RESPONSE = "teacher-response"
 TOPK_RESPONSE = "teacher-topk"
@@ -258,6 +258,29 @@ COMMON_METRICS = (
         caveat="This is an x-axis, not an optimization target.",
     ),
     MetricSpec(
+        key="dev/optimized_input_tokens",
+        label="Development checkpoint input tokens",
+        group="dev",
+        direction="none",
+        unit="tokens",
+        decision_role=DECISION_REPORTING,
+        definition=(
+            "Cumulative student optimized input tokens when the development "
+            "rollouts were sampled."
+        ),
+        caveat="Use this token x-axis rather than optimizer step across KD routes.",
+    ),
+    MetricSpec(
+        key="dev/generated_rollouts",
+        label="Development generated rollouts",
+        group="dev",
+        direction="none",
+        unit="rollouts",
+        decision_role=DECISION_REPORTING,
+        definition="Number of student completions sampled for this development result.",
+        caveat="Pass@4 requires exactly four rollouts per development prompt.",
+    ),
+    MetricSpec(
         key="dev/pass_at_1",
         label="Development Pass@1",
         group="dev",
@@ -364,6 +387,22 @@ COMMON_METRICS = (
         caveat="Useful for rollout diversity diagnostics, not an outcome metric.",
     ),
     MetricSpec(
+        key="dev/group_unique_response_frac",
+        label="Development unique-response fraction",
+        group="dev",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition=(
+            "Mean fraction of distinct decoded responses within each G4 development "
+            "rollout group."
+        ),
+        caveat=(
+            "Detects sampling collapse; textual diversity alone is not problem-solving "
+            "quality."
+        ),
+    ),
+    MetricSpec(
         key="dev/process_check_coverage",
         label="Development arithmetic-check coverage",
         group="dev",
@@ -412,6 +451,26 @@ COMMON_METRICS = (
         decision_role=DECISION_REPORTING,
         definition="Checkpoint chosen by the declared development selection policy.",
         caveat="Selection provenance, not a performance metric.",
+    ),
+    MetricSpec(
+        key="selection/selected_dev_pass_at_1",
+        label="Selected checkpoint development Pass@1",
+        group="selection",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_REPORTING,
+        definition="Development Pass@1 of the checkpoint retained by the declared selector.",
+        caveat="A development statistic, never a formal result.",
+    ),
+    MetricSpec(
+        key="selection/selected_dev_pass_at_4",
+        label="Selected checkpoint development Pass@4",
+        group="selection",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_REPORTING,
+        definition="Development Pass@4 of the checkpoint retained by the declared selector.",
+        caveat="A development statistic, never a formal result.",
     ),
     MetricSpec(
         key="selection/selected_is_initialization",
@@ -529,16 +588,6 @@ HARD_RESPONSE_METRICS = (
         decision_role=DECISION_DIAGNOSTIC,
         definition="Exponentiated hard-KD NLL for readability.",
         caveat="Monotonic with NLL and carries the same selection limitation.",
-    ),
-    MetricSpec(
-        key="dev/teacher_trace_nll",
-        label="Held-out teacher-trace NLL",
-        group="dev",
-        direction="lower",
-        unit="nats/token",
-        decision_role=DECISION_DIAGNOSTIC,
-        definition="Student NLL on fixed held-out teacher traces.",
-        caveat="Useful for instability/overfit diagnosis, never the primary selector.",
     ),
 )
 
@@ -660,7 +709,9 @@ def method_spec(signal_kind: str) -> DistillationMethodSpec:
         return METHOD_SPECS[signal_kind]
     except KeyError as exc:
         allowed = ", ".join(DISTILLATION_SIGNAL_KINDS)
-        raise ValueError(f"unknown distillation signal_kind={signal_kind}; use {allowed}") from exc
+        raise ValueError(
+            f"unknown distillation signal_kind={signal_kind}; use {allowed}"
+        ) from exc
 
 
 def metric_specs(signal_kind: str) -> Tuple[MetricSpec, ...]:
@@ -741,7 +792,7 @@ def configure_wandb_metrics(run: Any, signal_kind: str) -> None:
     if not callable(define_metric):
         return
     define_metric("train/*", step_metric="train/optimizer_step")
-    define_metric("dev/*", step_metric="dev/checkpoint_step")
+    define_metric("dev/*", step_metric="dev/optimized_input_tokens")
     define_metric("dev/pass_at_4", summary="max")
     define_metric("dev/pass_at_1", summary="max")
     metric_keys = {spec.key for spec in metric_specs(signal_kind)}
@@ -757,5 +808,11 @@ def validate_logged_metric_keys(
 ) -> Tuple[str, ...]:
     """Return unregistered keys, excluding W&B's internal bookkeeping metrics."""
     allowed = {spec.key for spec in metric_specs(signal_kind)}
-    allowed.update({"checkpoint/state_path", "checkpoint/sampler_path"})
+    allowed.update(
+        {
+            "checkpoint/state_path",
+            "checkpoint/sampler_path",
+            "tables/development_rollouts",
+        }
+    )
     return tuple(sorted(set(keys) - allowed))
