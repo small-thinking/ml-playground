@@ -3,10 +3,11 @@
 Add one row after each calibration or experiment. A failed or inconclusive run
 is evidence and must remain recorded.
 
-Metric note: the legacy `pass@1` key is the mean exact-answer rate across all
-four rollouts per prompt (and is therefore equal to `exact_match`); it is not
-the conventional accuracy of only the first sampled completion. `pass@4` is
-the fraction of prompt groups with at least one correct completion.
+Metric note: standard Pass@1 is the probability that one random completion is
+correct. This lab estimates it by the mean exact-answer rate across four
+independent rollouts per prompt (and it therefore equals `exact_match` under
+the binary GSM8K scorer). Pass@4 is the fraction of prompt groups with at
+least one correct completion.
 
 | Experiment | W&B run | Parent checkpoint | Frozen config | Comparison figure | Decision | Actual cost |
 | --- | --- | --- | --- | --- | --- | --- |

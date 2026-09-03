@@ -1,18 +1,10 @@
-# Curated W&B Figures
+# Curated figures
 
-Store reviewable screenshots here, not raw W&B downloads.
+`gsm8k-posttraining-formal-results-v1.png` is the publication-style summary
+of the shared GSM8K formal protocol. It is generated from the W&B run summaries
+listed in `../experiment_log.md`, checked against their source values, and
+tracked with Git LFS through the exact path in the repository's `.gitattributes`.
 
-Use these filename patterns:
-
-```text
-e0-base__outcome-and-group-difficulty.png
-e1-sft-clean__train-and-eval.png
-e1-e2-e3__sft-debugging-comparison.png
-e4-grpo-clean__learning-dynamics.png
-e4-e5-e6-e7__grpo-failure-comparison.png
-```
-
-Each screenshot must be linked from `../experiment_log.md` with its W&B run
-URL and frozen config. Redact tokens, private URLs, and sensitive raw examples
-before committing. Use Git LFS only for figures that exceed the repository's
-small-image policy; do not track every PNG by default.
+Keep raw W&B exports, prompts, completions, and model artifacts out of this
+directory. New figures should be linked from the main README or experiment
+ledger and should cite their W&B source runs and frozen protocol.
