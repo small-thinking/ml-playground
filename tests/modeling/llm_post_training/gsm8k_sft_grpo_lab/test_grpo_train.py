@@ -178,6 +178,11 @@ class _AllCorrectTrainingClient(_FakeTrainingClient):
         return _AllCorrectSamplingClient()
 
 
+class _AllWrongTrainingClient(_FakeTrainingClient):
+    async def save_weights_and_get_sampling_client_async(self):
+        return _AllWrongSamplingClient()
+
+
 class _ResamplingServiceClient(_FakeServiceClient):
     def __init__(self):
         self.training_client = _ResamplingTrainingClient()
@@ -188,6 +193,13 @@ class _ResamplingServiceClient(_FakeServiceClient):
 class _AllCorrectServiceClient(_FakeServiceClient):
     def __init__(self):
         self.training_client = _AllCorrectTrainingClient()
+        self.loaded = None
+        self.created_from_base = None
+
+
+class _AllWrongServiceClient(_FakeServiceClient):
+    def __init__(self):
+        self.training_client = _AllWrongTrainingClient()
         self.loaded = None
         self.created_from_base = None
 
@@ -324,6 +336,37 @@ def test_e6_cli_records_a_bounded_total_signal_budget():
 
     assert config.max_training_candidate_groups == 1200
     assert "sig2x4-tot56-cap1200" in config.run_name
+
+
+def test_e7_cli_records_the_pre_registered_fixed_sign_estimator():
+    config = _config_from_args(
+        parse_args(
+            [
+                "--experiment-id",
+                "e7",
+                "--advantage-estimator",
+                "fixed-sign",
+            ]
+        )
+    )
+
+    assert config.experiment_id == "e7"
+    assert config.advantage_estimator == "fixed-sign"
+    assert "advfixed-sign" in config.run_name
+
+
+def test_e7_rejects_group_mean_advantages():
+    with pytest.raises(GRPOTrainingError, match="fixed-sign"):
+        _config(experiment_id="e7").validate(_manifest())
+
+
+def test_e7_rejects_mixed_group_resampling_controls():
+    with pytest.raises(GRPOTrainingError, match="cannot resample"):
+        _config(
+            experiment_id="e7",
+            advantage_estimator="fixed-sign",
+            min_effective_groups=1,
+        ).validate(_manifest())
 
 
 def test_total_signal_budget_requires_a_matching_candidate_cap():
@@ -530,6 +573,47 @@ def test_e6_stops_when_the_candidate_cap_is_exhausted():
     assert report["training_stop_reason"] == "candidate_group_budget"
     assert report["effective_group_count"] == 0
     assert [record["step"] for record in report["checkpoints"]] == [2]
+
+
+@pytest.mark.parametrize(
+    ("service_type", "expected_advantage"),
+    [(_AllCorrectServiceClient, 1.0), (_AllWrongServiceClient, -1.0)],
+)
+def test_e7_updates_degenerate_groups_with_fixed_sign_advantages(
+    service_type, expected_advantage
+):
+    manifest = _manifest()
+    service = service_type()
+    wandb = _FakeWandb()
+
+    report = asyncio.run(
+        run_grpo_training(
+            _config(
+                experiment_id="e7",
+                advantage_estimator="fixed-sign",
+                steps=1,
+                batch_size=1,
+            ),
+            allow_paid=True,
+            manifest=manifest,
+            environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+            tinker_module=_FakeTinker,
+            wandb_module=wandb,
+            service_client=service,
+            train_rows=_rows("rl", 2),
+            monitor_rows=_rows("monitor", 1),
+            progress=lambda _: None,
+        )
+    )
+
+    assert len(service.training_client.forward_backward_calls) == 1
+    data = service.training_client.forward_backward_calls[0][0]
+    assert all(
+        datum.loss_fn_inputs["advantages"] == [0.0, expected_advantage]
+        for datum in data
+    )
+    assert report["effective_group_count"] == 0
+    assert report["nonzero_advantage_group_count"] == 1
 
 
 def test_early_stopping_uses_the_held_out_monitor_not_training_reward():

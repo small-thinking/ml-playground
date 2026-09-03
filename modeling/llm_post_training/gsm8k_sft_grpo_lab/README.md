@@ -26,7 +26,8 @@ tool defines the laboratory's identity or directory name.
 9. Run E4 clean GRPO from the promoted SFT checkpoint, then E5 signal-aware
    GRPO with bounded resampling and monitor-based early stopping. E6 keeps that
    higher update density while restoring E4's total effective-gradient budget.
-   E7 may test a learning-rate change only after that comparison.
+   E7 is the single fixed-sign-advantage ablation for binary-reward gradient
+   starvation; it is not a hyperparameter search.
 10. Export only the promoted clean SFT and GRPO adapters, compare them locally,
    and publish the final experiment report.
 
@@ -102,11 +103,14 @@ The core metrics are:
   compared with E0 Base.
 - GRPO signal: `train/reward_mean`, `train/group_mixed_frac`,
   `train/degenerate_group_frac`, `train/effective_group_count`,
-  `train/candidate_group_count`, `train/resample_rounds`, and
-  `train/group_reward_std`. E5 also logs its per-step effective-group target and
-  whether bounded resampling reached it. E6 additionally logs cumulative
-  effective groups, the total target, the global candidate cap, and the stop
-  reason.
+  `train/nonzero_advantage_group_count`, `train/candidate_group_count`,
+  `train/resample_rounds`, and `train/group_reward_std`. `effective_group_count`
+  retains its historical meaning—mixed-reward groups—while
+  `nonzero_advantage_group_count` records groups that actually produce a
+  gradient under the configured advantage estimator. E5 also logs its per-step
+  effective-group target and whether bounded resampling reached it. E6
+  additionally logs cumulative effective groups, the total target, the global
+  candidate cap, and the stop reason.
 - GRPO selection: fixed `rl_monitor/pass_at_4`, then pass@1, records every
   checkpoint table including step 0, and logs best-so-far monitor scores,
   material-regression streak, and stop decision when early stopping is enabled.
@@ -161,6 +165,9 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
    E4's 52, but its selected step-25 checkpoint still did not exceed E4.
    This rejects the matched-effective-group-budget hypothesis, not GRPO as a
    method or every possible reward design.
+7. E7 is pre-registered as one fixed-sign-advantage test. It keeps E4's
+   initialization, prompts, rollout budget, G4, learning rate, monitor, and
+   checkpoint cadence; only the group-relative advantage changes.
 
 ## E4 clean-GRPO command
 
@@ -333,6 +340,46 @@ candidate groups. The frozen monitor selected step 25 (`pass@1=0.8242`,
 scored pass@1 `0.7034` and pass@4 `0.7343`, below E4's `0.7197` and `0.7506`.
 E6 therefore rejects the fixed-effective-budget continuation of E5; it does
 not establish a GRPO ceiling beyond this binary-reward, fixed-data setting.
+
+## E7 fixed-sign-advantage ablation
+
+E7 is a single algorithmic test of the binary-reward gradient-starvation
+hypothesis, motivated by the observation that E4 and E6 produced mixed rewards
+for only 52/800 and 56/1,128 candidate prompt groups. It does **not** reproduce
+an external paper wholesale or claim to be standard GRPO: it holds the frozen
+prompt set and on-policy rollout pipeline fixed while replacing only the
+advantage baseline.
+
+E4--E6 use `advantage = reward - group_mean_reward`, so all-correct and
+all-wrong G4 groups have zero advantage and are skipped. E7 uses the
+pre-registered `fixed-sign` rule: an exact-answer reward of `1` becomes `+1`,
+and `0` becomes `-1`. Therefore every sampled completion is supplied to the
+same `importance_sampling` loss, including degenerate groups. It keeps the E2
+step-250 training-state parent, 100 steps, batch size 8, G4, LR `2e-5`, 64
+frozen monitor prompts, and checkpoints at steps 25/50/75/100. It uses exactly
+800 candidate groups and does not resample for mixed groups.
+
+This preserves E4's rollout budget but not its actual optimization-token cost:
+E4 skipped most sampled groups, whereas E7 trains on all of them. The local
+preflight deliberately charges the full worst-case optimization budget. Do not
+describe a result as equal-compute; report both rollout and optimized-token
+totals. Select a checkpoint only by the pre-existing monitor rule (pass@4,
+then pass@1), and run a formal evaluation only if it clears that selection
+rule. If E7 fails to improve, stop the fixed-prompt, binary-outcome-reward GRPO
+branch rather than sweeping ordinary hyperparameters.
+
+Preflight (no remote training or W&B write):
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
+  modeling.llm_post_training.gsm8k_sft_grpo_lab.grpo_train \
+  --experiment-id e7 --advantage-estimator fixed-sign \
+  --steps 100 --batch-size 8 --group-size 4 --learning-rate 2e-5 \
+  --monitor-examples 64 --checkpoint-every 25 --hard-cap-usd 12
+```
+
+After reviewing the resulting local cost gate, append `--run --allow-paid` to
+that exact command to start the paid E7 training run.
 
 ## E1 SFT command
 

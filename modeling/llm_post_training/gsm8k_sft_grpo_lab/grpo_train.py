@@ -45,7 +45,8 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.evaluation import (
 
 
 EXPERIMENT_ID = "e4"
-GRPO_EXPERIMENT_IDS = ("e4", "e5", "e6")
+GRPO_EXPERIMENT_IDS = ("e4", "e5", "e6", "e7")
+ADVANTAGE_ESTIMATORS = ("group-mean", "fixed-sign")
 PARENT_CHECKPOINT = "e2-sft-qwen-qwen3-5-9b-base-r32-b8-lr3e-4-linear-gm128-a01-step250"
 PARENT_STATE_PATH = (
     "tinker://5048e951-841f-53d9-9388-87cb865de0bb:train:0/weights/"
@@ -112,6 +113,7 @@ class GRPOConfig:
     batch_size: int = DEFAULT_BATCH_SIZE
     group_size: int = DEFAULT_GROUP_SIZE
     learning_rate: float = DEFAULT_LEARNING_RATE
+    advantage_estimator: str = "group-mean"
     temperature: float = 1.0
     max_prompt_tokens: int = MAX_PROMPT_TOKENS
     max_output_tokens: int = MAX_OUTPUT_TOKENS
@@ -133,7 +135,37 @@ class GRPOConfig:
 
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if self.experiment_id not in GRPO_EXPERIMENT_IDS:
-            raise GRPOTrainingError("GRPO experiment_id must be e4, e5, or e6")
+            allowed_experiments = ", ".join(GRPO_EXPERIMENT_IDS)
+            raise GRPOTrainingError(
+                f"GRPO experiment_id must be one of {allowed_experiments}"
+            )
+        if self.advantage_estimator not in ADVANTAGE_ESTIMATORS:
+            allowed_estimators = ", ".join(ADVANTAGE_ESTIMATORS)
+            raise GRPOTrainingError(
+                f"advantage_estimator must be one of {allowed_estimators}"
+            )
+        if self.experiment_id == "e7" and self.advantage_estimator != "fixed-sign":
+            raise GRPOTrainingError(
+                "E7 is pre-registered to use the fixed-sign advantage estimator"
+            )
+        if self.experiment_id != "e7" and self.advantage_estimator != "group-mean":
+            raise GRPOTrainingError(
+                "fixed-sign advantage is reserved for the pre-registered E7 ablation"
+            )
+        if self.experiment_id == "e7" and any(
+            value
+            for value in (
+                self.min_effective_groups,
+                self.max_resample_rounds,
+                self.target_total_effective_groups,
+                self.max_total_candidate_groups,
+                self.early_stopping_patience,
+            )
+        ):
+            raise GRPOTrainingError(
+                "E7 uses every sampled group and cannot resample, target mixed "
+                "groups, or early stop"
+            )
         if not self.model_id or not self.project or not self.suite_id:
             raise GRPOTrainingError(
                 "model, project, and suite identifiers are required"
@@ -190,9 +222,7 @@ class GRPOConfig:
         if self.max_resample_rounds < 0:
             raise GRPOTrainingError("max_resample_rounds cannot be negative")
         if self.min_effective_groups == 0 and self.max_resample_rounds:
-            raise GRPOTrainingError(
-                "max_resample_rounds requires min_effective_groups"
-            )
+            raise GRPOTrainingError("max_resample_rounds requires min_effective_groups")
         total_budget = (
             self.target_total_effective_groups,
             self.max_total_candidate_groups,
@@ -212,9 +242,7 @@ class GRPOConfig:
                     "target_total_effective_groups must be positive"
                 )
             if self.max_total_candidate_groups <= 0:
-                raise GRPOTrainingError(
-                    "max_total_candidate_groups must be positive"
-                )
+                raise GRPOTrainingError("max_total_candidate_groups must be positive")
             if self.target_total_effective_groups > self.max_total_candidate_groups:
                 raise GRPOTrainingError(
                     "target_total_effective_groups cannot exceed "
@@ -226,9 +254,7 @@ class GRPOConfig:
             if not self.monitor_examples:
                 raise GRPOTrainingError("early stopping requires rl_monitor examples")
         if self.early_stopping_max_regression < 0:
-            raise GRPOTrainingError(
-                "early_stopping_max_regression cannot be negative"
-            )
+            raise GRPOTrainingError("early_stopping_max_regression cannot be negative")
         if manifest is not None:
             manifest.validate()
             if self.batch_size > len(manifest.rl_train_ids):
@@ -251,6 +277,8 @@ class GRPOConfig:
             f"-b{self.batch_size}-g{self.group_size}-lr{lr_slug}"
             f"-from-{source_slug}-s{self.steps}-m{self.monitor_examples}-a{self.attempt:02d}"
         )
+        if self.advantage_estimator != "group-mean":
+            name += f"-adv{self.advantage_estimator}"
         if self.min_effective_groups:
             name += f"-sig{self.min_effective_groups}x{self.max_resample_rounds + 1}"
         if self.target_total_effective_groups is not None:
@@ -412,12 +440,12 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "initialization_source": config.init_source,
         "initialization_label": config.initialization_label
         or ("base" if config.init_source == "base" else "e2s250"),
-        "parent_checkpoint": config.parent_checkpoint
-        if config.init_source == "sft"
-        else None,
-        "parent_state_path": config.parent_state_path
-        if config.init_source == "sft"
-        else None,
+        "parent_checkpoint": (
+            config.parent_checkpoint if config.init_source == "sft" else None
+        ),
+        "parent_state_path": (
+            config.parent_state_path if config.init_source == "sft" else None
+        ),
         "parent_sampler_path": (
             config.parent_sampler_path if config.init_source == "sft" else None
         ),
@@ -435,6 +463,12 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "batch_size": config.batch_size,
         "group_size": config.group_size,
         "learning_rate": config.learning_rate,
+        "advantage_estimator": config.advantage_estimator,
+        "advantage_definition": (
+            "reward minus the mean reward within each G-way rollout group"
+            if config.advantage_estimator == "group-mean"
+            else "2 * exact_binary_reward - 1; every completion receives +/-1"
+        ),
         "temperature": config.temperature,
         "max_prompt_tokens": config.max_prompt_tokens,
         "max_output_tokens": config.max_output_tokens,
@@ -446,7 +480,7 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
         "max_total_candidate_groups": config.max_total_candidate_groups,
         "max_training_candidate_groups": config.max_training_candidate_groups,
         "formal_comparison_baseline": (
-            "e4-grpo-step75" if config.experiment_id == "e6" else None
+            "e4-grpo-step75" if config.experiment_id in {"e6", "e7"} else None
         ),
         "early_stopping_patience": config.early_stopping_patience,
         "early_stopping_max_regression": config.early_stopping_max_regression,
@@ -461,11 +495,19 @@ def _tracking_config(config: GRPOConfig, manifest: SplitManifest) -> Dict[str, A
             "Signal-packed GRPO with at least E4's total effective-group budget "
             "improves the E4 formal result."
             if config.experiment_id == "e6"
-            else "On-policy binary-answer GRPO improves held-out RL-monitor pass@4 "
-            f"from the {config.init_source} initialization policy."
+            else (
+                "Fixed-sign advantages prevent binary-reward group-mean "
+                "gradient starvation and improve the E4 formal result."
+                if config.experiment_id == "e7"
+                else "On-policy binary-answer GRPO improves held-out RL-monitor "
+                f"pass@4 from the {config.init_source} initialization policy."
+            )
         ),
         "expected_failure": (
-            "Too many degenerate groups leave too little learning signal, or "
+            "Fixed-sign updates on all-correct or all-wrong groups destabilize "
+            "the policy or fail to improve the frozen monitor."
+            if config.experiment_id == "e7"
+            else "Too many degenerate groups leave too little learning signal, or "
             "monitor pass metrics regress despite rising training reward."
         ),
     }
@@ -495,12 +537,12 @@ def build_doctor_report(
         "initialization_source": config.init_source,
         "initialization_label": config.initialization_label
         or ("base" if config.init_source == "base" else "e2s250"),
-        "parent_checkpoint": config.parent_checkpoint
-        if config.init_source == "sft"
-        else None,
-        "parent_state_path": config.parent_state_path
-        if config.init_source == "sft"
-        else None,
+        "parent_checkpoint": (
+            config.parent_checkpoint if config.init_source == "sft" else None
+        ),
+        "parent_state_path": (
+            config.parent_state_path if config.init_source == "sft" else None
+        ),
         "parent_sampler_path": (
             config.parent_sampler_path if config.init_source == "sft" else None
         ),
@@ -510,6 +552,7 @@ def build_doctor_report(
         "steps": config.steps,
         "batch_size": config.batch_size,
         "group_size": config.group_size,
+        "advantage_estimator": config.advantage_estimator,
         "training_rollouts": config.steps * config.batch_size * config.group_size,
         "max_training_rollouts": config.max_training_candidate_groups
         * config.group_size,
@@ -664,6 +707,20 @@ async def _sample_groups(
     return tuple(groups_by_index[index] for index in range(len(rows)))
 
 
+def _advantages_for_rewards(
+    rewards: Sequence[float], config: GRPOConfig
+) -> list[float]:
+    """Return the pre-registered per-completion learning signal for one group."""
+    if config.advantage_estimator == "group-mean":
+        mean_reward = sum(rewards) / len(rewards)
+        return [reward - mean_reward for reward in rewards]
+    if config.advantage_estimator == "fixed-sign":
+        return [2.0 * reward - 1.0 for reward in rewards]
+    raise GRPOTrainingError(
+        f"unsupported advantage estimator: {config.advantage_estimator}"
+    )
+
+
 def _group_metrics(
     groups: Sequence[RolloutGroup], config: GRPOConfig
 ) -> Dict[str, float]:
@@ -674,12 +731,14 @@ def _group_metrics(
         for group in groups
     ]
     flat_rewards = [reward for group in rewards for reward in group]
-    advantages = [
-        reward - sum(group) / len(group) for group in rewards for reward in group
-    ]
+    advantages_by_group = [_advantages_for_rewards(group, config) for group in rewards]
+    advantages = [value for group in advantages_by_group for value in group]
     all_correct = sum(all(group) for group in rewards)
     all_wrong = sum(not any(group) for group in rewards)
     mixed = len(groups) - all_correct - all_wrong
+    nonzero_advantage_groups = sum(
+        any(advantage != 0.0 for advantage in group) for group in advantages_by_group
+    )
     return {
         "train/reward_mean": sum(flat_rewards) / len(flat_rewards),
         "train/group_pass_at_4": sum(any(group[:4]) for group in rewards) / len(groups),
@@ -688,6 +747,8 @@ def _group_metrics(
         "train/group_mixed_frac": mixed / len(groups),
         "train/degenerate_group_frac": (all_correct + all_wrong) / len(groups),
         "train/effective_group_count": float(mixed),
+        "train/nonzero_advantage_group_count": float(nonzero_advantage_groups),
+        "train/nonzero_advantage_group_frac": nonzero_advantage_groups / len(groups),
         "train/group_reward_std_mean": sum(
             statistics.pstdev(group) for group in rewards
         )
@@ -714,15 +775,14 @@ def _group_metrics(
 
 
 def _materialize_rl_datums(
-    groups: Sequence[RolloutGroup], tinker_module: Any
+    groups: Sequence[RolloutGroup], tinker_module: Any, config: GRPOConfig
 ) -> Tuple[list[Any], int]:
-    """Mask prompts and apply each group-relative advantage to completion tokens."""
+    """Mask prompts and apply the configured advantage to completion tokens."""
     data = []
     input_tokens = 0
     for group in groups:
         rewards = [float(rollout.scored.correct) for rollout in group.rollouts]
-        mean_reward = sum(rewards) / len(rewards)
-        advantages = [reward - mean_reward for reward in rewards]
+        advantages = _advantages_for_rewards(rewards, config)
         if all(advantage == 0.0 for advantage in advantages):
             continue
         prefix_length = len(group.prompt_tokens) - 1
@@ -955,7 +1015,8 @@ async def run_grpo_training(
     try:
         progress(
             f"authorized run={config.run_name} steps={config.steps} batch={config.batch_size} "
-            f"groups={config.group_size} monitor={len(monitor_rows)} "
+            f"groups={config.group_size} advantage={config.advantage_estimator} "
+            f"monitor={len(monitor_rows)} "
             f"max_cost=${estimate_max_token_cost_usd(config, manifest):.4f}"
         )
         if config.init_source == "sft":
@@ -998,6 +1059,7 @@ async def run_grpo_training(
         early_stop_triggered = False
         completed_steps = 0
         cumulative_effective_group_count = 0
+        cumulative_nonzero_advantage_group_count = 0
         training_stop_reason: Optional[str] = None
         if monitor_rows:
             progress(f"monitoring initialization policy prompts={len(monitor_rows)}")
@@ -1125,6 +1187,9 @@ async def run_grpo_training(
             cumulative_effective_group_count += int(
                 metrics["train/effective_group_count"]
             )
+            cumulative_nonzero_advantage_group_count += int(
+                metrics["train/nonzero_advantage_group_count"]
+            )
             total_effective_target_reached = bool(
                 config.target_total_effective_groups is not None
                 and cumulative_effective_group_count
@@ -1138,7 +1203,9 @@ async def run_grpo_training(
                 training_stop_reason = "target_total_effective_groups"
             elif candidate_group_budget_exhausted:
                 training_stop_reason = "candidate_group_budget"
-            data, batch_input_tokens = _materialize_rl_datums(groups, tinker_module)
+            data, batch_input_tokens = _materialize_rl_datums(
+                groups, tinker_module, config
+            )
             optimized_input_tokens += batch_input_tokens
             loss_sum = 0.0
             if data:
@@ -1164,9 +1231,7 @@ async def run_grpo_training(
                     "train/datums": float(len(data)),
                     "train/candidate_group_count": float(len(groups)),
                     "train/resample_rounds": float(resample_rounds),
-                    "train/target_effective_groups": float(
-                        config.min_effective_groups
-                    ),
+                    "train/target_effective_groups": float(config.min_effective_groups),
                     "train/target_effective_groups_reached": float(
                         not config.min_effective_groups
                         or metrics["train/effective_group_count"]
@@ -1174,6 +1239,9 @@ async def run_grpo_training(
                     ),
                     "train/cumulative_effective_group_count": float(
                         cumulative_effective_group_count
+                    ),
+                    "train/cumulative_nonzero_advantage_group_count": float(
+                        cumulative_nonzero_advantage_group_count
                     ),
                     "train/target_total_effective_groups": float(
                         config.target_total_effective_groups or 0
@@ -1227,7 +1295,9 @@ async def run_grpo_training(
                         if config.target_total_effective_groups is not None
                         else " "
                     )
-                    + f"datums={len(data)} throughput="
+                    + f"nonzero_advantage_total="
+                    f"{cumulative_nonzero_advantage_group_count} datums={len(data)} "
+                    f"throughput="
                     f"{metrics['timing/rollout_tokens_per_second']:.1f}tok/s "
                     f"elapsed={elapsed_seconds:.1f}s eta={eta_seconds:.1f}s "
                     f"estimated_cost=${estimated_cost:.4f}"
@@ -1385,12 +1455,12 @@ async def run_grpo_training(
             "initialization_source": config.init_source,
             "initialization_label": config.initialization_label
             or ("base" if config.init_source == "base" else "e2s250"),
-            "parent_checkpoint": config.parent_checkpoint
-            if config.init_source == "sft"
-            else None,
-            "parent_state_path": config.parent_state_path
-            if config.init_source == "sft"
-            else None,
+            "parent_checkpoint": (
+                config.parent_checkpoint if config.init_source == "sft" else None
+            ),
+            "parent_state_path": (
+                config.parent_state_path if config.init_source == "sft" else None
+            ),
             "parent_sampler_path": (
                 config.parent_sampler_path if config.init_source == "sft" else None
             ),
@@ -1401,7 +1471,9 @@ async def run_grpo_training(
             "training_rollouts": sampled_training_group_count * config.group_size,
             "max_training_rollouts": config.max_training_candidate_groups
             * config.group_size,
+            "advantage_estimator": config.advantage_estimator,
             "effective_group_count": cumulative_effective_group_count,
+            "nonzero_advantage_group_count": cumulative_nonzero_advantage_group_count,
             "target_total_effective_groups": config.target_total_effective_groups,
             "max_total_candidate_groups": config.max_total_candidate_groups,
             "training_stop_reason": training_stop_reason,
@@ -1415,9 +1487,9 @@ async def run_grpo_training(
             "wandb_run_url": getattr(wandb_run, "url", None),
         }
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        _report_path(config.experiment_id, str(getattr(wandb_run, "id", "run"))).write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n"
-        )
+        _report_path(
+            config.experiment_id, str(getattr(wandb_run, "id", "run"))
+        ).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         wandb_run.summary.update(
             {
                 "checkpoint/selection_metric": "rl_monitor/pass_at_4_then_pass_at_1",
@@ -1430,6 +1502,9 @@ async def run_grpo_training(
                 "early_stopping/regression_streak": regression_streak,
                 "run_stats/completed_training_steps": completed_steps,
                 "run_stats/effective_group_count": cumulative_effective_group_count,
+                "run_stats/nonzero_advantage_group_count": (
+                    cumulative_nonzero_advantage_group_count
+                ),
                 "run_stats/training_stop_reason": training_stop_reason,
                 "run_stats/estimated_total_usd": total_estimated_cost,
             }
@@ -1451,7 +1526,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preflight or run frozen GSM8K GRPO.")
     parser.add_argument("--run", action="store_true", help="Start the paid GRPO run.")
     parser.add_argument("--allow-paid", action="store_true")
-    parser.add_argument("--experiment-id", choices=GRPO_EXPERIMENT_IDS, default=EXPERIMENT_ID)
+    parser.add_argument(
+        "--experiment-id", choices=GRPO_EXPERIMENT_IDS, default=EXPERIMENT_ID
+    )
     parser.add_argument("--attempt", type=int, default=1)
     parser.add_argument("--init-source", choices=("sft", "base"), default="sft")
     parser.add_argument("--init-label")
@@ -1460,6 +1537,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--group-size", type=int, default=DEFAULT_GROUP_SIZE)
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument(
+        "--advantage-estimator",
+        choices=ADVANTAGE_ESTIMATORS,
+        default="group-mean",
+    )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-prompt-tokens", type=int, default=MAX_PROMPT_TOKENS)
     parser.add_argument("--max-output-tokens", type=int, default=MAX_OUTPUT_TOKENS)
@@ -1497,6 +1579,7 @@ def _config_from_args(args: argparse.Namespace) -> GRPOConfig:
         batch_size=args.batch_size,
         group_size=args.group_size,
         learning_rate=args.learning_rate,
+        advantage_estimator=args.advantage_estimator,
         temperature=args.temperature,
         max_prompt_tokens=args.max_prompt_tokens,
         max_output_tokens=args.max_output_tokens,
