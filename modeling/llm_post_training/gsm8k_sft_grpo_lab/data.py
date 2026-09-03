@@ -251,10 +251,8 @@ def load_official_test_rows(
     return select_rows(test_rows, selected_ids)
 
 
-def load_official_train_rows(
-    manifest: SplitManifest, partition: str
-) -> Tuple[Mapping[str, object], ...]:
-    """Fetch the pinned GSM8K train revision and recover one frozen partition."""
+def _train_partition_ids(manifest: SplitManifest, partition: str) -> Tuple[str, ...]:
+    """Return one declared train partition without loading the dataset."""
     ids_by_partition = {
         "sft_train": manifest.sft_train_ids,
         "sft_validation": manifest.sft_validation_ids,
@@ -262,9 +260,31 @@ def load_official_train_rows(
         "rl_monitor": manifest.rl_monitor_ids,
     }
     try:
-        selected_ids = ids_by_partition[partition]
+        return ids_by_partition[partition]
     except KeyError as exc:
         raise ManifestError(f"unknown train partition: {partition}") from exc
+
+
+def load_official_train_rows_for_partitions(
+    manifest: SplitManifest, partitions: Sequence[str]
+) -> Tuple[Mapping[str, object], ...]:
+    """Fetch one ordered union of disjoint frozen train partitions.
+
+    Multi-stage recipes such as end-to-end KD may use more than one training
+    partition.  Loading and selecting the union together makes that scope
+    explicit and preserves the manifest order within each requested partition.
+    """
+    if not partitions:
+        raise ManifestError("at least one train partition is required")
+    if len(set(partitions)) != len(partitions):
+        raise ManifestError("train partitions must not be repeated")
+    selected_ids = tuple(
+        example_id
+        for partition in partitions
+        for example_id in _train_partition_ids(manifest, partition)
+    )
+    if len(set(selected_ids)) != len(selected_ids):
+        raise ManifestError("selected train partitions must be disjoint")
     from datasets import load_dataset
 
     load_dotenv(ENV_FILE, override=False)
@@ -275,6 +295,13 @@ def load_official_train_rows(
         revision=manifest.dataset_revision,
     )
     return select_rows(train_rows, selected_ids)
+
+
+def load_official_train_rows(
+    manifest: SplitManifest, partition: str
+) -> Tuple[Mapping[str, object], ...]:
+    """Fetch the pinned GSM8K train revision and recover one frozen partition."""
+    return load_official_train_rows_for_partitions(manifest, (partition,))
 
 
 def dataset_profile(

@@ -2,7 +2,10 @@ import asyncio
 
 import pytest
 
-from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import build_manifest
+from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
+    build_manifest,
+    content_id,
+)
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train import (
     KDConfig,
     KDTrainingError,
@@ -181,15 +184,29 @@ def _manifest():
     )
 
 
+def _full_candidate_rows(manifest):
+    rows_by_id = {
+        row_id: row for row in _rows("train", 8) for row_id in [content_id(row)]
+    }
+    return [
+        rows_by_id[row_id] for row_id in manifest.sft_train_ids + manifest.rl_train_ids
+    ]
+
+
+def _development_rows(manifest):
+    rows_by_id = {
+        row_id: row for row in _rows("train", 8) for row_id in [content_id(row)]
+    }
+    return [rows_by_id[row_id] for row_id in manifest.sft_validation_ids]
+
+
 def _config(tmp_path, **kwargs):
     payload = {
-        "teacher_max_candidate_prompts": 2,
         "teacher_batch_size": 1,
-        "student_input_token_target": 30,
         "batch_size": 2,
-        "max_student_steps": 2,
+        "max_student_steps": 3,
         "development_examples": 1,
-        "development_input_token_interval": 1,
+        "development_input_token_interval": 999,
         "progress_every": 1,
         "max_sequence_tokens": 64,
         "hard_cap_usd": 1.0,
@@ -234,13 +251,15 @@ def test_preflight_records_base_provenance_and_separate_teacher_cost(tmp_path):
     assert report["initialization_source"] == "base_fresh_lora"
     assert report["parent_checkpoint"] is None
     assert report["reference_e4_checkpoint"].endswith("step75")
-    assert report["student_input_token_target"] == 30
+    assert report["teacher_candidate_count"] == 6
+    assert report["student_training_data_policy"] == "all_accepted_teacher_traces_once"
     assert report["estimated_cost_breakdown_usd"]["teacher_generation_max_usd"] > 0
     assert estimate_max_token_cost_usd(config, _manifest()) < config.hard_cap_usd
     assert report["ready_for_paid_run"] is True
 
 
 def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
+    manifest = _manifest()
     config = _config(tmp_path)
     service = _FakeServiceClient()
     wandb = _FakeWandb()
@@ -249,13 +268,13 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
         run_kd_training(
             config,
             allow_paid=True,
-            manifest=_manifest(),
+            manifest=manifest,
             environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
             tinker_module=_FakeTinker,
             wandb_module=wandb,
             service_client=service,
-            train_rows=_rows("rl", 2),
-            development_rows=_rows("development", 1),
+            train_rows=_full_candidate_rows(manifest),
+            development_rows=_development_rows(manifest),
             progress=lambda _: None,
         )
     )
@@ -267,15 +286,18 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     )
     assert "Qwen/Qwen3.5-397B-A17B" in service.base_model_requests
     assert config.model_id in service.base_model_requests
-    assert len(service.training_client.forward_backward_calls) == 1
+    assert len(service.training_client.forward_backward_calls) == 3
     data = service.training_client.forward_backward_calls[0][0]
     assert all(
         loss_fn == "cross_entropy"
         for _, loss_fn in service.training_client.forward_backward_calls
     )
     assert any(weight == 0.0 for weight in data[0].loss_fn_inputs["weights"])
-    assert report["teacher_outcomes"]["teacher_correct"] == 2
-    assert report["student_optimized_input_tokens"] >= 30
+    assert report["teacher_outcomes"]["teacher_correct"] == 6
+    assert (
+        report["student_optimized_input_tokens"]
+        == report["student_selected_input_tokens"]
+    )
     assert report["selected_checkpoint"]["step"] == 0
     assert report["selected_checkpoint_is_initialization"] is True
     assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v2"
@@ -309,6 +331,15 @@ def test_e9_rejects_checkpoint_initialization(tmp_path):
         _config(tmp_path, initialization_label="e4-grpo-step75").validate(_manifest())
 
 
+def test_e9_requires_the_full_candidate_union_and_one_pass_step_capacity(tmp_path):
+    with pytest.raises(KDTrainingError, match="full-corpus"):
+        _config(tmp_path, teacher_candidate_partitions=("rl_train",)).validate(
+            _manifest()
+        )
+    with pytest.raises(KDTrainingError, match="every accepted"):
+        _config(tmp_path, max_student_steps=2).validate(_manifest())
+
+
 def test_kd_requires_g4_development_evaluation_and_token_cadence(tmp_path):
     with pytest.raises(KDTrainingError, match="development_examples"):
         _config(tmp_path, development_examples=0).validate(_manifest())
@@ -324,6 +355,6 @@ def test_kd_requires_g4_development_evaluation_and_token_cadence(tmp_path):
         wandb_version="0.21.1",
     )
 
-    assert config.development_evaluations_upper_bound() == 3
-    assert report["max_development_evaluations"] == 4
+    assert config.development_evaluations_upper_bound(_manifest()) == 39
+    assert report["max_development_evaluations"] == 40
     assert report["development_partition"] == "sft_validation"

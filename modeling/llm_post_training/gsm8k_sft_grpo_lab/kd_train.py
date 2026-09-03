@@ -2,7 +2,7 @@
 
 E9 is deliberately the hard-target baseline in the distillation ladder:
 
-* a frozen teacher writes a solution for an existing training prompt;
+* a frozen teacher writes a solution for every allowed training prompt;
 * the GSM8K answer verifier keeps only correct, boxed traces; and
 * a fresh LoRA on the untouched Base student is trained with ordinary token
   cross-entropy.
@@ -48,6 +48,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
     SplitManifest,
     content_id,
     load_official_train_rows,
+    load_official_train_rows_for_partitions,
     read_manifest,
 )
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.distillation_schema import (
@@ -85,24 +86,24 @@ E4_COMPARISON_CHECKPOINT = (
 )
 E4_FORMAL_PASS_AT_1 = 0.71969697
 E4_FORMAL_PASS_AT_4 = 0.75058275
-E4_OPTIMIZED_INPUT_TOKENS = 54_760
 INITIALIZATION_SOURCE = "base_fresh_lora"
 INITIALIZATION_LABEL = "base-fresh-lora"
+FULL_TRAINING_PARTITIONS = ("sft_train", "rl_train")
+FULL_TRAINING_DATA_LABEL = "full-allowed-train-once"
 
 LORA_RANK = 32
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_LEARNING_RATE = 3e-4
-DEFAULT_MAX_STUDENT_STEPS = 100
-DEFAULT_MAX_TEACHER_PROMPTS = 800
+DEFAULT_MAX_STUDENT_STEPS = 900
 DEFAULT_TEACHER_BATCH_SIZE = 16
 DEFAULT_DEVELOPMENT_PARTITION = "sft_validation"
-DEFAULT_DEVELOPMENT_EXAMPLES = 128
+DEFAULT_DEVELOPMENT_EXAMPLES = 64
 DEFAULT_DEVELOPMENT_GROUP_SIZE = 4
-DEFAULT_DEVELOPMENT_INPUT_TOKEN_INTERVAL = 20_000
+DEFAULT_DEVELOPMENT_INPUT_TOKEN_INTERVAL = 500_000
 DEFAULT_PROGRESS_EVERY = 8
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60
 MAX_SEQUENCE_TOKENS = 1024
-DEFAULT_HARD_CAP_USD = 8.0
+DEFAULT_HARD_CAP_USD = 60.0
 TRAIN_USD_PER_MILLION = 1.463
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
@@ -130,7 +131,7 @@ class KDConfig:
     attempt: int = 1
     teacher_model_id: str = TEACHER_MODEL_ID
     teacher_temperature: float = TEACHER_TEMPERATURE
-    teacher_max_candidate_prompts: int = DEFAULT_MAX_TEACHER_PROMPTS
+    teacher_candidate_partitions: Tuple[str, ...] = FULL_TRAINING_PARTITIONS
     teacher_batch_size: int = DEFAULT_TEACHER_BATCH_SIZE
     teacher_max_prompt_tokens: int = MAX_PROMPT_TOKENS
     teacher_max_output_tokens: int = MAX_OUTPUT_TOKENS
@@ -143,7 +144,6 @@ class KDConfig:
     batch_size: int = DEFAULT_BATCH_SIZE
     learning_rate: float = DEFAULT_LEARNING_RATE
     max_sequence_tokens: int = MAX_SEQUENCE_TOKENS
-    student_input_token_target: int = E4_OPTIMIZED_INPUT_TOKENS
     max_student_steps: int = DEFAULT_MAX_STUDENT_STEPS
     development_partition: str = DEFAULT_DEVELOPMENT_PARTITION
     development_examples: int = DEFAULT_DEVELOPMENT_EXAMPLES
@@ -201,14 +201,12 @@ class KDConfig:
             )
         positive_ints = {
             "attempt": self.attempt,
-            "teacher_max_candidate_prompts": self.teacher_max_candidate_prompts,
             "teacher_batch_size": self.teacher_batch_size,
             "teacher_max_prompt_tokens": self.teacher_max_prompt_tokens,
             "teacher_max_output_tokens": self.teacher_max_output_tokens,
             "lora_rank": self.lora_rank,
             "batch_size": self.batch_size,
             "max_sequence_tokens": self.max_sequence_tokens,
-            "student_input_token_target": self.student_input_token_target,
             "max_student_steps": self.max_student_steps,
             "development_group_size": self.development_group_size,
             "development_input_token_interval": self.development_input_token_interval,
@@ -221,6 +219,11 @@ class KDConfig:
         if self.development_partition != DEFAULT_DEVELOPMENT_PARTITION:
             raise KDTrainingError(
                 "hard-response KD development must use the frozen sft_validation split"
+            )
+        if self.teacher_candidate_partitions != FULL_TRAINING_PARTITIONS:
+            raise KDTrainingError(
+                "E9 is the full-corpus Base-to-KD recipe and must use exactly "
+                "sft_train plus rl_train teacher candidates"
             )
         if self.development_examples <= 0:
             raise KDTrainingError("development_examples must be positive")
@@ -242,11 +245,17 @@ class KDConfig:
             raise KDTrainingError("seed cannot be negative")
         if manifest is not None:
             manifest.validate()
-            if self.teacher_max_candidate_prompts > len(manifest.rl_train_ids):
-                raise KDTrainingError("teacher candidate cap exceeds frozen rl_train")
             if self.development_examples > len(manifest.sft_validation_ids):
                 raise KDTrainingError(
                     "development_examples exceeds frozen sft_validation"
+                )
+            maximum_batches = math.ceil(
+                _teacher_candidate_count(self, manifest) / self.batch_size
+            )
+            if self.max_student_steps < maximum_batches:
+                raise KDTrainingError(
+                    "max_student_steps cannot accommodate one pass over every "
+                    "accepted full-corpus E9 trace"
                 )
 
     @property
@@ -260,19 +269,19 @@ class KDConfig:
             f"{self.experiment_id}-kd-{self.signal_kind}-{model_slug}"
             f"-teacher-{teacher_slug}-from-{source_slug.lower().strip('-')}"
             f"-r{self.lora_rank}-b{self.batch_size}-lr{lr_slug}"
-            f"-tokmatch-e4-{self.student_input_token_target}"
-            f"-cap{self.teacher_max_candidate_prompts}"
+            f"-{FULL_TRAINING_DATA_LABEL}"
             f"-dev{self.development_partition.replace('_', '-')}{self.development_examples}"
             f"-di{self.development_input_token_interval}"
             f"-a{self.attempt:02d}-seed{self.seed}"
         )
 
-    def development_evaluations_upper_bound(self) -> int:
+    def development_evaluations_upper_bound(self, manifest: SplitManifest) -> int:
         """Bound trained checkpoints from the token-based development cadence."""
         if not self.development_examples:
             return 0
         return math.ceil(
-            self.student_input_token_target / self.development_input_token_interval
+            _student_input_token_upper_bound(self, manifest)
+            / self.development_input_token_interval
         )
 
 
@@ -464,17 +473,45 @@ def _trace_digest(traces: Sequence[AcceptedTeacherTrace]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _ids_hash(example_ids: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(example_ids).encode()).hexdigest()
+
+
 def _candidate_ids_hash(rows: Sequence[Mapping[str, object]]) -> str:
-    return hashlib.sha256(
-        "\n".join(content_id(row) for row in rows).encode()
-    ).hexdigest()
+    return _ids_hash(tuple(content_id(row) for row in rows))
 
 
-def _max_development_runs(config: KDConfig) -> int:
+def _teacher_candidate_ids(
+    config: KDConfig, manifest: SplitManifest
+) -> Tuple[str, ...]:
+    """Return the exact ordered full-corpus E9 candidate IDs from the manifest."""
+    ids_by_partition = {
+        "sft_train": manifest.sft_train_ids,
+        "sft_validation": manifest.sft_validation_ids,
+        "rl_train": manifest.rl_train_ids,
+        "rl_monitor": manifest.rl_monitor_ids,
+    }
+    return tuple(
+        example_id
+        for partition in config.teacher_candidate_partitions
+        for example_id in ids_by_partition[partition]
+    )
+
+
+def _teacher_candidate_count(config: KDConfig, manifest: SplitManifest) -> int:
+    return len(_teacher_candidate_ids(config, manifest))
+
+
+def _student_input_token_upper_bound(config: KDConfig, manifest: SplitManifest) -> int:
+    """Bound one CE pass over every accepted trace without truncating the corpus."""
+    return _teacher_candidate_count(config, manifest) * config.max_sequence_tokens
+
+
+def _max_development_runs(config: KDConfig, manifest: SplitManifest) -> int:
     """Count initialization plus every token-cadenced development evaluation."""
     if not config.development_examples:
         return 0
-    return 1 + config.development_evaluations_upper_bound()
+    return 1 + config.development_evaluations_upper_bound(manifest)
 
 
 def _development_ids_hash(config: KDConfig, manifest: SplitManifest) -> Optional[str]:
@@ -488,20 +525,23 @@ def _development_ids_hash(config: KDConfig, manifest: SplitManifest) -> Optional
 def estimate_max_token_cost_usd(config: KDConfig, manifest: SplitManifest) -> float:
     """Bound teacher sampling, student training, and development rollout calls."""
     config.validate(manifest)
+    candidate_count = _teacher_candidate_count(config, manifest)
     teacher = _teacher_cost(
-        config.teacher_max_candidate_prompts * config.teacher_max_prompt_tokens,
-        config.teacher_max_candidate_prompts * config.teacher_max_output_tokens,
+        candidate_count * config.teacher_max_prompt_tokens,
+        candidate_count * config.teacher_max_output_tokens,
         config,
     )
-    student_training = _student_train_cost(config.student_input_token_target, config)
+    student_training = _student_train_cost(
+        _student_input_token_upper_bound(config, manifest), config
+    )
     development = 0.0
     if config.development_examples:
         development = _student_monitor_cost(
-            _max_development_runs(config)
+            _max_development_runs(config, manifest)
             * config.development_examples
             * config.development_group_size
             * MAX_PROMPT_TOKENS,
-            _max_development_runs(config)
+            _max_development_runs(config, manifest)
             * config.development_examples
             * config.development_group_size
             * MAX_OUTPUT_TOKENS,
@@ -511,12 +551,15 @@ def estimate_max_token_cost_usd(config: KDConfig, manifest: SplitManifest) -> fl
 
 def _cost_breakdown(config: KDConfig, manifest: SplitManifest) -> Dict[str, float]:
     total = estimate_max_token_cost_usd(config, manifest)
+    candidate_count = _teacher_candidate_count(config, manifest)
     teacher = _teacher_cost(
-        config.teacher_max_candidate_prompts * config.teacher_max_prompt_tokens,
-        config.teacher_max_candidate_prompts * config.teacher_max_output_tokens,
+        candidate_count * config.teacher_max_prompt_tokens,
+        candidate_count * config.teacher_max_output_tokens,
         config,
     )
-    student_training = _student_train_cost(config.student_input_token_target, config)
+    student_training = _student_train_cost(
+        _student_input_token_upper_bound(config, manifest), config
+    )
     return {
         "teacher_generation_max_usd": teacher,
         "student_training_max_usd": student_training,
@@ -550,9 +593,12 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "teacher_model_id": config.teacher_model_id,
         "teacher_temperature": config.teacher_temperature,
         "teacher_filter": "verifier_correct_and_boxed",
-        "teacher_candidate_partition": "rl_train",
-        "teacher_max_candidate_prompts": config.teacher_max_candidate_prompts,
-        "teacher_candidate_ids_hash": None,
+        "teacher_candidate_partitions": list(config.teacher_candidate_partitions),
+        "teacher_candidate_data_policy": FULL_TRAINING_DATA_LABEL,
+        "teacher_candidate_count": _teacher_candidate_count(config, manifest),
+        "teacher_candidate_ids_hash": _ids_hash(
+            _teacher_candidate_ids(config, manifest)
+        ),
         "student_model_id": config.model_id,
         "initialization_source": config.initialization_source,
         "initialization_label": config.initialization_label,
@@ -560,8 +606,10 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "parent_state_path": None,
         "parent_sampler_path": None,
         "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
-        "student_input_token_target": config.student_input_token_target,
-        "reference_e4_optimized_input_tokens": E4_OPTIMIZED_INPUT_TOKENS,
+        "student_training_data_policy": "all_accepted_teacher_traces_once",
+        "student_input_token_upper_bound": _student_input_token_upper_bound(
+            config, manifest
+        ),
         "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
         "reference_e4_formal_pass_at_4": E4_FORMAL_PASS_AT_4,
         "dataset_id": manifest.dataset_id,
@@ -589,12 +637,13 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "hard_cap_usd": config.hard_cap_usd,
         "git_sha": _git_sha(),
         "hypothesis": (
-            "Verifier-filtered stronger-teacher traces improve a Base student at an "
-            "E4-matched student optimization-token target."
+            "One pass over verifier-filtered stronger-teacher traces from every "
+            "allowed training prompt improves a Base student relative to the "
+            "Base-to-SFT-to-GRPO E4 recipe."
         ),
         "expected_failure": (
             "Teacher traces are correct but the Base-to-KD student does not improve "
-            "the reused monitor or formal performance over E4."
+            "the held-out development behavior or formal performance over E4."
         ),
     }
 
@@ -623,8 +672,9 @@ def build_doctor_report(
         "distillation_method": asdict(method_spec(config.signal_kind)),
         "metric_schema": metric_schema_dict(config.signal_kind),
         "teacher_model_id": config.teacher_model_id,
-        "teacher_candidate_partition": "rl_train",
-        "teacher_max_candidate_prompts": config.teacher_max_candidate_prompts,
+        "teacher_candidate_partitions": list(config.teacher_candidate_partitions),
+        "teacher_candidate_data_policy": FULL_TRAINING_DATA_LABEL,
+        "teacher_candidate_count": _teacher_candidate_count(config, manifest),
         "student_model_id": config.model_id,
         "initialization_source": config.initialization_source,
         "initialization_label": config.initialization_label,
@@ -632,12 +682,14 @@ def build_doctor_report(
         "parent_state_path": None,
         "parent_sampler_path": None,
         "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
-        "student_input_token_target": config.student_input_token_target,
-        "reference_e4_optimized_input_tokens": E4_OPTIMIZED_INPUT_TOKENS,
+        "student_training_data_policy": "all_accepted_teacher_traces_once",
+        "student_input_token_upper_bound": _student_input_token_upper_bound(
+            config, manifest
+        ),
         "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
         "reference_e4_formal_pass_at_4": E4_FORMAL_PASS_AT_4,
         "max_student_steps": config.max_student_steps,
-        "max_development_evaluations": _max_development_runs(config),
+        "max_development_evaluations": _max_development_runs(config, manifest),
         "development_partition": config.development_partition,
         "development_examples": config.development_examples,
         "development_ids_hash": _development_ids_hash(config, manifest),
@@ -740,8 +792,8 @@ async def _collect_teacher_traces(
     int,
     int,
 ]:
-    """Sample bounded teacher batches and stop after the E4 token target is crossed."""
-    candidate_rows = tuple(rows[: config.teacher_max_candidate_prompts])
+    """Sample every candidate and retain each verifier-acceptable hard target."""
+    candidate_rows = tuple(rows)
     teacher_tokenizer = teacher_client.get_tokenizer()
     accepted_examples = []
     accepted_traces = []
@@ -752,7 +804,6 @@ async def _collect_teacher_traces(
         "teacher_rejected_format": 0,
         "teacher_rejected_truncated": 0,
         "teacher_rejected_overlength": 0,
-        "teacher_unused_after_token_target": 0,
     }
     teacher_prompt_tokens = 0
     teacher_output_tokens = 0
@@ -785,9 +836,6 @@ async def _collect_teacher_traces(
             outcomes["teacher_candidates_sampled"] += 1
             teacher_prompt_tokens += candidate.prompt_tokens
             teacher_output_tokens += candidate.output_tokens
-            if selected_input_tokens >= config.student_input_token_target:
-                outcomes["teacher_unused_after_token_target"] += 1
-                continue
             if not candidate.scored.correct:
                 outcomes["teacher_rejected_incorrect"] += 1
                 continue
@@ -824,19 +872,11 @@ async def _collect_teacher_traces(
         progress(
             f"teacher candidates={outcomes['teacher_candidates_sampled']}/"
             f"{len(candidate_rows)} accepted={len(accepted_examples)} "
-            f"student_input_tokens={selected_input_tokens}/"
-            f"{config.student_input_token_target}"
+            f"student_input_tokens={selected_input_tokens}"
         )
-        if selected_input_tokens >= config.student_input_token_target:
-            break
 
     if not accepted_examples:
         raise KDTrainingError("teacher filtering produced no supervised traces")
-    if selected_input_tokens < config.student_input_token_target:
-        raise KDTrainingError(
-            "teacher candidate cap was exhausted before reaching the student "
-            "input-token target"
-        )
     return (
         tuple(accepted_examples),
         tuple(accepted_traces),
@@ -1096,18 +1136,35 @@ async def run_kd_training(
         except ImportError as exc:
             raise KDTrainingError("Weights & Biases is unavailable") from exc
     if train_rows is None:
-        progress("loading frozen rl_train teacher-candidate rows")
-        train_rows = load_official_train_rows(manifest, "rl_train")
+        progress("loading frozen full-corpus teacher-candidate rows")
+        train_rows = load_official_train_rows_for_partitions(
+            manifest, config.teacher_candidate_partitions
+        )
     if development_rows is None:
         progress("loading frozen sft_validation KD-development rows")
         development_rows = load_official_train_rows(
             manifest, config.development_partition
         )
-    if len(train_rows) != len(manifest.rl_train_ids):
-        raise KDTrainingError("loaded rl_train rows do not match the manifest")
+    if len(train_rows) != _teacher_candidate_count(config, manifest):
+        raise KDTrainingError(
+            "loaded teacher-candidate rows do not match the full E9 manifest scope"
+        )
+    if tuple(content_id(row) for row in train_rows) != _teacher_candidate_ids(
+        config, manifest
+    ):
+        raise KDTrainingError(
+            "teacher-candidate rows do not exactly match the ordered full E9 split"
+        )
     if len(development_rows) != len(manifest.sft_validation_ids):
         raise KDTrainingError(
             "loaded sft_validation rows do not match the frozen KD development split"
+        )
+    if (
+        tuple(content_id(row) for row in development_rows)
+        != manifest.sft_validation_ids
+    ):
+        raise KDTrainingError(
+            "development rows do not exactly match the ordered frozen sft_validation split"
         )
     development_rows = tuple(development_rows[: config.development_examples])
 
@@ -1127,9 +1184,8 @@ async def run_kd_training(
     wandb_run = None
     try:
         progress(
-            f"authorized run={config.run_name} teacher_cap="
-            f"{config.teacher_max_candidate_prompts} student_target="
-            f"{config.student_input_token_target} max_cost="
+            f"authorized run={config.run_name} teacher_candidates="
+            f"{len(train_rows)} training_policy=all_accepted_once max_cost="
             f"${estimate_max_token_cost_usd(config, manifest):.4f}"
         )
         progress("initializing a fresh Base LoRA with a fresh KD optimizer")
@@ -1176,8 +1232,8 @@ async def run_kd_training(
         train_batches = _batches(prepared, config.batch_size)
         if len(train_batches) > config.max_student_steps:
             raise KDTrainingError(
-                "student input-token target needs more batches than max_student_steps; "
-                "increase the explicit preflight bound before training"
+                "all accepted teacher traces need more batches than max_student_steps; "
+                "increase the explicit full-corpus safety bound before training"
             )
         trace_path = _trace_path(config, str(getattr(wandb_run, "id", "run")))
         _write_trace_artifact(trace_path, accepted_traces)
@@ -1222,7 +1278,7 @@ async def run_kd_training(
         )
         progress(
             f"teacher data ready accepted={len(prepared)} input_tokens="
-            f"{selected_input_tokens} target={config.student_input_token_target} "
+            f"{selected_input_tokens} policy=all_accepted_once "
             f"teacher_cost=${teacher_cost:.4f}"
         )
 
@@ -1442,10 +1498,10 @@ async def run_kd_training(
             "run_name": config.run_name,
             "signal_kind": config.signal_kind,
             "teacher_model_id": config.teacher_model_id,
-            "teacher_candidate_partition": "rl_train",
-            "teacher_candidate_ids_hash": _candidate_ids_hash(
-                train_rows[: config.teacher_max_candidate_prompts]
-            ),
+            "teacher_candidate_partitions": list(config.teacher_candidate_partitions),
+            "teacher_candidate_data_policy": FULL_TRAINING_DATA_LABEL,
+            "teacher_candidate_count": len(train_rows),
+            "teacher_candidate_ids_hash": _candidate_ids_hash(train_rows),
             "teacher_filter": "verifier_correct_and_boxed",
             "teacher_outcomes": outcomes,
             "teacher_prompt_tokens": teacher_prompt_tokens,
@@ -1461,13 +1517,13 @@ async def run_kd_training(
             "parent_sampler_path": None,
             "reference_e4_checkpoint": E4_COMPARISON_CHECKPOINT,
             "student_selected_examples": len(prepared),
-            "student_input_token_target": config.student_input_token_target,
+            "student_training_data_policy": "all_accepted_teacher_traces_once",
+            "student_input_token_upper_bound": _student_input_token_upper_bound(
+                config, manifest
+            ),
             "student_selected_input_tokens": selected_input_tokens,
             "student_selected_supervised_tokens": selected_supervised_tokens,
             "student_optimized_input_tokens": completed_input_tokens,
-            "student_input_token_delta_from_e4": (
-                completed_input_tokens - E4_OPTIMIZED_INPUT_TOKENS
-            ),
             "student_supervised_tokens": completed_supervised_tokens,
             "training_steps": len(train_batches),
             "completed_training_steps": len(train_batches),
@@ -1496,9 +1552,6 @@ async def run_kd_training(
             "data/teacher_trace_digest": trace_digest,
             "cost/teacher_generation_usd": teacher_cost,
             "train/optimized_input_tokens": completed_input_tokens,
-            "train/input_token_delta_from_e4": (
-                completed_input_tokens - E4_OPTIMIZED_INPUT_TOKENS
-            ),
             "selection/selected_checkpoint_step": selected.step,
             "selection/selected_is_initialization": float(selected.step == 0),
             "cost/cumulative_usd": total_cost,
@@ -1546,8 +1599,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--signal-kind", choices=DISTILLATION_SIGNAL_KINDS)
     parser.add_argument("--teacher-model-id")
     parser.add_argument("--teacher-temperature", type=float)
-    parser.add_argument("--teacher-max-candidate-prompts", type=int)
-    parser.add_argument("--student-input-token-target", type=int)
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--max-student-steps", type=int)
     parser.add_argument("--development-examples", type=int)
@@ -1566,8 +1617,6 @@ def _config_from_args(args: argparse.Namespace) -> KDConfig:
             "signal_kind": args.signal_kind,
             "teacher_model_id": args.teacher_model_id,
             "teacher_temperature": args.teacher_temperature,
-            "teacher_max_candidate_prompts": args.teacher_max_candidate_prompts,
-            "student_input_token_target": args.student_input_token_target,
             "learning_rate": args.learning_rate,
             "max_student_steps": args.max_student_steps,
             "development_examples": args.development_examples,
