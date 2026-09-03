@@ -27,9 +27,10 @@ tool defines the laboratory's identity or directory name.
    GRPO with bounded resampling and monitor-based early stopping. E6 keeps that
    higher update density while restoring E4's total effective-gradient budget.
    E7 is the single fixed-sign-advantage ablation for binary-reward gradient
-   starvation; it is not a hyperparameter search.
-10. Export only the promoted clean SFT and GRPO adapters, compare them locally,
-   and publish the final experiment report.
+   starvation; it decisively improved the shared formal protocol, but changes
+   the optimization-token budget as well as the advantage rule.
+10. Reproduce E7 once with an independent training seed before promoting a
+   general conclusion or pivoting to a new post-training algorithm.
 
 Every paid phase requires an explicit approval, a frozen configuration, a
 worst-case cost estimate, and a held-out evaluation. Training loss or proxy
@@ -58,9 +59,9 @@ available to the RL reward scorer but never appears in the model prompt.
 
 `sft_validation` is not an evaluation benchmark. It is observed while choosing
 an SFT checkpoint; E2 uses a fixed subset for generation-based selection, not
-for a headline Base/SFT comparison. Formal E0 Base, E1 SFT, and E4 GRPO results
-use exactly the same `formal_test` IDs and decoding protocol; only the evaluated
-checkpoint changes.
+for a headline Base/SFT comparison. Formal E0 Base, E1/E2 SFT, and E4--E7 GRPO
+results use exactly the same `formal_test` IDs and decoding protocol; only the
+evaluated checkpoint changes.
 
 [`manifests/gsm8k_splits.json`](manifests/gsm8k_splits.json) is the immutable
 v2 manifest for these exact IDs. The first 32 deterministically ordered test
@@ -86,13 +87,17 @@ planned versus actual cost.
 is not a stage-comparison result. E0 Base, E1 SFT, and E4 GRPO use all 1,287
 `formal_test` IDs with the same prompt version, `G=4`, decoding limits, parser,
 and metric names; only the evaluated checkpoint changes. One G4 rollout group
-produces both `pass@1` and `pass@4`; G8 or G16 is unnecessary unless a future
-experiment explicitly studies higher-k sampling.
+produces both the rollout-average exact-match metric and `pass@4`; G8 or G16 is
+unnecessary unless a future experiment explicitly studies higher-k sampling.
 
 The core metrics are:
 
-- Outcome: `eval/pass_at_1`, `eval/pass_at_4`, `eval/format_accuracy`,
-  `eval/truncation_rate`, and `eval/avg_output_tokens`.
+- Outcome: `eval/exact_match` / legacy `eval/pass_at_1`, `eval/pass_at_4`,
+  `eval/format_accuracy`, `eval/truncation_rate`, and
+  `eval/avg_output_tokens`. `eval/pass_at_1` is a historical name for the
+  mean correctness of all four rollouts, so it equals `eval/exact_match`; it
+  is not conventional first-sample pass@1. `eval/pass_at_4` is group-level
+  probability of at least one correct rollout.
 - SFT: `train/nll`, `train/perplexity`, `train/learning_rate`, throughput,
   step time, and planned/actual cost. E1 selected checkpoints by
   `sft_validation/nll`/perplexity and regressed formally. E2 additionally logs
@@ -127,7 +132,8 @@ prediction tables are versioned artifacts.
 The saved W&B view is [GSM8K Base → SFT → GRPO Comparison](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/workspace?nw=1tk8jr6cvwm).
 Its named sections encode this fixed priority:
 
-1. `01 Outcome`: `eval/pass_at_1`, then `eval/pass_at_4`.
+1. `01 Outcome`: `eval/exact_match` / legacy `eval/pass_at_1`, then
+   `eval/pass_at_4`.
 2. `02 Reliability`: `eval/format_accuracy`, then `eval/truncation_rate`.
 3. Later: GRPO learning signal, then process diagnostics.
 4. `run_stats/*` and `tables/rollouts` are supporting evidence, not headline
@@ -158,16 +164,19 @@ degenerate-group fraction. No progress line includes raw prompts or responses.
 3. E2 selected step 250 by its frozen generation monitor and improved the
    shared formal protocol over Base. Treat that result as a useful scoreboard,
    not an endlessly reusable pristine test set.
-4. E4 clean GRPO started from E2 step 250 and is the current best formal model.
+4. E4 clean GRPO started from E2 step 250 and was the initial formal leader.
 5. E5 tested per-step signal packing, but its selected checkpoint did not
    exceed E4 on the shared formal protocol.
 6. E6 retained E5's signal packing and reached 56 mixed groups, exceeding
    E4's 52, but its selected step-25 checkpoint still did not exceed E4.
    This rejects the matched-effective-group-budget hypothesis, not GRPO as a
    method or every possible reward design.
-7. E7 is pre-registered as one fixed-sign-advantage test. It keeps E4's
-   initialization, prompts, rollout budget, G4, learning rate, monitor, and
-   checkpoint cadence; only the group-relative advantage changes.
+7. E7 tested whether fixed-sign advantages could avoid the group-mean
+   zero-advantage failure mode. Its step-100 checkpoint is the current formal
+   leader: rollout exact-match `0.7675` and group pass@4 `0.7879`, versus E4's
+   `0.7197/0.7506`. The result is one seed on a repeatedly used benchmark and
+   E7 optimized substantially more tokens, so the next experiment is one
+   independent fixed-config replication—not a grid search.
 
 ## E4 clean-GRPO command
 
@@ -298,8 +307,8 @@ per-step signal packing alone was insufficient: it obtained 37 mixed groups in
 (`2` mixed groups per optimizer step, at most four 8-prompt sampling rounds),
 but does **not** stop after 25 optimizer steps.
 
-The comparison baseline is E4, the current best formal model: both E4 and E6
-start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, the same
+At the time E6 was launched, E4 was the formal comparison baseline: both E4
+and E6 start from E2 step 250, use G4, LR `2e-5`, the exact binary reward, the same
 64-prompt frozen monitor, and checkpoints at steps 25/50/75/100. E4 sampled
 800 candidates, found 52 mixed groups, and selected step 75. E6 targets 56
 mixed groups—slightly above E4's total learning signal—with a hard cap of
@@ -343,12 +352,12 @@ not establish a GRPO ceiling beyond this binary-reward, fixed-data setting.
 
 ## E7 fixed-sign-advantage ablation
 
-E7 is a single algorithmic test of the binary-reward gradient-starvation
+E7 was a single algorithmic test of the binary-reward gradient-starvation
 hypothesis, motivated by the observation that E4 and E6 produced mixed rewards
 for only 52/800 and 56/1,128 candidate prompt groups. It does **not** reproduce
 an external paper wholesale or claim to be standard GRPO: it holds the frozen
-prompt set and on-policy rollout pipeline fixed while replacing only the
-advantage baseline.
+prompt set and on-policy rollout pipeline fixed while replacing the advantage
+baseline and permitting degenerate groups to backpropagate.
 
 E4--E6 use `advantage = reward - group_mean_reward`, so all-correct and
 all-wrong G4 groups have zero advantage and are skipped. E7 uses the
@@ -364,9 +373,8 @@ E4 skipped most sampled groups, whereas E7 trains on all of them. The local
 preflight deliberately charges the full worst-case optimization budget. Do not
 describe a result as equal-compute; report both rollout and optimized-token
 totals. Select a checkpoint only by the pre-existing monitor rule (pass@4,
-then pass@1), and run a formal evaluation only if it clears that selection
-rule. If E7 fails to improve, stop the fixed-prompt, binary-outcome-reward GRPO
-branch rather than sweeping ordinary hyperparameters.
+then rollout exact-match), and run a formal evaluation only if it clears that
+selection rule.
 
 Preflight (no remote training or W&B write):
 
@@ -380,6 +388,31 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m \
 
 After reviewing the resulting local cost gate, append `--run --allow-paid` to
 that exact command to start the paid E7 training run.
+
+### Observed E7 outcome
+
+The paid run completed all 100 steps. E4--E6's group-mean rule would have
+produced a nonzero advantage only for mixed groups; E7 observed 38 mixed groups
+out of 800, but its fixed-sign rule supplied nonzero advantages to all 800
+groups. The frozen monitor selected step 100 with rollout exact-match and
+pass@4 both `0.9219`. The training run cost `$2.40519` and optimized 696,641
+input tokens, compared with E4's 54,760; its shared rollout budget must not be
+mistaken for equal training compute.
+
+The independently run, shared-protocol formal evaluation of that sampler
+checkpoint scored rollout exact-match `0.7675` and group pass@4 `0.7879` over
+1,287 G4 prompt groups, beating E4's `0.7197/0.7506` by `+4.78pp/+3.73pp`.
+On prompt-paired pass@4 outcomes, E7 won 146 questions, lost 98, and tied
+1,043; the two-sided exact sign test is `p=0.00255` with a 95% interval of
+`[+1.36, +6.10]pp` for the difference. Format accuracy also improved
+(`0.9996` versus `0.9946`) and truncation fell (`0.00019` versus `0.00233`).
+
+This supports the gradient-starvation hypothesis for this run, not a final
+generalization or causal equal-compute claim: E7 is a single training seed,
+the formal split has already guided the experimental program, and it processes
+about 12.7× as many optimized input tokens as E4. The next decision-quality
+test is exactly one independent seed with the same frozen E7 configuration and
+the same formal evaluation; do not add a hyperparameter sweep first.
 
 ## E1 SFT command
 
@@ -565,7 +598,7 @@ The formal protocol requests 1,287 × G4 = 5,148 rollouts per evaluated
 checkpoint. The completed 32 × G4 calibration cost $0.08001, so a linear
 actual-cost extrapolation is about $3.22 for one full formal evaluation; this
 is a planning estimate, not a price guarantee. A worst-case preflight and an
-explicit paid-run approval are required before every E0, E1, or E4 evaluation.
+explicit paid-run approval are required before every formal evaluation.
 The earlier 256 × G4 ($0.64 extrapolated) option is a smaller diagnostic, not
 part of the formal protocol.
 
