@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
 
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.base_eval import (
+    CALIBRATION_EXAMPLES,
     FORMAL_EXAMPLES,
     PROGRESS_EVERY,
     BaseEvalConfig,
@@ -26,13 +27,15 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
 
 @dataclass(frozen=True)
 class CheckpointFormalEvalConfig:
-    """Provenance for a formal evaluation of an SFT, GRPO, or KD sampler."""
+    """Provenance for a test calibration or formal evaluation of one sampler."""
 
     sampler_path: str
     source_training_run_url: str
     experiment_id: str
     evaluation_stage: str
     parent_checkpoint: Optional[str] = None
+    evaluation_split: str = "formal"
+    eval_examples: int = FORMAL_EXAMPLES
     attempt: int = 1
     hard_cap_usd: float = 7.0
     progress_every: int = PROGRESS_EVERY
@@ -42,6 +45,19 @@ class CheckpointFormalEvalConfig:
             raise BaseEvalError("experiment_id is required")
         if self.evaluation_stage not in {"sft", "grpo", "kd"}:
             raise BaseEvalError("evaluation_stage must be sft, grpo, or kd")
+        if self.evaluation_split not in {"calibration", "formal"}:
+            raise BaseEvalError("evaluation_split must be calibration or formal")
+        if self.eval_examples <= 0:
+            raise BaseEvalError("eval_examples must be positive")
+        if self.evaluation_split == "formal" and self.eval_examples != FORMAL_EXAMPLES:
+            raise BaseEvalError(
+                "formal evaluation must use every frozen formal test ID"
+            )
+        if (
+            self.evaluation_split == "calibration"
+            and self.eval_examples > CALIBRATION_EXAMPLES
+        ):
+            raise BaseEvalError("calibration evaluation exceeds the frozen test split")
         if not self.sampler_path.startswith("tinker://"):
             raise BaseEvalError("sampler_path must be a Tinker URI")
         if "/sampler_weights/" not in self.sampler_path:
@@ -66,8 +82,8 @@ class CheckpointFormalEvalConfig:
             checkpoint=self.checkpoint_label,
             parent_checkpoint=self.parent_checkpoint,
             source_training_run_url=self.source_training_run_url,
-            evaluation_split="formal",
-            eval_examples=FORMAL_EXAMPLES,
+            evaluation_split=self.evaluation_split,
+            eval_examples=self.eval_examples,
             attempt=self.attempt,
             hard_cap_usd=self.hard_cap_usd,
             progress_every=self.progress_every,
@@ -86,13 +102,13 @@ def build_checkpoint_doctor_report(
 async def run_checkpoint_formal(
     config: CheckpointFormalEvalConfig, allow_paid: bool
 ) -> Dict[str, Any]:
-    """Evaluate a selected sampler on every frozen formal GSM8K prompt."""
+    """Evaluate a selected sampler on its declared frozen test partition."""
     base_config = config.base_config()
     manifest: SplitManifest = read_manifest()
     report = await run_remote_evaluation(
         base_config,
         manifest,
-        load_official_test_rows(manifest, "formal"),
+        load_official_test_rows(manifest, config.evaluation_split),
         allow_paid=allow_paid,
     )
     report["source_training_run_url"] = config.source_training_run_url
@@ -101,13 +117,21 @@ async def run_checkpoint_formal(
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preflight or formally evaluate a selected post-training sampler."
+        description="Preflight or evaluate a selected post-training sampler."
     )
     parser.add_argument("--sampler-path", required=True)
     parser.add_argument("--source-training-run-url", required=True)
     parser.add_argument("--experiment-id", required=True)
     parser.add_argument(
         "--evaluation-stage", choices=("sft", "grpo", "kd"), required=True
+    )
+    parser.add_argument(
+        "--evaluation-split", choices=("calibration", "formal"), default="formal"
+    )
+    parser.add_argument(
+        "--eval-examples",
+        type=int,
+        help="Calibration-only prefix length; formal always uses every frozen test ID.",
     )
     parser.add_argument("--parent-checkpoint")
     parser.add_argument("--run", action="store_true")
@@ -119,12 +143,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def _config_from_args(args: argparse.Namespace) -> CheckpointFormalEvalConfig:
+    default_examples = (
+        FORMAL_EXAMPLES if args.evaluation_split == "formal" else CALIBRATION_EXAMPLES
+    )
     return CheckpointFormalEvalConfig(
         sampler_path=args.sampler_path,
         source_training_run_url=args.source_training_run_url,
         experiment_id=args.experiment_id,
         evaluation_stage=args.evaluation_stage,
         parent_checkpoint=args.parent_checkpoint,
+        evaluation_split=args.evaluation_split,
+        eval_examples=(
+            args.eval_examples if args.eval_examples is not None else default_examples
+        ),
         attempt=args.attempt,
         hard_cap_usd=args.hard_cap_usd,
         progress_every=args.progress_every,
@@ -137,7 +168,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         config = _config_from_args(args)
         if args.run:
-            report = asyncio.run(run_checkpoint_formal(config, allow_paid=args.allow_paid))
+            report = asyncio.run(
+                run_checkpoint_formal(config, allow_paid=args.allow_paid)
+            )
         else:
             if args.allow_paid:
                 raise BaseEvalError("--allow-paid requires --run")

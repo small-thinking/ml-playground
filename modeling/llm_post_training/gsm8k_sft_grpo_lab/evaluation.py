@@ -176,6 +176,9 @@ def evaluate_groups(
     process_rows = [row for row in rows if row.process.checked_steps]
     final_correct = [row for row in rows if row.correct]
     group_rewards = [[int(row.correct) for row in group] for group in scored_groups]
+    group_unique_response_fractions = [
+        len({row.response for row in group}) / len(group) for group in scored_groups
+    ]
 
     metrics = {
         "eval/exact_match": sum(correct) / len(rows),
@@ -199,6 +202,8 @@ def evaluate_groups(
             statistics.pstdev(group) for group in group_rewards
         )
         / len(group_rewards),
+        "eval/group_unique_response_frac": sum(group_unique_response_fractions)
+        / len(group_unique_response_fractions),
         "eval/process_check_coverage": len(process_rows) / len(rows),
         "eval/process_validity_rate": (
             sum(row.process.valid_steps for row in process_rows)

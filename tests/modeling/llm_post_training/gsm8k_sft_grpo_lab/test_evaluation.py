@@ -49,6 +49,9 @@ def test_group_evaluation_reports_outcomes_and_learning_signal():
     assert report.metrics["eval/group_all_correct_frac"] == pytest.approx(1 / 3)
     assert report.metrics["eval/group_all_wrong_frac"] == pytest.approx(1 / 3)
     assert report.metrics["eval/group_mixed_frac"] == pytest.approx(1 / 3)
+    assert report.metrics["eval/group_unique_response_frac"] == pytest.approx(
+        (1 / 4 + 3 / 4 + 1 / 4) / 3
+    )
     assert report.metrics["eval/process_check_coverage"] == pytest.approx(1 / 3)
 
 

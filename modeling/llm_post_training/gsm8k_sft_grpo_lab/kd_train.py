@@ -95,9 +95,10 @@ DEFAULT_LEARNING_RATE = 3e-4
 DEFAULT_MAX_STUDENT_STEPS = 100
 DEFAULT_MAX_TEACHER_PROMPTS = 800
 DEFAULT_TEACHER_BATCH_SIZE = 16
-DEFAULT_MONITOR_EXAMPLES = 64
-DEFAULT_MONITOR_GROUP_SIZE = 4
-DEFAULT_CHECKPOINT_EVERY = 25
+DEFAULT_DEVELOPMENT_PARTITION = "sft_validation"
+DEFAULT_DEVELOPMENT_EXAMPLES = 128
+DEFAULT_DEVELOPMENT_GROUP_SIZE = 4
+DEFAULT_DEVELOPMENT_INPUT_TOKEN_INTERVAL = 20_000
 DEFAULT_PROGRESS_EVERY = 8
 CHECKPOINT_TTL_SECONDS = 30 * 24 * 60 * 60
 MAX_SEQUENCE_TOKENS = 1024
@@ -144,9 +145,10 @@ class KDConfig:
     max_sequence_tokens: int = MAX_SEQUENCE_TOKENS
     student_input_token_target: int = E4_OPTIMIZED_INPUT_TOKENS
     max_student_steps: int = DEFAULT_MAX_STUDENT_STEPS
-    monitor_examples: int = DEFAULT_MONITOR_EXAMPLES
-    monitor_group_size: int = DEFAULT_MONITOR_GROUP_SIZE
-    checkpoint_every: int = DEFAULT_CHECKPOINT_EVERY
+    development_partition: str = DEFAULT_DEVELOPMENT_PARTITION
+    development_examples: int = DEFAULT_DEVELOPMENT_EXAMPLES
+    development_group_size: int = DEFAULT_DEVELOPMENT_GROUP_SIZE
+    development_input_token_interval: int = DEFAULT_DEVELOPMENT_INPUT_TOKEN_INTERVAL
     progress_every: int = DEFAULT_PROGRESS_EVERY
     checkpoint_ttl_seconds: int = CHECKPOINT_TTL_SECONDS
     hard_cap_usd: float = DEFAULT_HARD_CAP_USD
@@ -156,7 +158,9 @@ class KDConfig:
 
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if self.experiment_id != EXPERIMENT_ID:
-            raise KDTrainingError("the first KD recipe is reserved for experiment_id=e9")
+            raise KDTrainingError(
+                "the first KD recipe is reserved for experiment_id=e9"
+            )
         try:
             method = method_spec(self.signal_kind)
         except ValueError as exc:
@@ -185,7 +189,9 @@ class KDConfig:
                 self.initialization_label,
             )
         ):
-            raise KDTrainingError("model, teacher, suite, and initialization IDs are required")
+            raise KDTrainingError(
+                "model, teacher, suite, and initialization IDs are required"
+            )
         if (
             self.initialization_source != INITIALIZATION_SOURCE
             or self.initialization_label != INITIALIZATION_LABEL
@@ -204,26 +210,33 @@ class KDConfig:
             "max_sequence_tokens": self.max_sequence_tokens,
             "student_input_token_target": self.student_input_token_target,
             "max_student_steps": self.max_student_steps,
-            "monitor_group_size": self.monitor_group_size,
-            "checkpoint_every": self.checkpoint_every,
+            "development_group_size": self.development_group_size,
+            "development_input_token_interval": self.development_input_token_interval,
             "progress_every": self.progress_every,
             "checkpoint_ttl_seconds": self.checkpoint_ttl_seconds,
         }
         for name, value in positive_ints.items():
             if value <= 0:
                 raise KDTrainingError(f"{name} must be positive")
-        if self.monitor_examples < 0:
-            raise KDTrainingError("monitor_examples cannot be negative")
-        if self.monitor_examples and self.monitor_group_size != 4:
-            raise KDTrainingError("the legacy monitor must retain G=4 for pass@4")
-        if min(
-            self.teacher_temperature,
-            self.learning_rate,
-            self.hard_cap_usd,
-            self.teacher_prefill_usd_per_million,
-            self.teacher_sample_usd_per_million,
-            self.train_usd_per_million,
-        ) <= 0:
+        if self.development_partition != DEFAULT_DEVELOPMENT_PARTITION:
+            raise KDTrainingError(
+                "hard-response KD development must use the frozen sft_validation split"
+            )
+        if self.development_examples <= 0:
+            raise KDTrainingError("development_examples must be positive")
+        if self.development_group_size != 4:
+            raise KDTrainingError("development evaluation must retain G=4 for pass@4")
+        if (
+            min(
+                self.teacher_temperature,
+                self.learning_rate,
+                self.hard_cap_usd,
+                self.teacher_prefill_usd_per_million,
+                self.teacher_sample_usd_per_million,
+                self.train_usd_per_million,
+            )
+            <= 0
+        ):
             raise KDTrainingError("rates, prices, and hard cap must be positive")
         if self.seed < 0:
             raise KDTrainingError("seed cannot be negative")
@@ -231,8 +244,10 @@ class KDConfig:
             manifest.validate()
             if self.teacher_max_candidate_prompts > len(manifest.rl_train_ids):
                 raise KDTrainingError("teacher candidate cap exceeds frozen rl_train")
-            if self.monitor_examples > len(manifest.rl_monitor_ids):
-                raise KDTrainingError("monitor_examples exceeds frozen rl_monitor")
+            if self.development_examples > len(manifest.sft_validation_ids):
+                raise KDTrainingError(
+                    "development_examples exceeds frozen sft_validation"
+                )
 
     @property
     def run_name(self) -> str:
@@ -246,15 +261,19 @@ class KDConfig:
             f"-teacher-{teacher_slug}-from-{source_slug.lower().strip('-')}"
             f"-r{self.lora_rank}-b{self.batch_size}-lr{lr_slug}"
             f"-tokmatch-e4-{self.student_input_token_target}"
-            f"-cap{self.teacher_max_candidate_prompts}-m{self.monitor_examples}"
+            f"-cap{self.teacher_max_candidate_prompts}"
+            f"-dev{self.development_partition.replace('_', '-')}{self.development_examples}"
+            f"-di{self.development_input_token_interval}"
             f"-a{self.attempt:02d}-seed{self.seed}"
         )
 
-    def checkpoint_steps(self, total_steps: int) -> Tuple[int, ...]:
-        if total_steps <= 0:
-            raise KDTrainingError("total_steps must be positive")
-        scheduled = tuple(range(self.checkpoint_every, total_steps + 1, self.checkpoint_every))
-        return scheduled if scheduled and scheduled[-1] == total_steps else scheduled + (total_steps,)
+    def development_evaluations_upper_bound(self) -> int:
+        """Bound trained checkpoints from the token-based development cadence."""
+        if not self.development_examples:
+            return 0
+        return math.ceil(
+            self.student_input_token_target / self.development_input_token_interval
+        )
 
 
 @dataclass(frozen=True)
@@ -293,13 +312,14 @@ class AcceptedTeacherTrace:
 
 
 @dataclass(frozen=True)
-class MonitorReport:
-    """Generation metrics and actual inference-token cost for one checkpoint."""
+class DevelopmentReport:
+    """Generation metrics, audit rows, and inference cost for one checkpoint."""
 
     metrics: Dict[str, float]
     prompt_tokens: int
     output_tokens: int
     estimated_cost_usd: float
+    table_rows: Tuple[Tuple[Any, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -309,8 +329,9 @@ class CheckpointRecord:
     step: int
     state_path: Optional[str]
     sampler_path: Optional[str]
-    monitor_pass_at_1: Optional[float]
-    monitor_pass_at_4: Optional[float]
+    development_pass_at_1: Optional[float]
+    development_pass_at_4: Optional[float]
+    development_metrics: Optional[Dict[str, float]]
 
 
 def _print_progress(message: str) -> None:
@@ -425,12 +446,9 @@ def _teacher_cost(prompt_tokens: int, output_tokens: int, config: KDConfig) -> f
     ) / 1_000_000
 
 
-def _student_monitor_cost(
-    prompt_tokens: int, output_tokens: int
-) -> float:
+def _student_monitor_cost(prompt_tokens: int, output_tokens: int) -> float:
     return (
-        prompt_tokens * PREFILL_USD_PER_MILLION
-        + output_tokens * SAMPLE_USD_PER_MILLION
+        prompt_tokens * PREFILL_USD_PER_MILLION + output_tokens * SAMPLE_USD_PER_MILLION
     ) / 1_000_000
 
 
@@ -440,19 +458,35 @@ def _student_train_cost(input_tokens: int, config: KDConfig) -> float:
 
 def _trace_digest(traces: Sequence[AcceptedTeacherTrace]) -> str:
     payload = [
-        {"example_id": trace.example_id, "response": trace.response}
-        for trace in traces
+        {"example_id": trace.example_id, "response": trace.response} for trace in traces
     ]
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
 def _candidate_ids_hash(rows: Sequence[Mapping[str, object]]) -> str:
-    return hashlib.sha256("\n".join(content_id(row) for row in rows).encode()).hexdigest()
+    return hashlib.sha256(
+        "\n".join(content_id(row) for row in rows).encode()
+    ).hexdigest()
+
+
+def _max_development_runs(config: KDConfig) -> int:
+    """Count initialization plus every token-cadenced development evaluation."""
+    if not config.development_examples:
+        return 0
+    return 1 + config.development_evaluations_upper_bound()
+
+
+def _development_ids_hash(config: KDConfig, manifest: SplitManifest) -> Optional[str]:
+    if not config.development_examples:
+        return None
+    return hashlib.sha256(
+        "\n".join(manifest.sft_validation_ids[: config.development_examples]).encode()
+    ).hexdigest()
 
 
 def estimate_max_token_cost_usd(config: KDConfig, manifest: SplitManifest) -> float:
-    """Bound teacher sampling, student training, and legacy monitor calls."""
+    """Bound teacher sampling, student training, and development rollout calls."""
     config.validate(manifest)
     teacher = _teacher_cost(
         config.teacher_max_candidate_prompts * config.teacher_max_prompt_tokens,
@@ -460,21 +494,19 @@ def estimate_max_token_cost_usd(config: KDConfig, manifest: SplitManifest) -> fl
         config,
     )
     student_training = _student_train_cost(config.student_input_token_target, config)
-    checkpoint_count = len(config.checkpoint_steps(config.max_student_steps))
-    monitor_calls = 1 + checkpoint_count
-    monitor = 0.0
-    if config.monitor_examples:
-        monitor = _student_monitor_cost(
-            monitor_calls
-            * config.monitor_examples
-            * config.monitor_group_size
+    development = 0.0
+    if config.development_examples:
+        development = _student_monitor_cost(
+            _max_development_runs(config)
+            * config.development_examples
+            * config.development_group_size
             * MAX_PROMPT_TOKENS,
-            monitor_calls
-            * config.monitor_examples
-            * config.monitor_group_size
+            _max_development_runs(config)
+            * config.development_examples
+            * config.development_group_size
             * MAX_OUTPUT_TOKENS,
         )
-    return teacher + student_training + monitor
+    return teacher + student_training + development
 
 
 def _cost_breakdown(config: KDConfig, manifest: SplitManifest) -> Dict[str, float]:
@@ -488,7 +520,7 @@ def _cost_breakdown(config: KDConfig, manifest: SplitManifest) -> Dict[str, floa
     return {
         "teacher_generation_max_usd": teacher,
         "student_training_max_usd": student_training,
-        "legacy_monitor_max_usd": total - teacher - student_training,
+        "development_inference_max_usd": total - teacher - student_training,
         "total_max_usd": total,
     }
 
@@ -540,11 +572,15 @@ def _tracking_config(config: KDConfig, manifest: SplitManifest) -> Dict[str, Any
         "batch_size": config.batch_size,
         "learning_rate": config.learning_rate,
         "max_student_steps": config.max_student_steps,
-        "monitor_partition": "rl_monitor",
-        "monitor_data_status": "legacy_reused_monitor_not_cross_run_evidence",
-        "monitor_examples": config.monitor_examples,
-        "monitor_group_size": config.monitor_group_size,
-        "checkpoint_selection": "legacy_rl_monitor_pass_at_4_then_pass_at_1",
+        "development_partition": config.development_partition,
+        "development_data_status": (
+            "held_out_from_kd_training_reused_sft_validation_not_cross_run_evidence"
+        ),
+        "development_examples": config.development_examples,
+        "development_ids_hash": _development_ids_hash(config, manifest),
+        "development_group_size": config.development_group_size,
+        "development_input_token_interval": config.development_input_token_interval,
+        "checkpoint_selection": "development_pass_at_4_then_pass_at_1",
         "teacher_pricing_per_million": {
             "prefill": config.teacher_prefill_usd_per_million,
             "sample": config.teacher_sample_usd_per_million,
@@ -573,7 +609,9 @@ def build_doctor_report(
     """Validate E9's complete cost envelope without network or paid calls."""
     manifest = read_manifest() if manifest is None else manifest
     config.validate(manifest)
-    tinker_sdk = _package_version("tinker") if tinker_version is None else tinker_version
+    tinker_sdk = (
+        _package_version("tinker") if tinker_version is None else tinker_version
+    )
     wandb_sdk = _package_version("wandb") if wandb_version is None else wandb_version
     estimate = estimate_max_token_cost_usd(config, manifest)
     return {
@@ -599,9 +637,12 @@ def build_doctor_report(
         "reference_e4_formal_pass_at_1": E4_FORMAL_PASS_AT_1,
         "reference_e4_formal_pass_at_4": E4_FORMAL_PASS_AT_4,
         "max_student_steps": config.max_student_steps,
-        "max_checkpoint_count": len(config.checkpoint_steps(config.max_student_steps)),
-        "monitor_partition": "rl_monitor",
-        "monitor_examples": config.monitor_examples,
+        "max_development_evaluations": _max_development_runs(config),
+        "development_partition": config.development_partition,
+        "development_examples": config.development_examples,
+        "development_ids_hash": _development_ids_hash(config, manifest),
+        "development_group_size": config.development_group_size,
+        "development_input_token_interval": config.development_input_token_interval,
         "estimated_cost_breakdown_usd": _cost_breakdown(config, manifest),
         "tinker_sdk_version": tinker_sdk,
         "wandb_version": wandb_sdk,
@@ -632,7 +673,9 @@ def _authorize(
     if not environ.get("TINKER_API_KEY") or not environ.get("WANDB_API_KEY"):
         raise KDTrainingError("TINKER_API_KEY and WANDB_API_KEY are required")
     if environ.get("WANDB_MODE", "").lower() == "offline":
-        raise KDTrainingError("WANDB_MODE=offline cannot produce the required dashboard")
+        raise KDTrainingError(
+            "WANDB_MODE=offline cannot produce the required dashboard"
+        )
     if estimate_max_token_cost_usd(config, manifest) > config.hard_cap_usd:
         raise KDTrainingError("estimated maximum token cost exceeds the hard cap")
 
@@ -690,7 +733,13 @@ async def _collect_teacher_traces(
     tinker_module: Any,
     config: KDConfig,
     progress: Callable[[str], None],
-) -> Tuple[Tuple[TokenizedDistillationExample, ...], Tuple[AcceptedTeacherTrace, ...], Dict[str, int], int, int]:
+) -> Tuple[
+    Tuple[TokenizedDistillationExample, ...],
+    Tuple[AcceptedTeacherTrace, ...],
+    Dict[str, int],
+    int,
+    int,
+]:
     """Sample bounded teacher batches and stop after the E4 token target is crossed."""
     candidate_rows = tuple(rows[: config.teacher_max_candidate_prompts])
     teacher_tokenizer = teacher_client.get_tokenizer()
@@ -743,7 +792,10 @@ async def _collect_teacher_traces(
                 outcomes["teacher_rejected_incorrect"] += 1
                 continue
             outcomes["teacher_correct"] += 1
-            if config.require_teacher_boxed_format and not candidate.scored.format_valid:
+            if (
+                config.require_teacher_boxed_format
+                and not candidate.scored.format_valid
+            ):
                 outcomes["teacher_rejected_format"] += 1
                 continue
             if candidate.scored.truncated:
@@ -794,41 +846,94 @@ async def _collect_teacher_traces(
     )
 
 
-async def _generation_monitor(
+DEVELOPMENT_TABLE_COLUMNS = (
+    "example_id",
+    "checkpoint_step",
+    "rollout_id",
+    "question",
+    "ground_truth",
+    "generated_response",
+    "parsed_answer",
+    "correct",
+    "output_tokens",
+    "format_valid",
+    "truncated",
+    "process_checked_steps",
+    "process_valid_steps",
+    "process_invalid_steps",
+)
+
+
+def _development_table_rows(
+    report: Any,
+    samples: Sequence[Mapping[str, Any]],
+    checkpoint_step: int,
+    config: KDConfig,
+) -> Tuple[Tuple[Any, ...], ...]:
+    """Keep each student development rollout inspectable in W&B."""
+    sample_by_id = {str(sample["example_id"]): sample for sample in samples}
+    return tuple(
+        (
+            row.example_id,
+            checkpoint_step,
+            rollout_id % config.development_group_size,
+            sample_by_id[row.example_id]["question"],
+            sample_by_id[row.example_id]["ground_truth"],
+            row.response,
+            row.parsed_answer,
+            row.correct,
+            row.output_tokens,
+            row.format_valid,
+            row.truncated,
+            row.process.checked_steps,
+            row.process.valid_steps,
+            row.process.invalid_steps,
+        )
+        for rollout_id, row in enumerate(report.rows)
+    )
+
+
+async def _generation_development(
     service_client: Any,
     model_path: Optional[str],
     rows: Sequence[Mapping[str, object]],
     tinker_module: Any,
     config: KDConfig,
+    checkpoint_step: int,
     label: str,
     progress: Callable[[str], None],
-) -> MonitorReport:
-    """Evaluate one checkpoint on the existing frozen G=4 monitor only."""
+) -> DevelopmentReport:
+    """Evaluate one student checkpoint on the frozen G=4 KD development set."""
     if model_path is None:
         client = await service_client.create_sampling_client_async(
             base_model=config.model_id
         )
     else:
-        client = await service_client.create_sampling_client_async(model_path=model_path)
+        client = await service_client.create_sampling_client_async(
+            model_path=model_path
+        )
     tokenizer = client.get_tokenizer()
 
     async def sample_group(index: int, row: Mapping[str, object]) -> Dict[str, Any]:
         prompt_tokens = _encode(tokenizer, build_prompt(str(row["question"])))
         if not prompt_tokens or len(prompt_tokens) > MAX_PROMPT_TOKENS:
-            raise KDTrainingError("a monitor prompt exceeds the configured token limit")
+            raise KDTrainingError(
+                "a development prompt exceeds the configured token limit"
+            )
         result = await client.sample_async(
             prompt=tinker_module.ModelInput.from_ints(tokens=prompt_tokens),
-            num_samples=config.monitor_group_size,
+            num_samples=config.development_group_size,
             sampling_params=tinker_module.SamplingParams(
                 max_tokens=MAX_OUTPUT_TOKENS,
                 temperature=1.0,
                 seed=config.seed + index,
             ),
         )
-        if len(result.sequences) != config.monitor_group_size:
-            raise KDTrainingError("monitor received the wrong number of samples")
+        if len(result.sequences) != config.development_group_size:
+            raise KDTrainingError("development received the wrong number of samples")
         return {
             "example_id": content_id(row),
+            "question": str(row["question"]),
             "ground_truth": str(row["answer"]),
             "prompt_tokens": len(prompt_tokens),
             "responses": tuple(
@@ -837,7 +942,9 @@ async def _generation_monitor(
             ),
         }
 
-    tasks = [asyncio.create_task(sample_group(index, row)) for index, row in enumerate(rows)]
+    tasks = [
+        asyncio.create_task(sample_group(index, row)) for index, row in enumerate(rows)
+    ]
     try:
         samples = await asyncio.gather(*tasks)
     except BaseException:
@@ -858,26 +965,27 @@ async def _generation_monitor(
         )
         for sample in samples
     }
-    report = evaluate_groups(groups, pass_k=config.monitor_group_size)
+    report = evaluate_groups(groups, pass_k=config.development_group_size)
     prompt_total = sum(
-        sample["prompt_tokens"] * config.monitor_group_size for sample in samples
+        sample["prompt_tokens"] * config.development_group_size for sample in samples
     )
     output_total = sum(
         output_tokens for sample in samples for _, output_tokens in sample["responses"]
     )
     progress(
-        f"monitor {label} pass_at_1={report.metrics['eval/pass_at_1']:.4f} "
+        f"development {label} pass_at_1={report.metrics['eval/pass_at_1']:.4f} "
         f"pass_at_4={report.metrics['eval/pass_at_4']:.4f}"
     )
-    return MonitorReport(
+    return DevelopmentReport(
         metrics=dict(report.metrics),
         prompt_tokens=prompt_total,
         output_tokens=output_total,
         estimated_cost_usd=_student_monitor_cost(prompt_total, output_total),
+        table_rows=_development_table_rows(report, samples, checkpoint_step, config),
     )
 
 
-def _monitor_metrics(report: MonitorReport) -> Dict[str, float]:
+def _development_metrics(report: DevelopmentReport) -> Dict[str, float]:
     metric_map = {
         "eval/pass_at_1": "dev/pass_at_1",
         "eval/pass_at_4": "dev/pass_at_4",
@@ -888,6 +996,7 @@ def _monitor_metrics(report: MonitorReport) -> Dict[str, float]:
         "eval/group_all_wrong_frac": "dev/group_all_wrong_frac",
         "eval/group_mixed_frac": "dev/group_mixed_frac",
         "eval/group_reward_std_mean": "dev/group_reward_std_mean",
+        "eval/group_unique_response_frac": "dev/group_unique_response_frac",
         "eval/process_check_coverage": "dev/process_check_coverage",
         "eval/process_validity_rate": "dev/process_validity_rate",
         "eval/final_correct_process_invalid": "dev/final_correct_process_invalid",
@@ -914,24 +1023,33 @@ def _log_schema_metrics(
 def _is_better_checkpoint(
     candidate: CheckpointRecord, current: CheckpointRecord
 ) -> bool:
-    if candidate.monitor_pass_at_4 is None or candidate.monitor_pass_at_1 is None:
+    if (
+        candidate.development_pass_at_4 is None
+        or candidate.development_pass_at_1 is None
+    ):
         return candidate.step > current.step
-    if current.monitor_pass_at_4 is None or current.monitor_pass_at_1 is None:
+    if current.development_pass_at_4 is None or current.development_pass_at_1 is None:
         return True
-    return (candidate.monitor_pass_at_4, candidate.monitor_pass_at_1) > (
-        current.monitor_pass_at_4,
-        current.monitor_pass_at_1,
+    return (candidate.development_pass_at_4, candidate.development_pass_at_1) > (
+        current.development_pass_at_4,
+        current.development_pass_at_1,
     )
 
 
 def _trace_path(config: KDConfig, run_id: str) -> Path:
     safe_run_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", run_id)
-    return Path(config.trace_output_dir) / f"{config.experiment_id}_teacher_traces_{safe_run_id}.jsonl"
+    return (
+        Path(config.trace_output_dir)
+        / f"{config.experiment_id}_teacher_traces_{safe_run_id}.jsonl"
+    )
 
 
 def _report_path(config: KDConfig, run_id: str) -> Path:
     safe_run_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", run_id)
-    return Path(config.trace_output_dir) / f"{config.experiment_id}_kd_report_{safe_run_id}.json"
+    return (
+        Path(config.trace_output_dir)
+        / f"{config.experiment_id}_kd_report_{safe_run_id}.json"
+    )
 
 
 def _metric_dictionary_path(config: KDConfig, run_id: str) -> Path:
@@ -958,7 +1076,7 @@ async def run_kd_training(
     wandb_module: Any = None,
     service_client: Any = None,
     train_rows: Optional[Sequence[Mapping[str, object]]] = None,
-    monitor_rows: Optional[Sequence[Mapping[str, object]]] = None,
+    development_rows: Optional[Sequence[Mapping[str, object]]] = None,
     clock: Callable[[], float] = time.monotonic,
     progress: Callable[[str], None] = _print_progress,
 ) -> Dict[str, Any]:
@@ -969,7 +1087,9 @@ async def run_kd_training(
         try:
             import tinker as tinker_module
         except ImportError as exc:
-            raise KDTrainingError("Tinker SDK is unavailable; run with `uv run --extra tinker`") from exc
+            raise KDTrainingError(
+                "Tinker SDK is unavailable; run with `uv run --extra tinker`"
+            ) from exc
     if wandb_module is None:
         try:
             import wandb as wandb_module
@@ -978,14 +1098,18 @@ async def run_kd_training(
     if train_rows is None:
         progress("loading frozen rl_train teacher-candidate rows")
         train_rows = load_official_train_rows(manifest, "rl_train")
-    if monitor_rows is None:
-        progress("loading reused frozen rl_monitor checkpoint-selection rows")
-        monitor_rows = load_official_train_rows(manifest, "rl_monitor")
+    if development_rows is None:
+        progress("loading frozen sft_validation KD-development rows")
+        development_rows = load_official_train_rows(
+            manifest, config.development_partition
+        )
     if len(train_rows) != len(manifest.rl_train_ids):
         raise KDTrainingError("loaded rl_train rows do not match the manifest")
-    if len(monitor_rows) != len(manifest.rl_monitor_ids):
-        raise KDTrainingError("loaded rl_monitor rows do not match the manifest")
-    monitor_rows = tuple(monitor_rows[: config.monitor_examples])
+    if len(development_rows) != len(manifest.sft_validation_ids):
+        raise KDTrainingError(
+            "loaded sft_validation rows do not match the frozen KD development split"
+        )
+    development_rows = tuple(development_rows[: config.development_examples])
 
     owned_http_client = None
     if service_client is None:
@@ -993,7 +1117,10 @@ async def run_kd_training(
 
         owned_http_client = httpx.AsyncClient(follow_redirects=True)
         service_client = tinker_module.ServiceClient(
-            user_metadata={"experiment_id": config.experiment_id, "suite_id": config.suite_id},
+            user_metadata={
+                "experiment_id": config.experiment_id,
+                "suite_id": config.suite_id,
+            },
             http_client=owned_http_client,
         )
 
@@ -1056,7 +1183,9 @@ async def run_kd_training(
         _write_trace_artifact(trace_path, accepted_traces)
         trace_digest = _trace_digest(accepted_traces)
         selected_input_tokens = sum(len(example.input_tokens) for example in prepared)
-        selected_supervised_tokens = sum(example.supervised_tokens for example in prepared)
+        selected_supervised_tokens = sum(
+            example.supervised_tokens for example in prepared
+        )
         teacher_cost = _teacher_cost(
             teacher_prompt_tokens, teacher_output_tokens, config
         )
@@ -1097,46 +1226,51 @@ async def run_kd_training(
             f"teacher_cost=${teacher_cost:.4f}"
         )
 
-        monitor_cost = 0.0
+        development_cost = 0.0
         checkpoints = []
-        if monitor_rows:
-            parent_monitor = await _generation_monitor(
+        if development_rows:
+            parent_development = await _generation_development(
                 service_client,
                 None,
-                monitor_rows,
+                development_rows,
                 tinker_module,
                 config,
+                0,
                 "step=0 initialization=Base",
                 progress,
             )
-            monitor_cost += parent_monitor.estimated_cost_usd
+            development_cost += parent_development.estimated_cost_usd
             parent_record = CheckpointRecord(
                 step=0,
                 state_path=None,
                 sampler_path=None,
-                monitor_pass_at_1=parent_monitor.metrics["eval/pass_at_1"],
-                monitor_pass_at_4=parent_monitor.metrics["eval/pass_at_4"],
+                development_pass_at_1=parent_development.metrics["eval/pass_at_1"],
+                development_pass_at_4=parent_development.metrics["eval/pass_at_4"],
+                development_metrics=_development_metrics(parent_development),
             )
             checkpoints.append(parent_record)
-            _log_schema_metrics(
-                wandb_run,
-                config,
-                {
-                    **_monitor_metrics(parent_monitor),
-                    "dev/checkpoint_step": 0.0,
-                    "dev/is_initialization_policy": 1.0,
-                    "cost/teacher_generation_usd": teacher_cost,
-                    "cost/student_training_usd": 0.0,
-                    "cost/dev_inference_usd": monitor_cost,
-                    "cost/cumulative_usd": teacher_cost + monitor_cost,
-                },
-                step=0,
-            )
+            parent_metrics: Dict[str, Any] = {
+                **parent_record.development_metrics,
+                "dev/checkpoint_step": 0.0,
+                "dev/optimized_input_tokens": 0.0,
+                "dev/generated_rollouts": float(len(parent_development.table_rows)),
+                "dev/is_initialization_policy": 1.0,
+                "cost/teacher_generation_usd": teacher_cost,
+                "cost/student_training_usd": 0.0,
+                "cost/dev_inference_usd": development_cost,
+                "cost/cumulative_usd": teacher_cost + development_cost,
+            }
+            if hasattr(wandb_module, "Table"):
+                parent_metrics["tables/development_rollouts"] = wandb_module.Table(
+                    columns=list(DEVELOPMENT_TABLE_COLUMNS),
+                    data=list(parent_development.table_rows),
+                )
+            _log_schema_metrics(wandb_run, config, parent_metrics, step=0)
 
         completed_input_tokens = 0
         completed_supervised_tokens = 0
         elapsed_started_at = clock()
-        checkpoint_steps = set(config.checkpoint_steps(len(train_batches)))
+        next_development_token_threshold = config.development_input_token_interval
         for step, batch in enumerate(train_batches, start=1):
             data, batch_input_tokens, batch_supervised_tokens = _materialize_batch(
                 batch, tinker_module
@@ -1155,8 +1289,10 @@ async def run_kd_training(
             nll = _loss_sum(forward_backward_result) / batch_supervised_tokens
             step_seconds = max(clock() - step_started_at, 1e-9)
             elapsed_seconds = clock() - elapsed_started_at
-            total_estimate = teacher_cost + monitor_cost + _student_train_cost(
-                completed_input_tokens, config
+            total_estimate = (
+                teacher_cost
+                + development_cost
+                + _student_train_cost(completed_input_tokens, config)
             )
             _log_schema_metrics(
                 wandb_run,
@@ -1176,19 +1312,31 @@ async def run_kd_training(
                     "cost/student_training_usd": _student_train_cost(
                         completed_input_tokens, config
                     ),
-                    "cost/dev_inference_usd": monitor_cost,
+                    "cost/dev_inference_usd": development_cost,
                     "cost/cumulative_usd": total_estimate,
                 },
                 step=step,
             )
-            if step == 1 or step % config.progress_every == 0 or step == len(train_batches):
+            if (
+                step == 1
+                or step % config.progress_every == 0
+                or step == len(train_batches)
+            ):
                 progress(
                     f"step={step}/{len(train_batches)} nll={nll:.5f} "
                     f"input_tokens={completed_input_tokens}/{selected_input_tokens} "
                     f"estimated_cost=${total_estimate:.4f}"
                 )
-            if step not in checkpoint_steps:
+            development_due = bool(development_rows) and (
+                completed_input_tokens >= next_development_token_threshold
+                or step == len(train_batches)
+            )
+            if not development_due:
                 continue
+            while completed_input_tokens >= next_development_token_threshold:
+                next_development_token_threshold += (
+                    config.development_input_token_interval
+                )
             checkpoint_name = f"{config.run_name}-step{step}"
             state_future = await training_client.save_state_async(
                 checkpoint_name, ttl_seconds=config.checkpoint_ttl_seconds
@@ -1198,32 +1346,43 @@ async def run_kd_training(
                 checkpoint_name, ttl_seconds=config.checkpoint_ttl_seconds
             )
             sampler_result = await sampler_future.result_async()
-            monitor = None
-            if monitor_rows:
-                monitor = await _generation_monitor(
+            development = None
+            if development_rows:
+                development = await _generation_development(
                     service_client,
                     str(sampler_result.path),
-                    monitor_rows,
+                    development_rows,
                     tinker_module,
                     config,
+                    step,
                     f"step={step}",
                     progress,
                 )
-                monitor_cost += monitor.estimated_cost_usd
+                development_cost += development.estimated_cost_usd
             record = CheckpointRecord(
                 step=step,
                 state_path=str(state_result.path),
                 sampler_path=str(sampler_result.path),
-                monitor_pass_at_1=(
-                    monitor.metrics["eval/pass_at_1"] if monitor is not None else None
+                development_pass_at_1=(
+                    development.metrics["eval/pass_at_1"]
+                    if development is not None
+                    else None
                 ),
-                monitor_pass_at_4=(
-                    monitor.metrics["eval/pass_at_4"] if monitor is not None else None
+                development_pass_at_4=(
+                    development.metrics["eval/pass_at_4"]
+                    if development is not None
+                    else None
+                ),
+                development_metrics=(
+                    _development_metrics(development)
+                    if development is not None
+                    else None
                 ),
             )
             checkpoints.append(record)
             checkpoint_metrics = {
                 "dev/checkpoint_step": float(step),
+                "dev/optimized_input_tokens": float(completed_input_tokens),
                 "dev/is_initialization_policy": 0.0,
                 "checkpoint/state_path": record.state_path,
                 "checkpoint/sampler_path": record.sampler_path,
@@ -1231,13 +1390,23 @@ async def run_kd_training(
                 "cost/student_training_usd": _student_train_cost(
                     completed_input_tokens, config
                 ),
-                "cost/dev_inference_usd": monitor_cost,
+                "cost/dev_inference_usd": development_cost,
                 "cost/cumulative_usd": teacher_cost
-                + monitor_cost
+                + development_cost
                 + _student_train_cost(completed_input_tokens, config),
             }
-            if monitor is not None:
-                checkpoint_metrics.update(_monitor_metrics(monitor))
+            if development is not None:
+                checkpoint_metrics.update(record.development_metrics or {})
+                checkpoint_metrics["dev/generated_rollouts"] = float(
+                    len(development.table_rows)
+                )
+                if hasattr(wandb_module, "Table"):
+                    checkpoint_metrics["tables/development_rollouts"] = (
+                        wandb_module.Table(
+                            columns=list(DEVELOPMENT_TABLE_COLUMNS),
+                            data=list(development.table_rows),
+                        )
+                    )
             _log_schema_metrics(wandb_run, config, checkpoint_metrics, step=step)
 
         if not checkpoints:
@@ -1245,19 +1414,24 @@ async def run_kd_training(
                 step=len(train_batches),
                 state_path=None,
                 sampler_path=None,
-                monitor_pass_at_1=None,
-                monitor_pass_at_4=None,
+                development_pass_at_1=None,
+                development_pass_at_4=None,
+                development_metrics=None,
             )
         else:
             selected = checkpoints[0]
             for candidate in checkpoints[1:]:
                 if _is_better_checkpoint(candidate, selected):
                     selected = candidate
-        total_cost = teacher_cost + monitor_cost + _student_train_cost(
-            completed_input_tokens, config
+        total_cost = (
+            teacher_cost
+            + development_cost
+            + _student_train_cost(completed_input_tokens, config)
         )
         if total_cost > config.hard_cap_usd:
-            raise KDTrainingError("observed token cost exceeded the configured hard cap")
+            raise KDTrainingError(
+                "observed token cost exceeded the configured hard cap"
+            )
         report = {
             "distillation_schema_version": DISTILLATION_SCHEMA_VERSION,
             "distillation_method": asdict(method_spec(config.signal_kind)),
@@ -1297,9 +1471,12 @@ async def run_kd_training(
             "student_supervised_tokens": completed_supervised_tokens,
             "training_steps": len(train_batches),
             "completed_training_steps": len(train_batches),
-            "legacy_monitor_partition": "rl_monitor",
-            "legacy_monitor_examples": len(monitor_rows),
-            "legacy_monitor_estimated_cost_usd": monitor_cost,
+            "development_partition": config.development_partition,
+            "development_examples": len(development_rows),
+            "development_ids_hash": _development_ids_hash(config, manifest),
+            "development_group_size": config.development_group_size,
+            "development_input_token_interval": config.development_input_token_interval,
+            "development_estimated_cost_usd": development_cost,
             "selected_checkpoint": asdict(selected),
             "selected_checkpoint_is_initialization": selected.step == 0,
             "checkpoints": [asdict(record) for record in checkpoints],
@@ -1326,6 +1503,17 @@ async def run_kd_training(
             "selection/selected_is_initialization": float(selected.step == 0),
             "cost/cumulative_usd": total_cost,
         }
+        if selected.development_metrics is not None:
+            selected_dev_pass_at_1 = selected.development_metrics["dev/pass_at_1"]
+            selected_dev_pass_at_4 = selected.development_metrics["dev/pass_at_4"]
+            summary.update(
+                {
+                    "dev/pass_at_1": selected_dev_pass_at_1,
+                    "dev/pass_at_4": selected_dev_pass_at_4,
+                    "selection/selected_dev_pass_at_1": selected_dev_pass_at_1,
+                    "selection/selected_dev_pass_at_4": selected_dev_pass_at_4,
+                }
+            )
         if selected.state_path is not None:
             summary["checkpoint/selected_state_path"] = selected.state_path
         if selected.sampler_path is not None:
@@ -1362,8 +1550,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--student-input-token-target", type=int)
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--max-student-steps", type=int)
-    parser.add_argument("--monitor-examples", type=int)
-    parser.add_argument("--checkpoint-every", type=int)
+    parser.add_argument("--development-examples", type=int)
+    parser.add_argument("--development-input-token-interval", type=int)
     parser.add_argument("--hard-cap-usd", type=float)
     parser.add_argument("--progress-every", type=int)
     parser.add_argument("--trace-output-dir")
@@ -1382,8 +1570,8 @@ def _config_from_args(args: argparse.Namespace) -> KDConfig:
             "student_input_token_target": args.student_input_token_target,
             "learning_rate": args.learning_rate,
             "max_student_steps": args.max_student_steps,
-            "monitor_examples": args.monitor_examples,
-            "checkpoint_every": args.checkpoint_every,
+            "development_examples": args.development_examples,
+            "development_input_token_interval": (args.development_input_token_interval),
             "hard_cap_usd": args.hard_cap_usd,
             "progress_every": args.progress_every,
             "trace_output_dir": args.trace_output_dir,

@@ -96,7 +96,9 @@ class _FakeTrainingClient:
 
     async def save_state_async(self, name, ttl_seconds):
         self.saved.append(("state", name, ttl_seconds))
-        return _FakeFuture(type("Result", (), {"path": f"tinker://run/weights/{name}"})())
+        return _FakeFuture(
+            type("Result", (), {"path": f"tinker://run/weights/{name}"})()
+        )
 
     async def save_weights_for_sampler_async(self, name, ttl_seconds):
         self.saved.append(("sampler", name, ttl_seconds))
@@ -145,6 +147,11 @@ class _FakeRun:
 
 
 class _FakeWandb:
+    class Table:
+        def __init__(self, columns, data):
+            self.columns = columns
+            self.data = data
+
     def __init__(self):
         self.run = _FakeRun()
         self.init_kwargs = None
@@ -181,8 +188,8 @@ def _config(tmp_path, **kwargs):
         "student_input_token_target": 30,
         "batch_size": 2,
         "max_student_steps": 2,
-        "monitor_examples": 1,
-        "checkpoint_every": 1,
+        "development_examples": 1,
+        "development_input_token_interval": 1,
         "progress_every": 1,
         "max_sequence_tokens": 64,
         "hard_cap_usd": 1.0,
@@ -248,7 +255,7 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
             wandb_module=wandb,
             service_client=service,
             train_rows=_rows("rl", 2),
-            monitor_rows=_rows("monitor", 1),
+            development_rows=_rows("development", 1),
             progress=lambda _: None,
         )
     )
@@ -262,18 +269,35 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     assert config.model_id in service.base_model_requests
     assert len(service.training_client.forward_backward_calls) == 1
     data = service.training_client.forward_backward_calls[0][0]
-    assert all(loss_fn == "cross_entropy" for _, loss_fn in service.training_client.forward_backward_calls)
+    assert all(
+        loss_fn == "cross_entropy"
+        for _, loss_fn in service.training_client.forward_backward_calls
+    )
     assert any(weight == 0.0 for weight in data[0].loss_fn_inputs["weights"])
     assert report["teacher_outcomes"]["teacher_correct"] == 2
     assert report["student_optimized_input_tokens"] >= 30
     assert report["selected_checkpoint"]["step"] == 0
     assert report["selected_checkpoint_is_initialization"] is True
-    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v1"
+    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v2"
     assert (tmp_path / "e9_teacher_traces_unit-test-run.jsonl").exists()
     assert (tmp_path / "e9_kd_report_unit-test-run.json").exists()
     assert (tmp_path / "e9_metric_dictionary_unit-test-run.md").exists()
-    assert ("dev/*", {"step_metric": "dev/checkpoint_step"}) in wandb.run.defined_metrics
+    assert (
+        "dev/*",
+        {"step_metric": "dev/optimized_input_tokens"},
+    ) in wandb.run.defined_metrics
     assert wandb.run.summary["selection/selected_is_initialization"] == 1.0
+    assert wandb.run.summary["dev/pass_at_1"] == 1.0
+    assert wandb.run.summary["dev/pass_at_4"] == 1.0
+    assert wandb.run.summary["selection/selected_dev_pass_at_1"] == 1.0
+    assert wandb.run.summary["selection/selected_dev_pass_at_4"] == 1.0
+    development_tables = [
+        payload["tables/development_rollouts"]
+        for payload, _ in wandb.run.logs
+        if "tables/development_rollouts" in payload
+    ]
+    assert len(development_tables) == 2
+    assert len(development_tables[0].data) == 4
     assert wandb.init_kwargs["config"]["initialization_source"] == "base_fresh_lora"
     assert wandb.run.finished is True
 
@@ -283,3 +307,23 @@ def test_e9_rejects_checkpoint_initialization(tmp_path):
         _config(tmp_path, initialization_source="e4_grpo_step75").validate(_manifest())
     with pytest.raises(KDTrainingError, match="Base-to-KD"):
         _config(tmp_path, initialization_label="e4-grpo-step75").validate(_manifest())
+
+
+def test_kd_requires_g4_development_evaluation_and_token_cadence(tmp_path):
+    with pytest.raises(KDTrainingError, match="development_examples"):
+        _config(tmp_path, development_examples=0).validate(_manifest())
+    with pytest.raises(KDTrainingError, match="G=4"):
+        _config(tmp_path, development_group_size=1).validate(_manifest())
+
+    config = _config(tmp_path, development_input_token_interval=10)
+    report = build_doctor_report(
+        config,
+        _manifest(),
+        environ={"TINKER_API_KEY": "set", "WANDB_API_KEY": "set"},
+        tinker_version="0.27.0",
+        wandb_version="0.21.1",
+    )
+
+    assert config.development_evaluations_upper_bound() == 3
+    assert report["max_development_evaluations"] == 4
+    assert report["development_partition"] == "sft_validation"
