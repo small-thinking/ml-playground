@@ -308,14 +308,20 @@ COMMON_METRICS = (
         caveat="Changes can reveal length collapse or runaway reasoning but are not targets.",
     ),
     MetricSpec(
-        key="dev/is_parent_checkpoint",
-        label="Development result is parent checkpoint",
+        key="dev/is_initialization_policy",
+        label="Development result is the initialization policy",
         group="dev",
         direction="none",
         unit="boolean",
         decision_role=DECISION_REPORTING,
-        definition="Whether the behavioral development result was sampled from the parent.",
-        caveat="Makes the parent-versus-trained selection comparison explicit.",
+        definition=(
+            "Whether the behavioral development result was sampled before KD updates "
+            "from its declared initialization policy."
+        ),
+        caveat=(
+            "Makes the initialization-versus-trained selection comparison explicit, "
+            "whether initialization is Base or a checkpoint."
+        ),
     ),
     MetricSpec(
         key="dev/group_all_correct_frac",
@@ -408,13 +414,16 @@ COMMON_METRICS = (
         caveat="Selection provenance, not a performance metric.",
     ),
     MetricSpec(
-        key="selection/selected_is_parent",
-        label="Parent retained",
+        key="selection/selected_is_initialization",
+        label="Initialization retained",
         group="selection",
         direction="lower",
         unit="boolean",
         decision_role=DECISION_REPORTING,
-        definition="Whether the parent checkpoint beat every trained checkpoint on dev.",
+        definition=(
+            "Whether the declared initialization policy beat every trained checkpoint "
+            "on development behavior."
+        ),
         caveat="If true, do not spend on a new formal evaluation for this recipe.",
     ),
 )

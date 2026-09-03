@@ -4,7 +4,6 @@ import pytest
 
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import build_manifest
 from modeling.llm_post_training.gsm8k_sft_grpo_lab.kd_train import (
-    E4_STATE_PATH,
     KDConfig,
     KDTrainingError,
     TEACHER_SCORE,
@@ -109,17 +108,17 @@ class _FakeTrainingClient:
 class _FakeServiceClient:
     def __init__(self):
         self.training_client = _FakeTrainingClient()
-        self.loaded = None
-        self.teacher_kwargs = None
+        self.created_lora = None
+        self.base_model_requests = []
         self.monitor_paths = []
 
-    async def create_training_client_from_state_async(self, path, **kwargs):
-        self.loaded = (path, kwargs)
+    async def create_lora_training_client_async(self, base_model, rank, seed, **kwargs):
+        self.created_lora = (base_model, rank, seed, kwargs)
         return self.training_client
 
     async def create_sampling_client_async(self, **kwargs):
         if "base_model" in kwargs:
-            self.teacher_kwargs = kwargs
+            self.base_model_requests.append(kwargs["base_model"])
         if "model_path" in kwargs:
             self.monitor_paths.append(kwargs["model_path"])
         return _FakeSamplingClient()
@@ -214,7 +213,7 @@ def test_scalar_teacher_score_is_not_silently_routed_through_hard_kd(tmp_path):
         _config(tmp_path, signal_kind=TEACHER_SCORE).validate(_manifest())
 
 
-def test_preflight_records_e4_provenance_and_separate_teacher_cost(tmp_path):
+def test_preflight_records_base_provenance_and_separate_teacher_cost(tmp_path):
     config = _config(tmp_path)
     report = build_doctor_report(
         config,
@@ -225,14 +224,16 @@ def test_preflight_records_e4_provenance_and_separate_teacher_cost(tmp_path):
     )
 
     assert report["network_called"] is False
-    assert report["initialization_source"] == "e4_grpo_step75"
+    assert report["initialization_source"] == "base_fresh_lora"
+    assert report["parent_checkpoint"] is None
+    assert report["reference_e4_checkpoint"].endswith("step75")
     assert report["student_input_token_target"] == 30
     assert report["estimated_cost_breakdown_usd"]["teacher_generation_max_usd"] > 0
     assert estimate_max_token_cost_usd(config, _manifest()) < config.hard_cap_usd
     assert report["ready_for_paid_run"] is True
 
 
-def test_kd_restores_e4_filters_teacher_traces_and_records_token_provenance(tmp_path):
+def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     config = _config(tmp_path)
     service = _FakeServiceClient()
     wandb = _FakeWandb()
@@ -252,9 +253,13 @@ def test_kd_restores_e4_filters_teacher_traces_and_records_token_provenance(tmp_
         )
     )
 
-    assert service.loaded[0] == E4_STATE_PATH
-    assert service.teacher_kwargs["base_model"] == "Qwen/Qwen3.5-397B-A17B"
-    assert service.monitor_paths[0] == config.parent_sampler_path
+    assert service.created_lora[:3] == (
+        config.model_id,
+        config.lora_rank,
+        config.seed,
+    )
+    assert "Qwen/Qwen3.5-397B-A17B" in service.base_model_requests
+    assert config.model_id in service.base_model_requests
     assert len(service.training_client.forward_backward_calls) == 1
     data = service.training_client.forward_backward_calls[0][0]
     assert all(loss_fn == "cross_entropy" for _, loss_fn in service.training_client.forward_backward_calls)
@@ -262,11 +267,19 @@ def test_kd_restores_e4_filters_teacher_traces_and_records_token_provenance(tmp_
     assert report["teacher_outcomes"]["teacher_correct"] == 2
     assert report["student_optimized_input_tokens"] >= 30
     assert report["selected_checkpoint"]["step"] == 0
-    assert report["selected_checkpoint_is_parent_e4"] is True
+    assert report["selected_checkpoint_is_initialization"] is True
     assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v1"
     assert (tmp_path / "e9_teacher_traces_unit-test-run.jsonl").exists()
     assert (tmp_path / "e9_kd_report_unit-test-run.json").exists()
     assert (tmp_path / "e9_metric_dictionary_unit-test-run.md").exists()
     assert ("dev/*", {"step_metric": "dev/checkpoint_step"}) in wandb.run.defined_metrics
-    assert wandb.run.summary["selection/selected_is_parent"] == 1.0
+    assert wandb.run.summary["selection/selected_is_initialization"] == 1.0
+    assert wandb.init_kwargs["config"]["initialization_source"] == "base_fresh_lora"
     assert wandb.run.finished is True
+
+
+def test_e9_rejects_checkpoint_initialization(tmp_path):
+    with pytest.raises(KDTrainingError, match="Base-to-KD"):
+        _config(tmp_path, initialization_source="e4_grpo_step75").validate(_manifest())
+    with pytest.raises(KDTrainingError, match="Base-to-KD"):
+        _config(tmp_path, initialization_label="e4-grpo-step75").validate(_manifest())
