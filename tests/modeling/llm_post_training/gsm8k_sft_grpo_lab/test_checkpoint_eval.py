@@ -55,3 +55,16 @@ def test_cli_requires_stage_and_provenance():
     assert args.experiment_id == "e4"
     assert args.evaluation_stage == "grpo"
     assert args.run is False
+
+
+def test_kd_checkpoint_uses_the_same_formal_protocol():
+    config = CheckpointFormalEvalConfig(
+        SAMPLER_PATH,
+        TRAINING_RUN_URL,
+        experiment_id="e9",
+        evaluation_stage="kd",
+        parent_checkpoint="e4-grpo-step75",
+    ).base_config()
+
+    assert config.evaluation_stage == "kd"
+    assert config.parent_checkpoint == "e4-grpo-step75"

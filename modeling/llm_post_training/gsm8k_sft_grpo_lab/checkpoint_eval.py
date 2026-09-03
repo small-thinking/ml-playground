@@ -26,7 +26,7 @@ from modeling.llm_post_training.gsm8k_sft_grpo_lab.data import (
 
 @dataclass(frozen=True)
 class CheckpointFormalEvalConfig:
-    """Provenance for a formal evaluation of an SFT or GRPO sampler."""
+    """Provenance for a formal evaluation of an SFT, GRPO, or KD sampler."""
 
     sampler_path: str
     source_training_run_url: str
@@ -40,8 +40,8 @@ class CheckpointFormalEvalConfig:
     def validate(self) -> None:
         if not self.experiment_id:
             raise BaseEvalError("experiment_id is required")
-        if self.evaluation_stage not in {"sft", "grpo"}:
-            raise BaseEvalError("evaluation_stage must be sft or grpo")
+        if self.evaluation_stage not in {"sft", "grpo", "kd"}:
+            raise BaseEvalError("evaluation_stage must be sft, grpo, or kd")
         if not self.sampler_path.startswith("tinker://"):
             raise BaseEvalError("sampler_path must be a Tinker URI")
         if "/sampler_weights/" not in self.sampler_path:
@@ -106,7 +106,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--sampler-path", required=True)
     parser.add_argument("--source-training-run-url", required=True)
     parser.add_argument("--experiment-id", required=True)
-    parser.add_argument("--evaluation-stage", choices=("sft", "grpo"), required=True)
+    parser.add_argument(
+        "--evaluation-stage", choices=("sft", "grpo", "kd"), required=True
+    )
     parser.add_argument("--parent-checkpoint")
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--allow-paid", action="store_true")

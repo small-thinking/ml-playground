@@ -130,8 +130,8 @@ class BaseEvalConfig:
     def validate(self, manifest: Optional[SplitManifest] = None) -> None:
         if not self.model_id or not self.project or not self.suite_id:
             raise BaseEvalError("model, project, and suite identifiers are required")
-        if self.evaluation_stage not in {"base", "sft", "grpo"}:
-            raise BaseEvalError("evaluation stage must be base, sft, or grpo")
+        if self.evaluation_stage not in {"base", "sft", "grpo", "kd"}:
+            raise BaseEvalError("evaluation stage must be base, sft, grpo, or kd")
         if not self.checkpoint:
             raise BaseEvalError("checkpoint label is required")
         if self.evaluation_stage == "base" and self.model_path is not None:
