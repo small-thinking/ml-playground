@@ -4,14 +4,16 @@ A diagnostics-first post-training study on `Qwen/Qwen3.5-9B-Base`. The question
 is not simply which checkpoint scores highest: it is which learning-signal
 change explains the result on a fixed GSM8K protocol.
 
-![Formal GSM8K Pass@1 and Pass@4 for the E2-to-E7 ablation path](figures/gsm8k-posttraining-formal-results-v1.png)
+![Formal GSM8K Pass@1 and Pass@4 through the E9 KD result, with comparison-scope caveats](figures/gsm8k-posttraining-formal-results-v2.png)
 
-**Current decision baseline.** E4 clean GRPO is the reference for the next
-phase: Pass@1 `0.7197`, Pass@4 `0.7506`. E7 has the highest point estimate on
-the reused formal protocol, but it optimized 12.7× as many input tokens; E8's
-approximately token-matched control did not beat E4. Treat E4—not E7—as the
-frozen **comparison baseline** for the controlled distillation ladder. E9
-itself intentionally initializes from Base.
+**Stopping-point decision.** E4 clean GRPO remains the frozen controlled
+`Base → SFT → GRPO` reference: Pass@1 `0.7197`, Pass@4 `0.7506`. E7's higher
+point estimate used 12.7× E4's optimized input tokens, and E8's approximately
+token-matched control did not beat E4. E9's separate `Base → KD` route reaches
+`0.9126 / 0.9308`, but its full-corpus teacher-trace coverage is not matched to
+historical E4. It is strong benchmark evidence for KD, not a same-coverage
+causal replacement claim. We stop GSM8K here: the remaining Pass@4 headroom is
+small, so a full OPD study has low expected return on this reused benchmark.
 
 ## Main results
 
@@ -30,6 +32,7 @@ frozen configurations.
 | E6 GRPO | Does restoring E4's mixed-group budget rescue E5? | 0.7034 | 0.7343 | No. |
 | E7 GRPO | Do fixed-sign advantages avoid zero-advantage groups? | 0.7675 | 0.7879 | Higher point estimate, but 12.7× E4 optimization tokens. |
 | E8 GRPO | Does fixed-sign help at approximately E4's token budget? | 0.7020 | 0.7296 | No—do not promote it over E4. |
+| E9 hard KD | Can verifier-filtered teacher traces provide an alternative to SFT + GRPO? | **0.9126** | **0.9308** | Strong parallel `Base → KD` result; audit passed, but historical coverage is not matched to E4. |
 
 **Teaching note — E1, deliberately excluded from the main figure.** Selecting
 SFT by NLL alone gave Pass@1/Pass@4 `0.5488/0.5843` despite format accuracy
@@ -112,6 +115,27 @@ W&B summary. This development set is held out from KD training but has been
 reused elsewhere in the study, so it selects checkpoints within a run and never
 substitutes for the frozen formal evaluation.
 
+E9 selected step 204 with development Pass@1/Pass@4 `0.8906/0.9062`. Its
+formal G4 evaluation reached `0.9126/0.9308` on all 1,287 frozen formal prompts
+(`+19.29pp/+18.03pp` versus E4). The exported raw table re-scores identically
+under the current verifier, covers every formal ID exactly four times, and has
+zero ID overlap with accepted E9 traces. That eliminates direct train/formal
+split leakage in this implementation; the public-benchmark pretraining-
+contamination caveat remains. In the prompt-paired Pass@4 comparison, E9 wins
+263 groups, E4 wins 31, and 993 tie (exact sign test `p=5.55e-47`).
+
+### Why this lab stops after E9
+
+E9 leaves only `6.92pp` of theoretical Pass@4 headroom on the reused GSM8K
+formal set. A small E10a on-policy Top-K probe was prepared but was not run and
+is deliberately not reported as an experimental result here.
+It would test only an incremental E9 continuation, not whether OPD replaces
+KD. The next decision-quality OPD study should instead start from a small
+student on a harder, verifier-backed task—for example a `Qwen3.5-1.7B` student
+on MATH Level 4/5 with MATH-500 held out—and compare matched Hard-trace KD,
+Offline Top-K KD, and OPD Top-K arms. This preserves a real student-prefix
+distribution gap without inflating GSM8K claims.
+
 ### A shared schema for the entire KD ladder
 
 E9 is the first **implemented recipe**, not a bespoke metric universe. The
@@ -167,6 +191,7 @@ improved while task success fell.
 
 - [E7 training in W&B](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/p0035t59) and [E7 formal evaluation](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/h3gmmogp)
 - [E4 formal comparison](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/2p1o07v4)
+- [E9 KD training](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/5e2xrzla) and [E9 formal evaluation](https://wandb.ai/techtao-small-thinking/mini-posttraining-lab/runs/bt24aodw)
 - [Frozen split manifest](manifests/gsm8k_splits.json), [evaluation harness](evaluation.py), [GRPO training entry point](grpo_train.py), [KD training entry point](kd_train.py), and [full experiment ledger](experiment_log.md)
 
 Use the repository's uv environment for command help and local preflight:
@@ -187,9 +212,10 @@ UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_trainin
 ```
 
 The first command is local-only. Add `--run --allow-paid` only after inspecting
-its bounded cost; after training, first audit the selected checkpoint on the
-separate frozen calibration split before deciding whether a formal evaluation is
-warranted.
+its bounded cost; after training, audit the selected checkpoint on the separate
+frozen calibration split before deciding whether a formal evaluation is
+warranted. The completed E9 run cost `$14.90537` for training; its separate
+formal evaluation cost `$2.77770`.
 
 Paid commands require an explicit `--run --allow-paid` authorization and a
 bounded preflight; raw rollouts, local checkpoints, and exports stay in ignored
