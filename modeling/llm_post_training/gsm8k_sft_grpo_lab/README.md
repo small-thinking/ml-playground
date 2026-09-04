@@ -6,12 +6,14 @@ change explains the result on a fixed GSM8K protocol.
 
 ![Formal GSM8K Pass@1 and Pass@4 for the E2-to-E7 ablation path](figures/gsm8k-posttraining-formal-results-v1.png)
 
-**Current decision baseline.** E4 clean GRPO is the reference for the next
-phase: Pass@1 `0.7197`, Pass@4 `0.7506`. E7 has the highest point estimate on
-the reused formal protocol, but it optimized 12.7× as many input tokens; E8's
-approximately token-matched control did not beat E4. Treat E4—not E7—as the
-frozen **comparison baseline** for the controlled distillation ladder. E9
-itself intentionally initializes from Base.
+**Current decision baseline.** E4 clean GRPO remains the frozen controlled
+`Base → SFT → GRPO` reference: Pass@1 `0.7197`, Pass@4 `0.7506`. E9's separate
+`Base → KD` route reaches `0.9126 / 0.9308` on the reused formal protocol, but
+it consumes verifier-filtered traces from all 6,800 allowed prompts while the
+historical selected E4 state had seen only 600 RL prompt groups. It is a strong
+parallel end-to-end result, not a same-coverage causal replacement for E4. E10
+therefore asks the narrower question: can a small on-policy distribution-KD
+phase improve the already-strong E9 checkpoint, or is it saturated?
 
 ## Main results
 
@@ -30,6 +32,7 @@ frozen configurations.
 | E6 GRPO | Does restoring E4's mixed-group budget rescue E5? | 0.7034 | 0.7343 | No. |
 | E7 GRPO | Do fixed-sign advantages avoid zero-advantage groups? | 0.7675 | 0.7879 | Higher point estimate, but 12.7× E4 optimization tokens. |
 | E8 GRPO | Does fixed-sign help at approximately E4's token budget? | 0.7020 | 0.7296 | No—do not promote it over E4. |
+| E9 hard KD | Can verifier-filtered teacher traces replace SFT + GRPO? | **0.9126** | **0.9308** | Strong parallel `Base → KD` result; audit passed, but coverage is not matched to historical E4. |
 
 **Teaching note — E1, deliberately excluded from the main figure.** Selecting
 SFT by NLL alone gave Pass@1/Pass@4 `0.5488/0.5843` despite format accuracy
@@ -112,6 +115,38 @@ W&B summary. This development set is held out from KD training but has been
 reused elsewhere in the study, so it selects checkpoints within a run and never
 substitutes for the frozen formal evaluation.
 
+E9's selected step 204 had development Pass@1/Pass@4 `0.8906/0.9062`. Its
+formal G4 evaluation reached `0.9126/0.9308` on all 1,287 frozen formal prompts
+(`+19.29pp/+18.03pp` versus E4). The raw formal table matches the current scorer
+exactly, contains each frozen formal ID exactly four times, and has zero ID
+overlap with the accepted E9 training traces. This eliminates a direct split
+or scorer leak in this implementation; the usual public-benchmark
+pretraining-contamination caveat still remains.
+
+### E10 — small on-policy Top-K external-teacher KD probe
+
+E10 is **not** a second full E9 run and is not parameter-sharing
+"self-distillation." It restores E9 step 204's weights with a fresh optimizer,
+then makes eight fixed updates over 64 `rl_train` prompts that also have an
+accepted E9 teacher trace. At each update, the current student produces four
+rollouts per prompt. The frozen 397B teacher receives its verified E9 trace as
+privileged reference context plus the student rollout, returns Top-K next-token
+log-probabilities at two student-visited positions per rollout, and the student
+optimizes CE against the teacher distribution renormalized on that support.
+The reference trace is never inserted into the student input.
+
+The E10 preflight locks the parent state/sampler URI, exact trace digest,
+selected training-ID hash, and verifies zero overlap with both the development
+and formal splits. The preflight's conservative token bound is `$3.2357` and
+the run refuses to exceed a `$5.00` cap. It logs actual teacher Top-K-query,
+student-rollout, student-training, and development costs separately. It also
+logs Top-K retained probability mass, normalized teacher entropy, Top-K CE,
+the explicitly named truncated-target `KL(q_topk || p_student)`, prefix
+coverage, G4 rollout correctness/format/truncation, and unique-response
+diversity. Only the frozen development Pass@4 → Pass@1 rule selects the parent
+or terminal checkpoint; none of those training diagnostics can trigger a
+formal evaluation by themselves.
+
 ### A shared schema for the entire KD ladder
 
 E9 is the first **implemented recipe**, not a bespoke metric universe. The
@@ -121,17 +156,18 @@ weighted-token ledgers, teacher/student/development cost ledgers, fixed
 behavioral development metrics, and the rule that `dev/pass_at_4` then
 `dev/pass_at_1` can select a checkpoint. The metric dictionary written beside
 each run records the definition, unit, decision role, and caveat for every
-chart. The v3 schema intentionally does not claim a held-out teacher-trace NLL:
+chart. The v4 schema intentionally does not claim a held-out teacher-trace NLL:
 until the runner implements and verifies a non-mutating forward-only path,
 behavioral student rollouts are the KD validation signal.
 
 Each method then adds only its semantically meaningful diagnostics. E9 adds
-teacher acceptance/rejection statistics and hard-KD NLL; a future Top-K route
-adds retained-probability mass and Top-K CE; a teacher judge/RLAIF route adds
-judge-verifier agreement and reward/advantage diagnostics; preference and
-on-policy Top-K routes are also registered. Only `teacher-response` currently
-has an executable signal-to-Tinker-`Datum` adapter. Selecting an unimplemented
-route fails before any paid call, rather than silently treating it as E9.
+teacher acceptance/rejection statistics and hard-KD NLL; an offline Top-K route
+would add retained-probability mass and Top-K CE; E10's implemented on-policy Top-K
+route adds an explicitly truncated-target forward KL, current-policy rollout
+cost and diversity, and prefix coverage. A teacher judge/RLAIF route adds
+judge-verifier agreement and reward/advantage diagnostics; offline Top-K,
+preference, and teacher-judge routes remain registered but intentionally fail
+before any paid call rather than silently treating them as E9.
 
 This is deliberately not one numerical score for every method. Training loss,
 teacher reward, judge score, and format are diagnostics or guardrails; they
@@ -190,6 +226,20 @@ The first command is local-only. Add `--run --allow-paid` only after inspecting
 its bounded cost; after training, first audit the selected checkpoint on the
 separate frozen calibration split before deciding whether a formal evaluation is
 warranted.
+
+E10's local-only preflight and bounded paid command are:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.opd_train \
+  --hard-cap-usd 5.00
+
+UV_CACHE_DIR=.uv-cache uv run --extra tinker python -m modeling.llm_post_training.gsm8k_sft_grpo_lab.opd_train \
+  --run --allow-paid --hard-cap-usd 5.00
+```
+
+The E10 command does not run a formal evaluation. Run the frozen formal
+inference protocol only if the terminal checkpoint beats the E9 parent under
+the declared development selector and the raw on-policy diagnostics are sane.
 
 Paid commands require an explicit `--run --allow-paid` authorization and a
 bounded preflight; raw rollouts, local checkpoints, and exports stay in ignored

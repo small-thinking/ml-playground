@@ -49,6 +49,9 @@ def test_method_extensions_preserve_their_own_learning_semantics():
     assert judge.on_policy is True
     assert "reward-derived" in judge.student_target
     assert "data/on_policy_prefix_tokens" in on_policy_keys
+    assert "train/topk_teacher_to_student_kl" in on_policy_keys
+    assert "data/on_policy_group_unique_response_frac" in on_policy_keys
+    assert method_spec(ON_POLICY_TOPK).implementation_status == "implemented"
 
 
 def test_schema_marks_only_dev_behavior_as_a_checkpoint_selector():
@@ -76,6 +79,10 @@ def test_wandb_configuration_uses_shared_axes_and_method_specific_summaries():
     assert ("dev/*", {"step_metric": "dev/optimized_input_tokens"}) in hard_run.calls
     assert ("train/hard_kd_nll", {"summary": "min"}) in hard_run.calls
     assert ("train/hard_kd_nll", {"summary": "min"}) not in judge_run.calls
+
+    on_policy_run = _FakeRun()
+    configure_wandb_metrics(on_policy_run, ON_POLICY_TOPK)
+    assert ("train/topk_teacher_to_student_kl", {"summary": "min"}) in on_policy_run.calls
 
 
 def test_schema_validation_rejects_unknown_dashboard_keys():

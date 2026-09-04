@@ -321,7 +321,7 @@ def test_kd_starts_a_fresh_base_lora_and_records_token_provenance(tmp_path):
     )
     assert report["selected_checkpoint"]["step"] == 0
     assert report["selected_checkpoint_is_initialization"] is True
-    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v3"
+    assert report["distillation_schema_version"] == "gsm8k-distillation-schema-v4"
     actual_cost = report["actual_token_priced_cost_ledger"]
     assert actual_cost["teacher_generation"]["input_tokens"] > 0
     assert actual_cost["teacher_generation"]["output_tokens"] > 0
