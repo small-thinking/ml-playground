@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
 
-DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v3"
+DISTILLATION_SCHEMA_VERSION = "gsm8k-distillation-schema-v4"
 
 HARD_RESPONSE = "teacher-response"
 TOPK_RESPONSE = "teacher-topk"
@@ -129,18 +129,20 @@ METHOD_SPECS = {
     ),
     ON_POLICY_TOPK: DistillationMethodSpec(
         signal_kind=ON_POLICY_TOPK,
-        display_name="On-policy Top-K self-distillation",
+        display_name="On-policy Top-K reference-conditioned distillation",
         teacher_signal=(
-            "Teacher Top-K distribution on prefixes sampled by the current student."
+            "Frozen teacher Top-K distribution on prefixes sampled by the current "
+            "student, with a verified teacher trace available as privileged context."
         ),
         student_target="Top-K teacher targets on student-visited prefix positions.",
-        objective="topk cross_entropy",
+        objective="Top-K-truncated teacher-to-student cross_entropy / forward_KL",
         training_regime="on-policy distribution distillation",
         on_policy=True,
-        implementation_status="planned",
+        implementation_status="implemented",
         description=(
-            "OPSD-style route: a teacher distribution supervises the student at the "
-            "student's own prefixes rather than only on gold/teacher prefixes."
+            "OPSD-style route: a frozen external teacher distribution supervises the "
+            "student at the student's own prefixes rather than only on teacher "
+            "prefixes. This is not parameter-sharing self-distillation."
         ),
     ),
 }
@@ -277,8 +279,8 @@ COMMON_METRICS = (
         unit="USD",
         decision_role=DECISION_REPORTING,
         definition=(
-            "Teacher, student training, and development-inference token-priced "
-            "cost combined."
+            "Teacher, student training, development-inference, and any "
+            "method-specific student-rollout token-priced cost combined."
         ),
         caveat="Storage and external local-compute costs may not be included.",
     ),
@@ -675,8 +677,14 @@ TOPK_METRICS = (
         direction="higher",
         unit="fraction",
         decision_role=DECISION_DIAGNOSTIC,
-        definition="Teacher probability mass retained after Top-K truncation.",
-        caveat="Top-K renormalization loses tail information by construction.",
+        definition=(
+            "Mean teacher probability mass retained by the returned Top-K token "
+            "log-probabilities before renormalization."
+        ),
+        caveat=(
+            "The student objective renormalizes this support, so retained mass below "
+            "one quantifies discarded teacher-tail information."
+        ),
     ),
     MetricSpec(
         key="data/teacher_topk_entropy",
@@ -689,6 +697,26 @@ TOPK_METRICS = (
         caveat="Depends directly on K and decoding/prefix policy.",
     ),
     MetricSpec(
+        key="data/teacher_topk_mean_k",
+        label="Mean returned teacher Top-K size",
+        group="data",
+        direction="none",
+        unit="tokens",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition="Mean number of usable teacher token candidates returned per queried position.",
+        caveat="May be lower than configured K at tokenizer or service boundaries.",
+    ),
+    MetricSpec(
+        key="data/teacher_topk_unusable_position_frac",
+        label="Unusable teacher Top-K position fraction",
+        group="data",
+        direction="lower",
+        unit="fraction",
+        decision_role=DECISION_GUARDRAIL,
+        definition="Fraction of selected prefix positions lacking any usable teacher Top-K target.",
+        caveat="A nonzero value changes the effective on-policy supervision budget.",
+    ),
+    MetricSpec(
         key="train/topk_kd_cross_entropy",
         label="Top-K KD cross-entropy",
         group="train",
@@ -696,7 +724,27 @@ TOPK_METRICS = (
         unit="nats/token",
         decision_role=DECISION_DIAGNOSTIC,
         definition="Weighted student cross-entropy against normalized teacher Top-K targets.",
-        caveat="Not numerically comparable to hard-target NLL without care.",
+        caveat=(
+            "Teacher targets are normalized only within Top-K; do not compare this "
+            "directly with hard-target NLL."
+        ),
+    ),
+    MetricSpec(
+        key="train/topk_teacher_to_student_kl",
+        label="Teacher-to-student Top-K forward KL",
+        group="train",
+        direction="lower",
+        unit="nats/prefix",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition=(
+            "Mean KL(q_TopK || p_student) where q_TopK is the teacher Top-K "
+            "distribution renormalized on its support and p_student is the full "
+            "student next-token distribution evaluated on that support."
+        ),
+        caveat=(
+            "It is exact for the explicitly truncated-and-renormalized teacher "
+            "target, not a full-vocabulary teacher-to-student KL."
+        ),
     ),
 )
 
@@ -747,14 +795,84 @@ TEACHER_JUDGE_METRICS = (
 
 ON_POLICY_METRICS = (
     MetricSpec(
+        key="data/on_policy_rollout_count",
+        label="On-policy student rollout count",
+        group="data",
+        direction="none",
+        unit="rollouts",
+        decision_role=DECISION_REPORTING,
+        definition="Student completions sampled from the current policy before the update.",
+        caveat="A rollout is a data-collection event, not an optimized target token.",
+    ),
+    MetricSpec(
+        key="data/on_policy_rollout_correct_frac",
+        label="On-policy rollout exact-answer fraction",
+        group="data",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition="Exact-answer correctness of current-policy training rollouts against training labels.",
+        caveat="Uses only the training partition and must never select a checkpoint.",
+    ),
+    MetricSpec(
+        key="data/on_policy_rollout_format_accuracy",
+        label="On-policy rollout boxed-format accuracy",
+        group="data",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_GUARDRAIL,
+        definition="Fraction of current-policy training rollouts with a parseable boxed numeric answer.",
+        caveat="Formatting is a guardrail and is not task-success evidence.",
+    ),
+    MetricSpec(
+        key="data/on_policy_rollout_truncation_rate",
+        label="On-policy rollout truncation rate",
+        group="data",
+        direction="lower",
+        unit="fraction",
+        decision_role=DECISION_GUARDRAIL,
+        definition="Fraction of current-policy training rollouts reaching the response-token limit.",
+        caveat="A stopping-budget artifact can change this without a capability change.",
+    ),
+    MetricSpec(
+        key="data/on_policy_group_unique_response_frac",
+        label="On-policy group unique-response fraction",
+        group="data",
+        direction="higher",
+        unit="fraction",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition="Mean fraction of distinct decoded responses in each same-prompt on-policy rollout group.",
+        caveat="Textual diversity is a collapse diagnostic, not an optimization target.",
+    ),
+    MetricSpec(
+        key="data/on_policy_group_all_wrong_frac",
+        label="On-policy group all-wrong fraction",
+        group="data",
+        direction="lower",
+        unit="fraction",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition="Fraction of current-policy training prompt groups with no correct rollout.",
+        caveat="Uses training answers and is not a held-out quality metric.",
+    ),
+    MetricSpec(
+        key="data/on_policy_group_mixed_frac",
+        label="On-policy group mixed fraction",
+        group="data",
+        direction="none",
+        unit="fraction",
+        decision_role=DECISION_DIAGNOSTIC,
+        definition="Fraction of current-policy training prompt groups containing both correct and wrong rollouts.",
+        caveat="Describes sampling variation only; it is not a reward or selector.",
+    ),
+    MetricSpec(
         key="data/on_policy_prefix_tokens",
         label="On-policy prefix tokens",
         group="data",
         direction="none",
         unit="tokens",
         decision_role=DECISION_REPORTING,
-        definition="Student-generated prefix tokens at which teacher signals were queried.",
-        caveat="Distinct from teacher or gold-prefix token counts.",
+        definition="Count of selected student-generated next-token positions at which teacher signals were queried.",
+        caveat="Distinct from teacher/reference tokens and from duplicated Top-K student training inputs.",
     ),
     MetricSpec(
         key="data/on_policy_prefix_coverage",
@@ -765,6 +883,36 @@ ON_POLICY_METRICS = (
         decision_role=DECISION_DIAGNOSTIC,
         definition="Fraction of sampled student prefix positions with a usable teacher target.",
         caveat="Coverage depends on filtering, stopping rules, and teacher availability.",
+    ),
+    MetricSpec(
+        key="cost/on_policy_student_rollout_inference_usd",
+        label="On-policy student-rollout inference cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Cumulative actual-token cost of sampling current-policy student rollouts for on-policy KD.",
+        caveat="Separate from development inference and student forward/backward training cost.",
+    ),
+    MetricSpec(
+        key="cost/on_policy_student_rollout_input_usd",
+        label="On-policy student-rollout input-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Input-token component of on-policy student rollout inference cost.",
+        caveat="Uses student inference input pricing, not the student training-token rate.",
+    ),
+    MetricSpec(
+        key="cost/on_policy_student_rollout_output_usd",
+        label="On-policy student-rollout output-token cost",
+        group="cost",
+        direction="lower",
+        unit="USD",
+        decision_role=DECISION_REPORTING,
+        definition="Output-token component of on-policy student rollout inference cost.",
+        caveat="Uses student inference output pricing, which can dominate long rollouts.",
     ),
 )
 
@@ -875,6 +1023,8 @@ def configure_wandb_metrics(run: Any, signal_kind: str) -> None:
         define_metric("train/hard_kd_nll", summary="min")
     if "train/topk_kd_cross_entropy" in metric_keys:
         define_metric("train/topk_kd_cross_entropy", summary="min")
+    if "train/topk_teacher_to_student_kl" in metric_keys:
+        define_metric("train/topk_teacher_to_student_kl", summary="min")
     define_metric("cost/cumulative_usd", summary="max")
 
 
@@ -888,6 +1038,8 @@ def validate_logged_metric_keys(
             "checkpoint/state_path",
             "checkpoint/sampler_path",
             "tables/development_rollouts",
+            "tables/on_policy_rollouts",
+            "tables/on_policy_prefixes",
         }
     )
     return tuple(sorted(set(keys) - allowed))
