@@ -13,6 +13,7 @@ from time import perf_counter
 
 from .metrics import VERSION, parse_table, score_tables
 from .official import OfficialScorer, REVISION
+from .reporting import grouped_metrics
 
 
 def read_jsonl(path):
@@ -30,7 +31,33 @@ def read_jsonl(path):
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def model_identity(model_path, resolved_revision):
+    """Local content fingerprint, or the resolved immutable hosted revision."""
+    path = Path(model_path)
+    if path.is_dir():
+        files = sorted(
+            p
+            for p in path.rglob("*")
+            if p.is_file()
+            and p.suffix
+            in {".safetensors", ".bin", ".json", ".model", ".jinja", ".txt"}
+        )
+        if not files:
+            raise ValueError("Local model has no identifiable model files")
+        manifest = {str(p.relative_to(path)): digest(p) for p in files}
+        return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    if not resolved_revision:
+        raise ValueError(
+            "Model revision could not be resolved for reproducible inference"
+        )
+    return resolved_revision
 
 
 def evaluate(records, data_root, predictions, scorer):
@@ -73,6 +100,14 @@ def evaluate(records, data_root, predictions, scorer):
                 # Report excluded upstream failures; do not turn unavailable scores into 0.
                 scores["official_rd_similarity"] = None
                 scores["official_error"] = 1.0
+        scores["official_rd_similarity_raw"] = None
+        if hasattr(scorer, "score_raw"):
+            try:
+                scores["official_rd_similarity_raw"] = scorer.score_raw(
+                    reference.html, pred.get("html", "") if pred else ""
+                )
+            except (ValueError, ArithmeticError, IndexError):
+                pass
         for key in ["input_tokens", "output_tokens", "latency_seconds", "cost_usd"]:
             value = pred.get(key) if pred else None
             if value is not None and (
@@ -108,7 +143,9 @@ def parser():
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--official-repo", type=Path, required=True)
     p.add_argument(
-        "--backend", choices=["predictions", "transformers"], default="predictions"
+        "--backend",
+        choices=["predictions", "transformers", "mlx"],
+        default="transformers",
     )
     p.add_argument("--predictions", type=Path)
     p.add_argument(
@@ -117,10 +154,15 @@ def parser():
         help="HF ID or local model path; never logged",
     )
     p.add_argument(
+        "--model-label",
+        help="Optional public display label for W&B; do not pass a private path",
+    )
+    p.add_argument(
         "--run-kind", choices=["evaluation", "software_fixture"], default="evaluation"
     )
     p.add_argument("--revision", help="HF commit/revision for model and processor")
-    p.add_argument("--device", choices=["cpu", "cuda", "mps"], default="cpu")
+    p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
+    p.add_argument("--resume", action="store_true")
     p.add_argument("--max-new-tokens", type=int, default=4096)
     p.add_argument("--max-pixels", type=int, default=1048576)
     p.add_argument(
@@ -145,12 +187,22 @@ def main():
         from dotenv import load_dotenv
 
         load_dotenv(args.env_file, override=False)
+    if args.device == "auto" and args.backend == "mlx":
+        args.device = "mps"
+    if args.device == "auto":
+        import torch
+
+        args.device = (
+            "cuda"
+            if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available() else "cpu"
+        )
     records = read_jsonl(args.manifest)
     scorer = OfficialScorer(args.official_repo)
     # Validate all references before loading a large model or making predictions.
     evaluate(records, args.data_root, {}, scorer)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if any(
+    if not args.resume and any(
         (args.output_dir / name).exists()
         for name in ["summary.json", "per_sample.jsonl", "predictions.jsonl"]
     ):
@@ -162,7 +214,7 @@ def main():
     if args.backend == "predictions":
         predictions = {r["id"]: r for r in read_jsonl(args.predictions)}
     else:
-        from .inference import TransformersPredictor
+        from .inference import TransformersPredictor, MLXPredictor
 
         # Preflight image integrity before loading the model.
         from PIL import Image
@@ -173,17 +225,68 @@ def main():
                 raise ValueError("Image hash mismatch")
             with Image.open(path) as image:
                 image.verify()
-        predictor = TransformersPredictor(
+        from .inference import PROMPT
+
+        protocol = {
+            "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
+            "backend": args.backend,
+            "manifest_sha256": digest(args.manifest),
+            "model": args.model,
+            "revision": args.revision,
+            "device": args.device,
+            "max_new_tokens": args.max_new_tokens,
+            "max_pixels": args.max_pixels,
+        }
+        protocol_path = args.output_dir / "inference_config.json"
+        prediction_path = args.output_dir / "predictions.jsonl"
+        if (
+            args.resume
+            and prediction_path.exists()
+            and prediction_path.stat().st_size
+            and not protocol_path.exists()
+        ):
+            raise ValueError("Cannot resume predictions without an existing protocol")
+        predictor_class = (
+            MLXPredictor if args.backend == "mlx" else TransformersPredictor
+        )
+        predictor = predictor_class(
             args.model, args.revision, args.device, args.max_new_tokens, args.max_pixels
         )
         resolved_revision = predictor.revision
-        predictions = {}
-        with (args.output_dir / "predictions.jsonl").open("x") as stream:
+        protocol["model_identity"] = model_identity(args.model, resolved_revision)
+        if protocol_path.exists():
+            if json.loads(protocol_path.read_text()) != protocol:
+                raise ValueError("Resume protocol mismatch")
+        else:
+            protocol_path.write_text(json.dumps(protocol, indent=2) + "\n")
+        predictions = (
+            {r["id"]: r for r in read_jsonl(prediction_path)}
+            if args.resume
+            and prediction_path.exists()
+            and prediction_path.stat().st_size
+            else {}
+        )
+        if set(predictions) - {r["id"] for r in records}:
+            raise ValueError("Resume contains unknown IDs")
+        with prediction_path.open("a" if args.resume else "x") as stream:
             for row in records:
+                if row["id"] in predictions:
+                    continue
                 pred = {"id": row["id"], **predictor(args.data_root / row["image"])}
                 predictions[row["id"]] = pred
                 stream.write(json.dumps(pred) + "\n")
                 stream.flush()
+                print(
+                    json.dumps(
+                        {
+                            "completed": len(predictions),
+                            "total": len(records),
+                            "output_tokens": pred["output_tokens"],
+                            "latency_seconds": round(pred["latency_seconds"], 2),
+                        }
+                    ),
+                    flush=True,
+                )
     results, metrics = evaluate(records, args.data_root, predictions, scorer)
     metrics["eval/wall_seconds"] = perf_counter() - start
     # Deliberately allowlisted; no args, model paths, IDs, HTML or raw errors in W&B.
@@ -191,6 +294,18 @@ def main():
 
     config = {
         "evaluator_version": VERSION,
+        "metric_view": "grouped-v2",
+        "mlx_vlm_version": version("mlx-vlm") if args.backend == "mlx" else None,
+        "model_label": args.model_label,
+        "examples": len(records),
+        "numeric_examples": metrics.get("eval/numeric_f1_count", 0),
+        "rd_scored_examples": metrics.get("eval/official_rd_similarity_raw_count", 0),
+        "inference_device": (
+            "metal"
+            if args.backend == "mlx"
+            else args.device if args.backend != "predictions" else None
+        ),
+        "resolved_model_revision": resolved_revision,
         "run_kind": args.run_kind,
         "wandb_version": version("wandb"),
         "transformers_version": version("transformers"),
@@ -198,22 +313,22 @@ def main():
         "backend": args.backend,
         "prompt_sha256": (
             hashlib.sha256(PROMPT.encode()).hexdigest()
-            if args.backend == "transformers"
+            if args.backend != "predictions"
             else None
         ),
         "manifest_sha256": digest(args.manifest),
         "max_new_tokens": (
-            args.max_new_tokens if args.backend == "transformers" else None
+            args.max_new_tokens if args.backend != "predictions" else None
         ),
-        "max_pixels": args.max_pixels if args.backend == "transformers" else None,
-        "thinking": False if args.backend == "transformers" else None,
+        "max_pixels": args.max_pixels if args.backend != "predictions" else None,
+        "thinking": False if args.backend != "predictions" else None,
     }
     summary = {"config": config, "metrics": metrics, "wandb_status": "pending"}
     # Local-only provenance can contain user paths. Never sent to telemetry subprocess.
     provenance = {
         "manifest": str(args.manifest.resolve()),
         "data_root": str(args.data_root.resolve()),
-        "model": args.model if args.backend == "transformers" else None,
+        "model": args.model if args.backend != "predictions" else None,
         "revision": args.revision,
         "resolved_revision": resolved_revision,
         "predictions_sha256": (
@@ -231,7 +346,7 @@ def main():
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     payload = {
         "config": config,
-        "metrics": metrics,
+        "metrics": grouped_metrics(metrics),
         "mode": args.wandb_mode,
         "project": args.wandb_project,
     }

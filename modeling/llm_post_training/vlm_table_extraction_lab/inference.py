@@ -72,3 +72,66 @@ class TransformersPredictor:
             "stop_reason": reason,
             "latency_seconds": perf_counter() - start,
         }
+
+
+class MLXPredictor:
+    """Apple Metal inference using the same original, unquantized HF snapshot."""
+
+    def __init__(self, model_path, revision, device, max_new_tokens, max_pixels):
+        from pathlib import Path
+
+        if device not in {"auto", "mps"}:
+            raise ValueError("MLX backend requires Apple Metal (--device mps or auto)")
+        import mlx.core as mx
+        from mlx_vlm import load
+
+        if not Path(model_path).is_dir():
+            raise ValueError(
+                "MLX requires an explicitly downloaded local model directory"
+            )
+        self.mx = mx
+        mx.set_default_device(mx.gpu)
+        self.model, self.processor = load(model_path)
+        self.max_new_tokens = max_new_tokens
+        self.max_pixels = max_pixels
+        self.revision = revision
+
+    def __call__(self, image_path):
+        from PIL import Image
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        with Image.open(image_path) as source:
+            image = source.convert("RGB")
+        if image.width * image.height > self.max_pixels:
+            scale = (self.max_pixels / (image.width * image.height)) ** 0.5
+            image = image.resize(
+                (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+            )
+        prompt = apply_chat_template(
+            self.processor,
+            self.model.config,
+            PROMPT,
+            num_images=1,
+            enable_thinking=False,
+        )
+        start = perf_counter()
+        result = generate(
+            self.model,
+            self.processor,
+            prompt,
+            [image],
+            max_tokens=self.max_new_tokens,
+            temperature=0.0,
+            verbose=False,
+        )
+        self.mx.synchronize()
+        elapsed = perf_counter() - start
+        self.mx.clear_cache()
+        return {
+            "html": result.text,
+            "input_tokens": result.prompt_tokens,
+            "output_tokens": result.generation_tokens,
+            "stop_reason": result.finish_reason,
+            "latency_seconds": elapsed,
+        }

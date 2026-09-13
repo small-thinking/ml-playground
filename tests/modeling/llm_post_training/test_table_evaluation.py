@@ -272,3 +272,140 @@ def test_html_body_wrappers_and_fences_are_accepted():
     html = table(["x"])
     for wrapped in [f"<html><body>{html}</body></html>", f"```html\n{html}\n```"]:
         assert score(wrapped, html)["table_exact"] == 1
+
+
+def test_grouped_metrics_keep_dashboard_small():
+    from modeling.llm_post_training.vlm_table_extraction_lab.reporting import (
+        grouped_metrics,
+        GROUPED_METRICS,
+    )
+
+    metrics = {"eval/" + value: 0.5 for value in GROUPED_METRICS.values()}
+    metrics.update(
+        {
+            "eval/input_tokens_total": 100,
+            "eval/output_tokens_total": 200,
+            "eval/cell_f1_count": 100,
+        }
+    )
+    view = grouped_metrics(metrics)
+    assert len(view) == 14
+    assert view["runtime/total_tokens"] == 300
+    assert not any(
+        "count" in name for name in view if not name.startswith("structure/")
+    )
+    assert {name.split("/")[0] for name in view} == {"quality", "structure", "runtime"}
+
+
+def test_direct_official_score_is_separate_from_format_gate():
+    source = os.environ.get("RD_OFFICIAL_REPO")
+    if not source:
+        pytest.skip("Optional local official source")
+    scorer = OfficialScorer(source)
+    html = table(["-100"])
+    assert scorer.score_raw(html, "Here is the table:" + html) == 1
+    with pytest.raises(ValueError):
+        parse_table("Here is the table:" + html)
+    assert scorer.score_raw(html, "") == 0
+    with pytest.raises(ValueError):
+        scorer.score_raw(html, '<table><tr><td colspan="999999">x</td></tr></table>')
+
+
+def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from PIL import Image
+    from modeling.llm_post_training.vlm_table_extraction_lab import evaluate as cli
+    from modeling.llm_post_training.vlm_table_extraction_lab import inference
+
+    Image.new("RGB", (4, 4)).save(tmp_path / "image.png")
+    (tmp_path / "label.html").write_text(table(["x"]))
+    (tmp_path / "manifest.jsonl").write_text(
+        json.dumps({"id": "one", "image": "image.png", "label": "label.html"}) + "\n"
+    )
+    calls = []
+
+    class Predictor:
+        revision = "fixed"
+
+        def __init__(self, *args):
+            pass
+
+        def __call__(self, path):
+            calls.append(path)
+            return {
+                "html": table(["x"]),
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "stop_reason": "stop",
+                "latency_seconds": 0.1,
+            }
+
+    monkeypatch.setattr(inference, "TransformersPredictor", Predictor)
+    monkeypatch.setattr(cli, "OfficialScorer", lambda _: lambda a, b: 1.0)
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout="{}"),
+    )
+    argv = [
+        "evaluate",
+        "--manifest",
+        str(tmp_path / "manifest.jsonl"),
+        "--data-root",
+        str(tmp_path),
+        "--official-repo",
+        str(tmp_path),
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--device",
+        "cpu",
+        "--wandb-mode",
+        "disabled",
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    cli.main()
+    monkeypatch.setattr(sys, "argv", argv + ["--resume"])
+    cli.main()
+    assert len(calls) == 1
+    protocol = tmp_path / "out" / "inference_config.json"
+    protocol.unlink()
+    with pytest.raises(ValueError, match="without an existing protocol"):
+        cli.main()
+    assert len(calls) == 1
+
+
+def test_raw_score_bounds_expansion_before_converter():
+    scorer = OfficialScorer.__new__(OfficialScorer)
+
+    def must_not_convert(_):
+        pytest.fail("Unsafe expansion reached the upstream converter")
+
+    scorer.convert = must_not_convert
+    huge = (
+        "<table>"
+        + ('<tr><td rowspan="500" colspan="256">x</td></tr>' * 100)
+        + "</table>"
+    )
+    with pytest.raises(ValueError, match="official_expansion_limit"):
+        scorer.score_raw(huge, table(["x"]))
+
+
+def test_mlx_rejects_unsupported_device_before_import():
+    from modeling.llm_post_training.vlm_table_extraction_lab.inference import (
+        MLXPredictor,
+    )
+
+    with pytest.raises(ValueError, match="requires Apple Metal"):
+        MLXPredictor("unused", "fixed", "cpu", 10, 100)
+
+
+def test_local_model_identity_detects_changed_weights(tmp_path):
+    from modeling.llm_post_training.vlm_table_extraction_lab.evaluate import (
+        model_identity,
+    )
+
+    weights = tmp_path / "model.safetensors"
+    weights.write_bytes(b"first")
+    before = model_identity(tmp_path, "fixed")
+    weights.write_bytes(b"other")
+    assert model_identity(tmp_path, "fixed") != before

@@ -1,7 +1,8 @@
 # Evaluation v1
 
 本阶段评测“表格图片 → HTML”抽取任务。无需训练；也不要求启动推理服务。
-可读取已经生成的预测 JSONL，或用 Transformers 在当前机器直接推理。
+默认用 Transformers 在当前机器直接推理，也可显式选择读取已有预测 JSONL。
+自动优先选择 CUDA，其次 Apple MPS，最后 CPU；不会调用 Tinker。
 Qwen3.5-4B 自带视觉能力，正式模型 ID 是 `Qwen/Qwen3.5-4B`。
 Tinker 也能提供推理，但本 PR 不依赖其 SDK；以后只需导出相同预测格式。
 
@@ -57,7 +58,7 @@ Manifest 决定精确评测集合；开发阶段传 Dev，Test 只在最后固�
 ```bash
 uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.evaluate \
   --manifest "$EVAL_MANIFEST" --data-root "$DATA_ROOT" \
-  --predictions "$PREDICTIONS_FILE" --official-repo "$RD_SCORER_DIR" \
+  --backend predictions --predictions "$PREDICTIONS_FILE" --official-repo "$RD_SCORER_DIR" \
   --output-dir "$EVAL_OUTPUT_DIR" --wandb-project vlm-table-extraction
 ```
 
@@ -78,8 +79,9 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.e
 ```
 
 也接受 `--model "$LOCAL_MODEL_DIR"`；本地路径只进本地 provenance。
-模型首次运行可能下载权重；本 PR 没有下载或实际运行 4B，GPU/MPS 的显存与
-吞吐尚未测量。`--device cpu` 是安全默认值，不是吞吐推荐。
+模型首次运行可能下载权重。已在 Apple Silicon 上验证原始 Qwen3.5-4B 权重的
+Transformers/MPS 和 MLX 本地推理；正式整套评测使用 MLX，结果另行记录。
+`--device auto` 自动选择本机设备，Apple Silicon 使用 MPS；也可显式选择设备。
 逐张推理，关闭 thinking，greedy decoding，按像素上限等比缩小（processor
 可能进一步调整尺寸）。保存模型 revision 和实际 token 数；正式对照需固定
 模型、processor、图片处理和生成配置。遇推理错误立即退出，已完成预测逐行
@@ -91,7 +93,8 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.e
 
 | 指标 | 定义与边界 |
 | --- | --- |
-| `official_rd_similarity` | 原版 RD similarity；不是“正确单元格百分比”。会去掉负号并宽容边界缺失 |
+| `official_rd_similarity_raw` | 直接调用原版 RD similarity；不是“正确单元格百分比”。会去掉负号并宽容边界缺失 |
+| `official_rd_similarity` | 本地诊断版本：格式检查不通过时计零，其余调用原版评分 |
 | `cell_precision/recall/f1` | 展开网格后，按位置和规范化文本精确匹配；缺失/新增位置影响召回/精度 |
 | `cell_bag_f1` | 忽略位置的单元格多重集 F1，仅作诊断；重复值有计数 |
 | `numeric_precision/recall/f1` | 按单元格位置、数字出现序号、数字 token 精确匹配；保留符号、括号、百分号和分隔符，不猜 locale |
@@ -116,7 +119,10 @@ Table Judge 官方任务是“图片 + 候选 HTML → 判断错误”，与本�
 ## 输出、隐私与验证
 
 本地生成 `summary.json`、`per_sample.jsonl`、`provenance.json`，直接推理还会
-生成 `predictions.jsonl`。使用新 output 目录避免覆盖结果。上述文件、原始数据、
+生成 `predictions.jsonl`。使用新 output 目录避免覆盖结果；中断后可用 `--resume` 继续，必须保持模型、revision、
+输入清单、设备、像素和输出上限相同。还会核验本地模型文件的内容指纹或远端
+模型的实际 revision；缺少原始 inference_config.json 时拒绝续跑。已有预测
+不会重复生成。上述文件、原始数据、
 凭证和清单均不进入 PR；Git 忽略这些格式和目录。未来明确要发布的图片须走
 目录级 Git LFS 规则；本 PR 没有图片。
 
@@ -143,5 +149,53 @@ RD_OFFICIAL_REPO="$RD_SCORER_DIR" uv run --no-sync pytest -q \
   在自比较时超过官方评分计算上限。
 - 已用一个合成软件 fixture 跑通 CLI 和 W&B online，并读回确认 run finished、
   聚合指标正确；远端文件仅 config.yaml 和 wandb-summary.json。它不是模型结果。
-- 未下载 Qwen3.5-4B 权重、未执行真实 4B 推理或任何训练；Transformers 后端
-  已验证架构映射和模拟生成协议，硬件可运行性仍需实际 smoke。
+- 已下载固定 revision 的原始 Qwen3.5-4B 权重，Transformers/MPS 与 MLX
+  均完成真实本地推理；未启动训练。完整 Dev 结果以对应运行报告为准。
+
+## 精简的 W&B 默认视图
+
+完整分数、分母、均值和总量仍保存在本地 summary.json。W&B 默认仅显示14项：
+
+| 分组 | 记录的指标 |
+| --- | --- |
+| quality（4项） | 原版RD直接相似度、位置敏感单元格F1、位置敏感数字F1、整表exact |
+| structure（4项） | 行数exact、列数exact、span F1、结构exact |
+| runtime（6项） | 格式通过率、截断率、预测覆盖率、平均请求耗时、wall耗时、总tokens |
+
+总样本数、数字指标有效样本数、原版RD实际计分样本数放入config。原先的
+格式失败计零RD版本保留在本地，作为格式诊断，不再占用首页主指标。
+原版直接评分现在由official.score_raw实现，始终与格式检查分开计算。
+原先已记录的旧run保留历史，不因为新的显示方案丢弃历史实验数据。
+
+F1 = 2 × precision × recall / (precision + recall)。例如GT有10个单元格，
+预测12个，其中8个在同一行列且内容一致：precision=8/12，recall=8/10，
+F1=16/22≈0.727。把数字单独提取并保留位置，就得到数字F1。它们先逐表计算，
+再对样本取平均，并非简单汇总所有表格的单元格数量；整体错位会导致很多位置
+失配。RD采用较宽松的模糊匹配，因此分数可能远高于这些严格指标。
+
+## Apple Silicon：MLX 本地后端
+
+`--backend mlx` 使用 Apple Metal，要求显式提供已经下载的本地模型目录，
+不会调用Tinker或任何托管推理API。当前使用同一份原始BF16 safetensors，
+没有量化。Transformers/MPS与MLX的内核和processor版本可能影响输出，
+因此把后端、版本和模型revision记录为独立baseline，不混合不同后端的预测。
+
+在独立环境安装，避免改变主训练环境；`MLX_ENV`由调用者指定：
+
+```bash
+uv venv "$MLX_ENV" --python 3.11
+uv pip install --python "$MLX_ENV/bin/python" \
+  mlx-vlm==0.7.0 transformers==5.17.0 wandb==0.21.1 \
+  lxml==6.1.3 python-Levenshtein==0.27.5 python-dotenv==1.2.3
+HF_HUB_OFFLINE=1 "$MLX_ENV/bin/python" -m modeling.llm_post_training.vlm_table_extraction_lab.evaluate \
+  --backend mlx --model "$LOCAL_MODEL_DIR" --revision "$MODEL_REVISION" \
+  --model-label Qwen3.5-4B-local-MLX-bf16 --device auto \
+  --max-new-tokens 8192 --max-pixels 1048576 \
+  --manifest "$EVAL_MANIFEST" --data-root "$DATA_ROOT" \
+  --official-repo "$RD_SCORER_DIR" --output-dir "$EVAL_OUTPUT_DIR" \
+  --wandb-project vlm-table-extraction --env-file "$ENV_FILE"
+```
+
+模型下载通过Hugging Face进行一次，推理时`HF_HUB_OFFLINE=1`阻止再次联网取模型。
+W&B仅上传14项分组汇总及受控配置。通过`--model-label`指定公开显示名称，
+不要把实际模型路径填入显示名称。现有Tinker baseline保留作历史，不覆盖它。

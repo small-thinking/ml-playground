@@ -39,3 +39,52 @@ class OfficialScorer:
         return float(
             self.compare(self.convert(reference.html), self.convert(prediction.html))
         )
+
+    def score_raw(self, reference_html, prediction_html):
+        """Direct upstream score, independent of our strict output contract."""
+        from lxml import etree
+
+        if not isinstance(prediction_html, str):
+            return 0.0
+        for text in (reference_html, prediction_html):
+            if not isinstance(text, str) or len(text) > 1_000_000:
+                raise ValueError("invalid_output_size")
+            tree = etree.HTML(text, parser=etree.HTMLParser(no_network=True))
+            if tree is None:
+                return 0.0
+            cells = tree.xpath("//td|//th")
+            if len(tree.xpath("//tr")) > 500 or len(cells) > 10000:
+                raise ValueError("table_too_large")
+            for cell in cells:
+                if not (
+                    1 <= int(cell.get("rowspan", "1")) <= 500
+                    and 1 <= int(cell.get("colspan", "1")) <= 256
+                ):
+                    raise ValueError("invalid_span")
+            # Conservatively bound the padded array BEFORE upstream allocation.
+            # Carry-over spans can add columns to any subsequent row.
+            rows = tree.xpath("//tr")
+            carried_columns = sum(
+                int(cell.get("colspan", "1"))
+                for cell in cells
+                if int(cell.get("rowspan", "1")) > 1
+            )
+            width_bound = carried_columns + max(
+                (
+                    sum(int(c.get("colspan", "1")) for c in row.xpath("td|th"))
+                    for row in rows
+                ),
+                default=0,
+            )
+            slots_bound = len(rows) * width_bound
+            max_chars = max((len("".join(c.itertext())) for c in cells), default=0)
+            if slots_bound > 10000 or slots_bound * max_chars * 4 > 64 * 1024**2:
+                raise ValueError("official_expansion_limit")
+        reference, prediction = self.convert(reference_html), self.convert(
+            prediction_html
+        )
+        if not reference.size or not prediction.size:
+            return 0.0
+        if reference.size * prediction.size > 2_000_000:
+            raise ValueError("official_alignment_work_limit")
+        return float(self.compare(reference, prediction))
