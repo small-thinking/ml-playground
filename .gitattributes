@@ -1,3 +1,8 @@
 # This generated report figure is intentionally stored through Git LFS.
 modeling/llm_post_training/gsm8k_sft_grpo_lab/figures/gsm8k-posttraining-formal-results-v1.png filter=lfs diff=lfs merge=lfs -text
 modeling/llm_post_training/gsm8k_sft_grpo_lab/figures/gsm8k-posttraining-formal-results-v2.png filter=lfs diff=lfs merge=lfs -text
+# Any intentionally published lab illustrations must use LFS. Raw data stays ignored.
+modeling/llm_post_training/vlm_table_extraction_lab/**/*.png filter=lfs diff=lfs merge=lfs -text
+modeling/llm_post_training/vlm_table_extraction_lab/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+modeling/llm_post_training/vlm_table_extraction_lab/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+modeling/llm_post_training/vlm_table_extraction_lab/**/*.webp filter=lfs diff=lfs merge=lfs -text
