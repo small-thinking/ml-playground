@@ -7,7 +7,8 @@ teacher 已确定为 Qwen3.6-35B-A3B。已完成真实工程烟测：8条 teache
 实现与运行命令见 [KD_RUNBOOK.md](KD_RUNBOOK.md)。
 本 PR 复用仍待审阅的 [Train800 SFT PR #101](https://github.com/small-thinking/ml-playground/pull/101)
 中的遥测和 checkpoint evaluation，以其分支为 base；不会自动合并任一 PR。
-下述金额是新实验估算，不继承上一轮 SFT 的 $5 执行授权。
+下述金额是最初方案估算；用户随后已授权正式KD与eval。本轮逐阶段记录实际token估计，
+复用已有缓存和Base/SFT评测，不自动扩大到800条。
 
 ## 实验问题与边界
 
@@ -293,6 +294,8 @@ Teacher 和 student 平均分相近也可能犯不同错误，必须保留逐样
 本 PR 包含研究问题、已选 MoE teacher、兼容性证据、loss 定义、对照组与验收标准，
 以及独立的 `kd_collect` / `kd` 运行入口、soft targets 数学实现和测试。
 运行顺序、实际验证状态和最新计费补充以 [KD_RUNBOOK.md](KD_RUNBOOK.md) 为准。
-用户已选择 Top10 近似及 teacher；工程烟测单独限制在 $0.50 内，80条 pilot 总预算待确认。
+用户已选择 Top10 近似及 teacher；工程烟测单独限制在 $0.50 内。
+随后授权的正式实验使用固定80条候选、显式排除无效teacher输出（不替换），报告实际
+有效训练数，并运行相同Test100加入已有Base/SFT的W&B对比分组。
 如果必须严格完整词表，则保留实验对照与评测协议，另设计 GPU 后端，而不是悄悄
 改成 teacher 答案 SFT 或 OPD。

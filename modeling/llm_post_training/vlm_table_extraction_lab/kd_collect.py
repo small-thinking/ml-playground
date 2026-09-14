@@ -136,6 +136,35 @@ def cache_entry(directory, index, record, prompt, vocab_size):
         return datum, arrays["logprobs"].copy()
 
 
+def validate_rollout(rollout):
+    if rollout["stop_reason"] != "stop":
+        raise ValueError("truncated_teacher_output")
+    parse_table(rollout["html"])
+
+
+def rejected_entry(directory, index, record):
+    """Verify an explicit exclusion against the original, still-invalid output."""
+    path = directory / f"{index:04d}.rollout.json"
+    rejection = json.loads((directory / f"{index:04d}.rejected.json").read_text())
+    rollout = json.loads(path.read_text())
+    if (
+        rejection["record"] != record
+        or rollout["record"] != record
+        or rejection["rollout_sha256"] != digest(path)
+        or (directory / f"{index:04d}.json").exists()
+    ):
+        raise ValueError("Rejected cache identity mismatch or ambiguous acceptance")
+    try:
+        validate_rollout(rollout)
+    except ValueError as exc:
+        if str(exc) != rejection["reason"]:
+            raise ValueError(
+                "Rejection reason differs from current validation"
+            ) from exc
+        return rejection
+    raise ValueError("A valid teacher output cannot be excluded by a rejection record")
+
+
 def collect_one(index, row, record, prompt, tokenizer, renderer, sampler, args, budget):
     import tinker
 
@@ -175,11 +204,21 @@ def collect_one(index, row, record, prompt, tokenizer, renderer, sampler, args, 
     rollout = json.loads(output_path.read_text())
     if rollout["record"] != record:
         raise ValueError("Partial rollout belongs to a different prompt")
-    if rollout["stop_reason"] != "stop":
-        raise ValueError(
-            "Teacher output truncated; preserved locally, no silent dropping/retry"
+    try:
+        validate_rollout(rollout)
+    except ValueError as exc:
+        atomic_json(
+            directory / f"{index:04d}.rejected.json",
+            {
+                "record": record,
+                "rollout_sha256": digest(output_path),
+                "reason": str(exc),
+                "output_tokens": len(rollout["tokens"]),
+            },
         )
-    parse_table(rollout["html"])
+        if getattr(args, "skip_rejected", False):
+            return False
+        raise
     full = tinker.ModelInput(
         chunks=[*prompt.chunks, tinker.EncodedTextChunk(tokens=rollout["tokens"])]
     )
@@ -218,6 +257,7 @@ def collect_one(index, row, record, prompt, tokenizer, renderer, sampler, args, 
         },
     )
     budget.settle(cost)
+    return True
 
 
 def main():
@@ -239,6 +279,11 @@ def main():
     p.add_argument("--max-pixels", type=int, default=1048576)
     p.add_argument("--max-estimated-usd", type=float, default=0.25)
     p.add_argument("--execute", action="store_true")
+    p.add_argument(
+        "--skip-rejected",
+        action="store_true",
+        help="Record and exclude invalid/truncated teacher outputs; never replace them",
+    )
     args = p.parse_args()
     if any(
         not np.isfinite(v) or v <= 0
@@ -310,10 +355,20 @@ def main():
             raise ValueError("Cache identity changed; use a new cache directory")
         atomic_json(manifest, identity)
         budget = CollectionBudget(args.cache_dir / "usage.json", args.max_estimated_usd)
-        missing = []
+        missing, rejected = [], 0
         for index, (record, prompt) in enumerate(zip(records, prompts, strict=True)):
+            if (args.cache_dir / f"{index:04d}.json").exists() and (
+                args.cache_dir / f"{index:04d}.rejected.json"
+            ).exists():
+                raise ValueError("Ambiguous accepted and rejected cache entry")
             if (args.cache_dir / f"{index:04d}.json").exists():
                 cache_entry(args.cache_dir, index, record, prompt, len(tokenizer))
+            elif (
+                args.skip_rejected
+                and (args.cache_dir / f"{index:04d}.rejected.json").exists()
+            ):
+                rejected_entry(args.cache_dir, index, record)
+                rejected += 1
             else:
                 missing.append(index)
         print(
@@ -321,7 +376,8 @@ def main():
                 {
                     "status": "preflight",
                     "selected": len(rows),
-                    "cached": len(rows) - len(missing),
+                    "cached": len(rows) - len(missing) - rejected,
+                    "rejected": rejected,
                     "next_examples": min(len(missing), args.max_new_examples),
                 }
             ),
@@ -338,8 +394,9 @@ def main():
         sampler = tinker.ServiceClient().create_sampling_client(
             base_model=TEACHER_MODEL
         )
+        accepted = len(rows) - len(missing) - rejected
         for index in missing[: args.max_new_examples]:
-            collect_one(
+            valid = collect_one(
                 index,
                 rows[index],
                 records[index],
@@ -350,10 +407,13 @@ def main():
                 args,
                 budget,
             )
+            accepted += int(valid)
+            rejected += int(not valid)
             print(
                 json.dumps(
                     {
-                        "cached": index + 1,
+                        "cached": accepted,
+                        "rejected": rejected,
                         "estimated_compute_usd": budget.state["estimated_compute_usd"],
                     }
                 ),

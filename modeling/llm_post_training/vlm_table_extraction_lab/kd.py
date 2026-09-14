@@ -15,7 +15,7 @@ import numpy as np
 
 from .evaluate import digest, evaluate, read_jsonl
 from .inference import PROMPT
-from .kd_collect import TOP_K, cache_entry, cache_lock, json_hash
+from .kd_collect import TOP_K, cache_entry, cache_lock, json_hash, rejected_entry
 from .kd_targets import normalize_batch, summarize_soft, topk_diagnostics
 from .metrics import VERSION
 from .official import OfficialScorer, REVISION
@@ -69,6 +69,7 @@ def load_train(args, tokenizer, renderer):
         raise ValueError("Invalid cached training subset size")
     by_id = {row["id"]: row for row in read_jsonl(args.train_manifest)}
     datums, probabilities, hashes = [], [], []
+    rejected = 0
     records = manifest["records"][: args.train_examples]
     if len({r["id"] for r in records}) != len(records):
         raise ValueError("Duplicate cached examples")
@@ -79,6 +80,14 @@ def load_train(args, tokenizer, renderer):
         prompt = renderer.build_generation_prompt(
             [image_message(args.data_root / row["image"], args.max_pixels)]
         )
+        if json_hash(prompt.model_dump(mode="json")) != record["prompt_sha256"]:
+            raise ValueError("Cached prompt differs from current rendering")
+        rejection_path = args.cache_dir / f"{index:04d}.rejected.json"
+        if getattr(args, "skip_rejected", False) and rejection_path.exists():
+            rejected_entry(args.cache_dir, index, record)
+            hashes.append(digest(rejection_path))
+            rejected += 1
+            continue
         datum, logprobs = cache_entry(
             args.cache_dir, index, record, prompt, len(tokenizer)
         )
@@ -87,6 +96,8 @@ def load_train(args, tokenizer, renderer):
         datums.append(datum)
         probabilities.append(logprobs)
         hashes.append(digest(args.cache_dir / f"{index:04d}.json"))
+    if not datums:
+        raise ValueError("No valid teacher targets remain")
     return (
         datums,
         topk_diagnostics(np.concatenate(probabilities)),
@@ -95,6 +106,13 @@ def load_train(args, tokenizer, renderer):
                 {"manifest": digest(manifest_path), "entries": hashes}
             ),
             "tokenizer_sha256": manifest["tokenizer_sha256"],
+            "candidate_examples": len(records),
+            "rejected_examples": rejected,
+            "target_filter_policy": (
+                "exclude_invalid_without_replacement"
+                if getattr(args, "skip_rejected", False)
+                else "fail_on_invalid"
+            ),
         },
     )
 
@@ -288,6 +306,11 @@ def main():
     p.add_argument("--env-file", type=Path)
     p.add_argument("--execute", action="store_true")
     p.add_argument("--train-examples", type=int, default=8)
+    p.add_argument(
+        "--skip-rejected",
+        action="store_true",
+        help="Exclude verified rejection records from the requested candidate subset",
+    )
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--rank", type=int, default=8)

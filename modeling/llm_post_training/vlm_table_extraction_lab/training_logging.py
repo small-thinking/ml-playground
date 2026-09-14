@@ -62,6 +62,9 @@ def training_config(report):
     }
     if report.get("algorithm") == "off_policy_topk_kd":
         config["generate_dev"] = args["generate_dev"]
+        for key in ("candidate_examples", "rejected_examples", "target_filter_policy"):
+            if key in report:
+                config[key] = report[key]
         config.update(
             {
                 k: report[k]

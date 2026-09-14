@@ -2,7 +2,8 @@
 
 2026-09-14。已完成真实 teacher Top10 与 LoRA 反向传播烟测，计算费用估计 $0.140824。
 8条采集中7条有效，实际训练7条、2步；完整记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
-工程烟测单独限制在 $0.50 内；80条 pilot 的整轮预算仍待确认。
+工程烟测单独限制在 $0.50 内。用户随后已授权正式 KD 训练和固定 Test100 评测，
+采用预选80条候选及显式无效目标过滤；不从SFT800继续训练。
 
 本地验证：开启可选 pinned-renderer / official-scorer 集成后，lab 测试 **159 passed**，
 Black、Ruff、`git diff --check` 通过。
@@ -40,6 +41,11 @@ Teacher Top10 先归一化，student 使用其完整词表 softmax 下的 log pr
 每条保存原始 rollout token、完整原始 Top10 响应、完成段概率和 SHA-256。
 不通过 decode→encode 重建训练目标，不静默丢弃坏格式或截断输出，不退化为 hard SFT。
 Top10 mass 要求均值 ≥0.98 且 P05 ≥0.90，未达标时先停下分析。
+
+默认仍在无效输出处停止。正式运行显式启用 `--skip-rejected`：只排除格式无效或
+截断的teacher输出，保留原始token/HTML和带哈希的`.rejected.json`，不清洗、不重试、
+不补换其他图片。采集和训练都重新验证排除原因；缺失概率、预算错误和不确定请求
+不能借这个开关跳过。候选数、排除数、实际训练数与过滤策略分别记录到W&B。
 
 调用前记录预算 reservation，成功且缓存落盘后才结算。未确定请求或持久化失败
 会留下 `usage.json.pending` 并阻止自动重试，需要人工核对已有文件和计费；
@@ -82,13 +88,14 @@ uv run --no-sync python -m "$KD_PACKAGE.kd" \
 该命令是实际 inference，**没有默认 preflight 或预算闸门**，需在调用前预留完整费用。
 用途是判断 teacher 在本任务上的能力与错误，而非把 teacher 分数当作不可超越的上界。
 
-若前8条全部有效，随后将 collection 的 `--max-new-examples` 调到72，复用已有8条；pilot训练设置
-`--train-examples 80 --generate-dev --wandb-mode online --dataset-label rd-kd-pilot80`，
+随后对同一cache运行 collection，使用 `--max-new-examples 80 --skip-rejected`，
+复用已完成的7条，只为尚未完成的候选发出请求。pilot训练设置
+`--train-examples 80 --skip-rejected --generate-dev --wandb-mode online --dataset-label rd-kd-80candidates-v1`，
 仍使用新 output-dir、新建4B LoRA。每个阶段都先根据已有 token 统计重估下一阶段费用。
 
-**本次烟测第8条无效**，因此当前缓存不能直接当作8条成功并续采72条。需要先完成
-teacher Dev100，确定并记录无效目标的处理策略，再创建可审计的pilot样本集；不能
-隐藏失败计数、静默替换第8条，或把7条工程烟测称为80条正式实验。
+`--train-examples 80`在过滤模式下表示候选前缀大小；若其中有3条被拒绝，实际训练
+数量就是77。结果必须按实际数量解释，不能把候选数当成有效训练数。此次Teacher
+Dev100已完成；过滤策略固定后，再进行student训练及最终Test，不根据Test挑样本。
 
 最终 Test 使用现有 `checkpoint_eval --stage after --split test`，以 KD 的
 `run.json` 为 `--source-run`；不用再支付一次 Base inference。
