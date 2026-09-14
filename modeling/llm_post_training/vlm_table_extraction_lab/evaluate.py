@@ -5,7 +5,6 @@ import hashlib
 import json
 from importlib.metadata import version
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys

@@ -41,6 +41,8 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
 - [下一步：传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)
+- [MoE teacher → 4B student：KD 代码与运行步骤](KD_RUNBOOK.md)
+- [首次 KD 工程烟测结果：7/8 有效样本、完整 Dev100](KD_SMOKE_RESULTS.md)
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [完整 Train800 LoRA SFT 结果与 W&B](RD_TRAIN800_SFT_RESULTS.md)

@@ -27,11 +27,14 @@ def make_payload(
     baseline_run_id,
     training=None,
     training_run_id=None,
+    trained_role="sft",
 ):
     """Explicit allowlist: never serialize source config or sampler addresses."""
+    if trained_role not in {"sft", "kd"}:
+        raise ValueError("Unknown trained model role")
     config = {
         "model_label": "Qwen3.5-4B",
-        "model_role": "base" if stage == "before" else "sft",
+        "model_role": "base" if stage == "before" else trained_role,
         "split": report["config"]["split"],
         "manifest_sha256": report["manifest_sha256"],
         "examples": report["examples"],
@@ -175,6 +178,7 @@ def main():
         args.baseline_run_id,
         training=training,
         training_run_id=source.get("wandb_run_id"),
+        trained_role="kd" if source.get("algorithm") == "off_policy_topk_kd" else "sft",
     )
     # Public payload and receipt are locally inspectable before any network upload.
     payload_path = args.evaluation_dir / f"{args.stage}_wandb_payload.json"

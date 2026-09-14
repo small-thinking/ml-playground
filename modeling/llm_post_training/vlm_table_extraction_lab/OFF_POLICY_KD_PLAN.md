@@ -1,7 +1,12 @@
 # 传统 Off-policy Knowledge Distillation：实验方案
 
-2026-09-14。状态：已按用户最新选择将 soft targets 定为 Top10；尚未生成 teacher rollout、训练 KD 或创建 W&B run。
-本轮准备独立 PR；不修改仍待审阅的 [Train800 SFT PR #101](https://github.com/small-thinking/ml-playground/pull/101)。
+2026-09-14。状态：已实现 Top10 缓存、原生 soft-target CE 训练与完整 Dev 检查，
+teacher 已确定为 Qwen3.6-35B-A3B。已完成真实工程烟测：8条 teacher rollout 中
+7条格式有效，用其完成2步 LoRA 更新及完整 Dev100 前后检查；没有创建 KD W&B run。
+结果与明确的样本排除记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
+实现与运行命令见 [KD_RUNBOOK.md](KD_RUNBOOK.md)。
+本 PR 复用仍待审阅的 [Train800 SFT PR #101](https://github.com/small-thinking/ml-playground/pull/101)
+中的遥测和 checkpoint evaluation，以其分支为 base；不会自动合并任一 PR。
 下述金额是新实验估算，不继承上一轮 SFT 的 $5 执行授权。
 
 ## 实验问题与边界
@@ -24,7 +29,7 @@ teacher-force，再训练 student。因此本方案推荐 **传统 off-policy To
 
 ## Teacher 与 student
 
-当前建议优先验证 teacher：`Qwen/Qwen3.6-35B-A3B`，关闭 thinking；
+用户已选定 teacher：`Qwen/Qwen3.6-35B-A3B`，关闭 thinking；
 `Qwen/Qwen3.5-9B` 保留为较小 dense 对照。上一版选 9B 时只排除了退休的
 Qwen3.5-35B-A3B，遗漏了当前 3.6 的替代型号，此处修正推荐。
 
@@ -285,8 +290,9 @@ Teacher 和 student 平均分相近也可能犯不同错误，必须保留逐样
 
 ## 本 PR 的交付边界
 
-本 PR 固定研究问题、推荐 teacher、兼容性证据、loss 定义、对照组、预算和验收标准。
-尚不包含可运行的 KD 训练入口，不把已有 SFT runner 标记成已支持 soft targets。
-用户已选择 Top10 近似；按以上合同实现，付费验证的 teacher 与预算另行确定。
+本 PR 包含研究问题、已选 MoE teacher、兼容性证据、loss 定义、对照组与验收标准，
+以及独立的 `kd_collect` / `kd` 运行入口、soft targets 数学实现和测试。
+运行顺序、实际验证状态和最新计费补充以 [KD_RUNBOOK.md](KD_RUNBOOK.md) 为准。
+用户已选择 Top10 近似及 teacher；工程烟测单独限制在 $0.50 内，80条 pilot 总预算待确认。
 如果必须严格完整词表，则保留实验对照与评测协议，另设计 GPU 后端，而不是悄悄
 改成 teacher 答案 SFT 或 OPD。
