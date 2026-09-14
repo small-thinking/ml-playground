@@ -18,7 +18,16 @@ from .sft import MODEL
 from .tinker_inference import COOKBOOK_REVISION, PROCESSOR_REVISION
 
 
-def make_payload(report, metrics, stage, prediction_hash, project, baseline_run_id):
+def make_payload(
+    report,
+    metrics,
+    stage,
+    prediction_hash,
+    project,
+    baseline_run_id,
+    training=None,
+    training_run_id=None,
+):
     """Explicit allowlist: never serialize source config or sampler addresses."""
     config = {
         "model_label": "Qwen3.5-4B",
@@ -45,6 +54,9 @@ def make_payload(report, metrics, stage, prediction_hash, project, baseline_run_
         "baseline_run_id": baseline_run_id,
         "metric_view": "checkpoint-v1",
     }
+    if training is not None:
+        config["training"] = training
+        config["training_run_id"] = training_run_id
     # Same data and quality protocol share a group across model iterations.
     protocol = {
         k: config[k]
@@ -149,6 +161,11 @@ def main():
     for key in ("assistant_nll", "assistant_perplexity"):
         if not math.isclose(likelihood[key], report[args.stage][key], abs_tol=1e-12):
             raise ValueError("Recomputed likelihood differs from completed report")
+    training = None
+    if args.stage == "after" and source.get("wandb_run_id"):
+        from .training_logging import training_config
+
+        training = training_config(source)
     payload = make_payload(
         report,
         metrics,
@@ -156,6 +173,8 @@ def main():
         digest(path),
         args.wandb_project,
         args.baseline_run_id,
+        training=training,
+        training_run_id=source.get("wandb_run_id"),
     )
     # Public payload and receipt are locally inspectable before any network upload.
     payload_path = args.evaluation_dir / f"{args.stage}_wandb_payload.json"

@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-def log_metrics(payload):
+def log_metrics(payload, events=None):
     if payload["mode"] == "disabled":
         return {}
     # Isolate auto-detected environment/config files, argv, working directory,
@@ -47,15 +47,22 @@ def log_metrics(payload):
         dir=directory,
         config=payload["config"],
         settings=settings,
-        job_type="evaluation",
+        job_type=payload.get("job_type", "evaluation"),
         id=payload.get("run_id"),
         resume="allow" if payload.get("run_id") else None,
         name=payload.get("name"),
         group=payload.get("group"),
         tags=payload.get("tags"),
     ) as run:
-        run.log(payload["metrics"])
-        run.summary.update(payload["metrics"])
+        if events is None:
+            run.log(payload["metrics"])
+            run.summary.update(payload["metrics"])
+        else:
+            run.define_metric("training/optimizer_step")
+            run.define_metric("*", step_metric="training/optimizer_step")
+            print(json.dumps({"ready": True, "run_id": run.id}), flush=True)
+            for event in events:
+                run.log(event)
         run_id = run.id
     report = {"run_id": run_id}
     if payload["mode"] == "offline":
@@ -66,4 +73,7 @@ def log_metrics(payload):
 
 
 if __name__ == "__main__":
-    print(json.dumps(log_metrics(json.loads(sys.stdin.read()))))
+    streaming = "--stream" in sys.argv
+    payload = json.loads(sys.stdin.readline() if streaming else sys.stdin.read())
+    events = (json.loads(line) for line in sys.stdin) if streaming else None
+    print(json.dumps(log_metrics(payload, events)), flush=True)
