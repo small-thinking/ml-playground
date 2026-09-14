@@ -6,10 +6,13 @@ SFT、错误分析和后续迭代带来的变化。目标是学会控制实验�
 
 当前阶段：三份公开数据已下载并完成基础完整性审计；RD 800 Train / 100 Dev / 100 Test
 及 8/80/200/400/800 嵌套训练子集已冻结；官方 Table Judge 离线 setup 通过。
-首轮选择 Tinker，预留后续 TRL 迁移边界。真实模型推理、训练和 GPU 租用尚未启动。评测 CLI、官方评分接入、
-补充指标和 W&B 汇总日志已实现；验证结果见 EVALUATION.md。
+训练首轮仍计划选择 Tinker，预留后续 TRL 迁移边界；训练和 GPU 租用尚未启动。
+评测已切换为本地推理，支持 Transformers 与 Apple Metal/MLX，使用原始
+Qwen3.5-4B 权重。官方评分、补充指标与 W&B 汇总已接入，新 run 仅上报
+quality / structure / runtime 三组共 14 项业务指标。
 
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
+- [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [数据完整性记录](DATA_AUDIT.md)
 - [分布抽样与数据划分](DISTRIBUTION_AND_SPLITS.md)
 - [Table Judge setup](JUDGE_SETUP.md)
