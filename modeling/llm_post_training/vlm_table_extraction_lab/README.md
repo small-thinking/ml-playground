@@ -4,20 +4,28 @@
 SFT、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
 公开榜单最优结果。
 
-当前阶段：三份公开数据已下载并完成基础完整性审计；RD 800 Train / 100 Dev / 100 Test
-及 8/80/200/400/800 嵌套训练子集已冻结；官方 Table Judge 离线 setup 通过。
-训练首轮仍计划选择 Tinker，预留后续 TRL 迁移边界；训练和 GPU 租用尚未启动。
-默认评测使用 Tinker 的 `Qwen/Qwen3.5-4B` 推理；已有 Dev100 实测约 4.7 分钟，
-按 token 与公开费率估算约 $0.17，并非账单金额。Transformers 与 Apple Metal/MLX
-保留为可选本地后端，历史结果见下方报告；本次切回默认后端无需重跑已完成的 baseline。
-官方评分、补充指标与 W&B 汇总已接入，新 run 仅上报
-quality / structure / runtime 三组共 14 项业务指标。
+当前阶段：Tinker 与本地 MLX 的 4B Dev100 baseline 已完成并保存在
+[BASELINE_RESULTS.md](BASELINE_RESULTS.md)。主线默认使用 Tinker；历史推理约
+4.7 分钟、token 费估算约 $0.17，MLX 留作可选本地后端。这不是后续运行的固定报价。
 
-Tinker 会接收调用者提供的图片和固定抽取指令，标签仅用于本地评分；W&B
-只接收汇总指标及受控配置。数据、凭证和实际路径由运行参数提供，不进入 Git。
+第一轮 SFT 使用独立自生成的 8 张训练表格与 4 张验证表格，验证 LoRA 更新、
+答案 loss 和生成闭环；配置、运行步骤与结果见 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。
+本次 smoke 已跑通 16 步，不调用 W&B；估算计算费用约 $0.0156。简单表格的
+cell F1 训练前后均为 1.0，NLL 下降，不代表真实表格能力提升。正式训练尚未启动。
+
+RD 是官方评测 benchmark；旧 800/100/100 文件保留用于追溯，旧 Train800
+不再作为当前训练计划。继续固定 Dev100 做开发评估，Test100 留到最终比较。
+MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独立的裁判校准任务。
+这几份资源不是经官方确认的一套训练/测试流程。
+
+推理时 Tinker 接收图片与固定 prompt；SFT 时还会接收训练 HTML 标签以计算 loss。
+参考答案不进入生成 prompt。数据、凭证、checkpoint 地址和实际路径仅保留本地。
+既有 evaluator 可选上报 W&B 的 quality / structure / runtime 共 14 项汇总指标；
+SFT smoke 没有 W&B 初始化或上传入口。
 
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
+- [第一次 SFT：方案、命令、结果与费用](SFT_EXPERIMENT.md)
 - [数据完整性记录](DATA_AUDIT.md)
 - [分布抽样与数据划分](DISTRIBUTION_AND_SPLITS.md)
 - [Table Judge setup](JUDGE_SETUP.md)
@@ -67,11 +75,11 @@ outputs/                      # Git ignored; future predictions and checkpoints
 
 | 数据 | 官方/可验证内容 | 本实验用途 |
 | --- | --- | --- |
-| [RD-TableBench](https://huggingface.co/datasets/reducto/rd-tablebench) | 表格抽取 benchmark；1,000 个图片/PDF/groundtruth HTML 配对 | 可划出个人训练/dev/test；一旦用其训练，不声称完整 RD benchmark 的独立测试成绩 |
-| [MLE Interview](https://huggingface.co/datasets/reducto/mle-interview) | 996 张 JPEG，无公开标签 | 无标签外部分布检查；无法报告有 ground truth 的抽取准确率 |
-| [Table Judge Benchmark](https://huggingface.co/datasets/reducto/table-judge-benchmark) | 538 个原图/clean HTML/corrupted HTML 配对及错误元数据 | 独立保留，可做抽取任务或 judge 任务；分别命名和报告 |
+| [RD-TableBench](https://huggingface.co/datasets/reducto/rd-tablebench) | 表格抽取 benchmark；1,000 个图片/PDF/groundtruth HTML 配对 | 仅用于评估；保留历史划分，当前不使用其 Train800 训练 |
+| [MLE Interview](https://huggingface.co/datasets/reducto/mle-interview) | 996 张 JPEG，无公开任务说明或标签 | 暂不纳入主线，不能假定其面试任务是表格抽取 |
+| [Table Judge Benchmark](https://huggingface.co/datasets/reducto/table-judge-benchmark) | 538 个原图/clean HTML/corrupted HTML 配对及错误元数据 | 独立保留，主要用于 judge 校准；不作为默认训练集 |
 
-RD 训练标签只来自 `groundtruth/`，不能误用 `providers/`。JPG 与 PDF
+RD 评测参考标签来自 `groundtruth/`，不能误用 `providers/`。JPG 与 PDF
 表示同一个表格，不是两份独立样本。Judge 的 clean/corrupted 是同一案例，
 不能跨 split。保留原始数据，衍生清单不修改源文件。
 
@@ -81,7 +89,7 @@ MLE 不能整体假设为裁剪后的表格测试集；若后续用于表格抽�
 
 RD 数据卡标注 `CC-BY-NC-ND-4.0`；MLE 和 Judge 的当前 HF 元数据没有
 明确 license 字段。公开可下载不等于任意用途许可，本目录不再分发数据。
-模型训练的具体使用条件在启动训练前核查；必要时以自生成训练数据替代。
+本轮训练采用自生成表格；不使用这些公开 benchmark 的样本作 SFT 标签。
 
 ## 验证边界
 

@@ -34,6 +34,35 @@ W&B: [Tinker 运行](https://wandb.ai/techtao-small-thinking/vlm-table-extractio
 - 全部原始预测、逐条诊断、清单、凭证和真实路径仅保留本地；未上传到 W&B 或 Git。
   Tinker 推理会发送输入图片和固定 prompt 给服务，参考标签不发送。
 
+## 后续 SFT 对照采用的 Tinker 协议
+
+主线历史基准为 Tinker run `5eqqv4aa`，不是 MLX run。2026-09-14 已核对
+本地保存的两份汇总，以上八项指标均与表中四位小数一致；未为核对重新调用模型。
+
+| 固定项 | Tinker 历史 baseline |
+| --- | --- |
+| 模型与输入 | `Qwen/Qwen3.5-4B`；冻结 RD Dev100；只输入图片与抽取 prompt |
+| 生成 | temperature 0、seed `20260913`、thinking 关闭、最多 8,192 output tokens |
+| 图片 | 1,048,576 pixels 上限；renderer `qwen3_5_disable_thinking` |
+| Processor / cookbook | 使用上文两项固定 revision；不代表托管权重 revision |
+| 评分 | evaluator `table-eval-v1`；官方 scorer commit `1cae108e6395ddc8389af17385f9769519070558` |
+| 清单 SHA-256 | `600e11eae8e92db44e6f16db0bcea0a5ea7251beb8bbb49c035c7d7897e771c1` |
+| Prompt SHA-256 | `fb8dd3e904eb2a09aa8faba5a2a6252cd1b62b72d4176c769d8dbbd1728c5b67`，与当前固定抽取 prompt 一致 |
+
+两轮历史结果的预测覆盖均为 100/100；原版 RD、单元格 F1、格式、截断、
+整表与结构指标均在全部 100 条上计算。数字 F1 的有效样本均为 97 条，
+其余 3 条两侧都没有数字 token；后续仍按同一规则报告实际有效样本数，
+不把 97 硬编码为新预测的分母。失败和截断样本不从主指标分母删除。
+
+合成数据 SFT smoke 首先验证训练、保存 checkpoint 和推理接口能连通；
+训练 loss 下降本身不是 RD Dev 质量提升。正式比较时，固定以上评测协议，
+记录合成训练数据版本及训练参数，并对同一训练起点的训练前/后 checkpoint
+比较全量 Dev。Tinker 历史运行未暴露托管权重 revision，因此该历史基准可作
+参考，但不能单凭模型名保证后来训练起点相同；需要保存同次实验的起点证据。
+若改评分实现，应使用保存的历史预测按新版本重新评分，再比较分数。
+Test100 继续保留到实验方案固定后；W&B 新运行维持 14 项分组指标，完整
+分母与逐样本诊断留在本地。此处没有新增训练或评测结果。
+
 ## 错误与指标解释
 
 本地格式失败共 7 条：5 条表格未闭合，2 条包含外围文字或不支持的内容。
