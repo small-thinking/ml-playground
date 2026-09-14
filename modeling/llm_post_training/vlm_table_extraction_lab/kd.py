@@ -15,7 +15,14 @@ import numpy as np
 
 from .evaluate import digest, evaluate, read_jsonl
 from .inference import PROMPT
-from .kd_collect import TOP_K, cache_entry, cache_lock, json_hash, rejected_entry
+from .kd_collect import (
+    TOP_K,
+    cache_entry,
+    cache_lock,
+    json_hash,
+    rejected_entry,
+    rollout_quality,
+)
 from .kd_targets import normalize_batch, summarize_soft, topk_diagnostics
 from .metrics import VERSION
 from .official import OfficialScorer, REVISION
@@ -65,11 +72,15 @@ def load_train(args, tokenizer, renderer):
     }
     if any(manifest.get(k) != v for k, v in expected.items()):
         raise ValueError("Teacher cache model, data or processing protocol differs")
+    include_invalid = getattr(args, "include_invalid_rollouts", False)
+    if bool(manifest.get("include_invalid_rollouts", False)) != include_invalid:
+        raise ValueError("Teacher cache and training target policies differ")
     if not 1 <= args.train_examples <= len(manifest["records"]):
         raise ValueError("Invalid cached training subset size")
     by_id = {row["id"]: row for row in read_jsonl(args.train_manifest)}
     datums, probabilities, hashes = [], [], []
     rejected = 0
+    format_invalid, truncated = 0, 0
     records = manifest["records"][: args.train_examples]
     if len({r["id"] for r in records}) != len(records):
         raise ValueError("Duplicate cached examples")
@@ -89,8 +100,18 @@ def load_train(args, tokenizer, renderer):
             rejected += 1
             continue
         datum, logprobs = cache_entry(
-            args.cache_dir, index, record, prompt, len(tokenizer)
+            args.cache_dir,
+            index,
+            record,
+            prompt,
+            len(tokenizer),
+            **({"include_invalid": True} if include_invalid else {}),
         )
+        quality = rollout_quality(
+            json.loads((args.cache_dir / f"{index:04d}.rollout.json").read_text())
+        )
+        format_invalid += int(not quality["format_valid"])
+        truncated += int(quality["truncated"])
         if datum.model_input.length + 1 > args.max_sequence_tokens:
             raise ValueError("Cached sequence exceeds context limit")
         datums.append(datum)
@@ -108,10 +129,17 @@ def load_train(args, tokenizer, renderer):
             "tokenizer_sha256": manifest["tokenizer_sha256"],
             "candidate_examples": len(records),
             "rejected_examples": rejected,
+            "teacher_format_invalid_examples": format_invalid,
+            "teacher_truncated_examples": truncated,
+            "teacher_sampling_seed": manifest.get("seed"),
             "target_filter_policy": (
-                "exclude_invalid_without_replacement"
-                if getattr(args, "skip_rejected", False)
-                else "fail_on_invalid"
+                "include_all_token_valid_rollouts"
+                if include_invalid
+                else (
+                    "exclude_invalid_without_replacement"
+                    if getattr(args, "skip_rejected", False)
+                    else "fail_on_invalid"
+                )
             ),
         },
     )
@@ -306,10 +334,16 @@ def main():
     p.add_argument("--env-file", type=Path)
     p.add_argument("--execute", action="store_true")
     p.add_argument("--train-examples", type=int, default=8)
-    p.add_argument(
+    policy = p.add_mutually_exclusive_group()
+    policy.add_argument(
         "--skip-rejected",
         action="store_true",
         help="Exclude verified rejection records from the requested candidate subset",
+    )
+    policy.add_argument(
+        "--include-invalid-rollouts",
+        action="store_true",
+        help="Train every cached trajectory, including format failures and truncation",
     )
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch-size", type=int, default=4)
@@ -423,7 +457,13 @@ def main():
         "implementation_sha256": json_hash(
             {
                 f: digest(Path(__file__).with_name(f))
-                for f in ("kd.py", "kd_targets.py", "kd_collect.py")
+                for f in (
+                    "kd.py",
+                    "kd_targets.py",
+                    "kd_collect.py",
+                    "kd_cache_reuse.py",
+                    "kd_collection_budget.py",
+                )
             }
         ),
         "config": {

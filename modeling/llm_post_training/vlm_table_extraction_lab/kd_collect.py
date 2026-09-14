@@ -1,6 +1,7 @@
 """Cache fixed MoE-teacher rollouts and Top-10 targets. No API calls by default."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -107,7 +108,7 @@ class CollectionBudget:
         atomic_json(self.path, self.state)
 
 
-def cache_entry(directory, index, record, prompt, vocab_size):
+def cache_entry(directory, index, record, prompt, vocab_size, include_invalid=False):
     """Read back immutable targets; reject stale, edited or incomplete records."""
     metadata = json.loads((directory / f"{index:04d}.json").read_text())
     arrays_path = directory / f"{index:04d}.npz"
@@ -120,9 +121,12 @@ def cache_entry(directory, index, record, prompt, vocab_size):
     ):
         raise ValueError("Cache content or rendered prompt identity mismatch")
     rollout = json.loads(rollout_path.read_text())
-    if rollout["stop_reason"] != "stop":
-        raise ValueError("Truncated teacher rollout is not a valid target")
-    parse_table(rollout["html"])
+    if rollout["record"] != record:
+        raise ValueError("Rollout record identity mismatch")
+    if not include_invalid:
+        validate_rollout(rollout)
+    elif not rollout["tokens"] or rollout["stop_reason"] not in {"stop", "length"}:
+        raise ValueError("Empty or unknown teacher completion")
     with np.load(arrays_path, allow_pickle=False) as arrays:
         if arrays["token_ids"].shape[1] != TOP_K:
             raise ValueError("Expected Top-10 targets")
@@ -140,6 +144,19 @@ def validate_rollout(rollout):
     if rollout["stop_reason"] != "stop":
         raise ValueError("truncated_teacher_output")
     parse_table(rollout["html"])
+
+
+def rollout_quality(rollout):
+    """Quality diagnostics do not determine whether token-level KD is defined."""
+    try:
+        parse_table(rollout["html"])
+        format_valid = True
+    except ValueError:
+        format_valid = False
+    return {
+        "format_valid": format_valid,
+        "truncated": rollout["stop_reason"] == "length",
+    }
 
 
 def rejected_entry(directory, index, record):
@@ -204,21 +221,27 @@ def collect_one(index, row, record, prompt, tokenizer, renderer, sampler, args, 
     rollout = json.loads(output_path.read_text())
     if rollout["record"] != record:
         raise ValueError("Partial rollout belongs to a different prompt")
-    try:
-        validate_rollout(rollout)
-    except ValueError as exc:
-        atomic_json(
-            directory / f"{index:04d}.rejected.json",
-            {
-                "record": record,
-                "rollout_sha256": digest(output_path),
-                "reason": str(exc),
-                "output_tokens": len(rollout["tokens"]),
-            },
-        )
-        if getattr(args, "skip_rejected", False):
-            return False
-        raise
+    if getattr(args, "include_invalid_rollouts", False):
+        if not rollout["tokens"] or rollout["stop_reason"] not in {"stop", "length"}:
+            raise ValueError("Empty or unknown teacher completion")
+        if (directory / f"{index:04d}.rejected.json").exists():
+            raise ValueError("Use a new cache to change the rejection policy")
+    else:
+        try:
+            validate_rollout(rollout)
+        except ValueError as exc:
+            atomic_json(
+                directory / f"{index:04d}.rejected.json",
+                {
+                    "record": record,
+                    "rollout_sha256": digest(output_path),
+                    "reason": str(exc),
+                    "output_tokens": len(rollout["tokens"]),
+                },
+            )
+            if getattr(args, "skip_rejected", False):
+                return False
+            raise
     full = tinker.ModelInput(
         chunks=[*prompt.chunks, tinker.EncodedTextChunk(tokens=rollout["tokens"])]
     )
@@ -254,6 +277,7 @@ def collect_one(index, row, record, prompt, tokenizer, renderer, sampler, args, 
             "arrays_sha256": digest(arrays_path),
             "rollout_sha256": digest(output_path),
             "retained_mass": topk_diagnostics(probabilities),
+            "quality": rollout_quality(rollout),
         },
     )
     budget.settle(cost)
@@ -279,10 +303,18 @@ def main():
     p.add_argument("--max-pixels", type=int, default=1048576)
     p.add_argument("--max-estimated-usd", type=float, default=0.25)
     p.add_argument("--execute", action="store_true")
-    p.add_argument(
+    p.add_argument("--concurrency", type=int, default=1)
+    p.add_argument("--reuse-cache", type=Path)
+    policy = p.add_mutually_exclusive_group()
+    policy.add_argument(
         "--skip-rejected",
         action="store_true",
         help="Record and exclude invalid/truncated teacher outputs; never replace them",
+    )
+    policy.add_argument(
+        "--include-invalid-rollouts",
+        action="store_true",
+        help="Keep original format-invalid/truncated trajectories; require valid token probabilities",
     )
     args = p.parse_args()
     if any(
@@ -294,6 +326,7 @@ def main():
             args.max_sequence_tokens,
             args.max_pixels,
             args.max_estimated_usd,
+            args.concurrency,
         )
     ):
         raise ValueError("Limits must be finite and positive")
@@ -306,7 +339,11 @@ def main():
     ):
         raise ValueError("Expected frozen Train800 / Dev100 and a valid subset limit")
     validate_records(rows, dev, args.data_root)
-    rows = random.Random(args.seed).sample(rows, args.limit)
+    # Full-data experiments retain manifest order so the training shuffle can
+    # match SFT800. Subset caches keep their historical sampling protocol.
+    rows = (
+        rows if args.limit == 800 else random.Random(args.seed).sample(rows, args.limit)
+    )
     student_tokenizer, student_renderer = load_renderer(
         MODEL, PROCESSOR_REVISION, args.tinker_cookbook_dir
     )
@@ -349,12 +386,22 @@ def main():
         "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
         "records": records,
     }
+    if args.include_invalid_rollouts:
+        identity["include_invalid_rollouts"] = True
     with cache_lock(args.cache_dir):
         manifest = args.cache_dir / "manifest.json"
         if manifest.exists() and json.loads(manifest.read_text()) != identity:
             raise ValueError("Cache identity changed; use a new cache directory")
         atomic_json(manifest, identity)
-        budget = CollectionBudget(args.cache_dir / "usage.json", args.max_estimated_usd)
+        from .kd_collection_budget import ConcurrentBudget
+
+        budget = ConcurrentBudget(args.cache_dir / "usage.json", args.max_estimated_usd)
+        if args.reuse_cache:
+            from .kd_cache_reuse import reuse_cache
+
+            reuse_cache(
+                args.reuse_cache, args.cache_dir, identity, prompts, len(tokenizer)
+            )
         missing, rejected = [], 0
         for index, (record, prompt) in enumerate(zip(records, prompts, strict=True)):
             if (args.cache_dir / f"{index:04d}.json").exists() and (
@@ -362,7 +409,14 @@ def main():
             ).exists():
                 raise ValueError("Ambiguous accepted and rejected cache entry")
             if (args.cache_dir / f"{index:04d}.json").exists():
-                cache_entry(args.cache_dir, index, record, prompt, len(tokenizer))
+                cache_entry(
+                    args.cache_dir,
+                    index,
+                    record,
+                    prompt,
+                    len(tokenizer),
+                    include_invalid=args.include_invalid_rollouts,
+                )
             elif (
                 args.skip_rejected
                 and (args.cache_dir / f"{index:04d}.rejected.json").exists()
@@ -395,8 +449,9 @@ def main():
             base_model=TEACHER_MODEL
         )
         accepted = len(rows) - len(missing) - rejected
-        for index in missing[: args.max_new_examples]:
-            valid = collect_one(
+
+        def collect_index(index):
+            return collect_one(
                 index,
                 rows[index],
                 records[index],
@@ -405,20 +460,34 @@ def main():
                 renderer,
                 sampler,
                 args,
-                budget,
+                budget.for_example(),
             )
-            accepted += int(valid)
-            rejected += int(not valid)
-            print(
-                json.dumps(
-                    {
-                        "cached": accepted,
-                        "rejected": rejected,
-                        "estimated_compute_usd": budget.state["estimated_compute_usd"],
-                    }
-                ),
-                flush=True,
-            )
+
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            futures = [
+                pool.submit(collect_index, i) for i in missing[: args.max_new_examples]
+            ]
+            try:
+                for future in as_completed(futures):
+                    valid = future.result()
+                    accepted += int(valid)
+                    rejected += int(not valid)
+                    print(
+                        json.dumps(
+                            {
+                                "cached": accepted,
+                                "rejected": rejected,
+                                "estimated_compute_usd": budget.state[
+                                    "estimated_compute_usd"
+                                ],
+                            }
+                        ),
+                        flush=True,
+                    )
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
 
 
 if __name__ == "__main__":
