@@ -18,10 +18,14 @@ warmup 版 SFT 已完成同一轮 before/after 的完整 RD Dev100 对照：NLL
 0.1072 → 0.0852、cell F1 0.3765 → 0.4643、数字 F1 0.4177 → 0.5399，
 详见 [完整对照结果](RD_DEV100_SFT_RESULTS.md)。这次约 8.9 分钟、计算费估算 $0.40，
 仅记录本地结果；目前保留现有划分，之后每个 RD Dev 评估点均覆盖固定全量 100 条。
+同一轮模型的完整 Test100 对照也已完成：cell F1 0.4072 → 0.4971、数字 F1
+0.4445 → 0.6164、格式通过率 89% → 99%，但整表完全一致率 7% → 3%。
+配对统计及完整限制见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。
 正式训练尚未启动。
 
 RD 是官方评测 benchmark；旧 800/100/100 文件保留用于追溯，旧 Train800
-不再作为当前训练计划。继续固定 Dev100 做开发评估，Test100 留到最终比较。
+不再作为当前训练计划。继续固定 Dev100 做开发评估，Test100 的首轮留出比较
+见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)，后续不根据 Test 结果调整配置。
 MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独立的裁判校准任务。
 这几份资源不是经官方确认的一套训练/测试流程。
 
@@ -34,6 +38,7 @@ SFT smoke 没有 W&B 初始化或上传入口。
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [第一次 SFT：方案、命令、结果与费用](SFT_EXPERIMENT.md)
 - [训练前后完整 RD Dev100 对照](RD_DEV100_SFT_RESULTS.md)
+- [训练前后完整 RD Test100 对照](RD_TEST100_SFT_RESULTS.md)
 - [数据完整性记录](DATA_AUDIT.md)
 - [分布抽样与数据划分](DISTRIBUTION_AND_SPLITS.md)
 - [Table Judge setup](JUDGE_SETUP.md)

@@ -1,4 +1,4 @@
-"""Compare saved SFT samplers on a complete external Dev manifest, locally logged."""
+"""Compare saved SFT samplers on a complete Dev or Test manifest, locally logged."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -134,6 +134,7 @@ def main():
     ):
         p.add_argument(f"--{name}", type=Path, required=True)
     p.add_argument("--env-file", type=Path)
+    p.add_argument("--split", choices=["dev", "test"], default="dev")
     p.add_argument("--expected-examples", type=int, default=100)
     p.add_argument("--max-new-tokens", type=int, default=8192)
     p.add_argument("--max-pixels", type=int, default=1048576)
@@ -165,9 +166,9 @@ def main():
         raise ValueError("Source run renderer revisions differ from this evaluator")
     records = read_jsonl(args.manifest)
     if len(records) != args.expected_examples or any(
-        r.get("split") != "dev" for r in records
+        r.get("split") != args.split for r in records
     ):
-        raise ValueError("Expected the entire explicitly sized Dev manifest")
+        raise ValueError(f"Expected the entire explicitly sized {args.split} manifest")
     for row in records:
         for field in ("image", "label"):
             data_path = (args.data_root / row[field]).resolve()

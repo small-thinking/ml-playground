@@ -88,7 +88,13 @@ def test_failure_cancels_queued_requests(tmp_path, monkeypatch):
     assert all(f.cancelled() for f in futures[1:])
 
 
-def test_incomplete_dev_is_rejected_before_model_loading(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "expected,declared,actual",
+    [(2, "dev", "dev"), (2, "test", "test"), (1, "dev", "test"), (1, "test", "dev")],
+)
+def test_incomplete_or_wrong_split_is_rejected_before_model_loading(
+    tmp_path, monkeypatch, expected, declared, actual
+):
     import json
     import sys
 
@@ -104,7 +110,7 @@ def test_incomplete_dev_is_rejected_before_model_loading(tmp_path, monkeypatch):
         )
     )
     manifest = tmp_path / "dev.jsonl"
-    manifest.write_text(json.dumps({"id": "only-one", "split": "dev"}) + "\n")
+    manifest.write_text(json.dumps({"id": "only-one", "split": actual}) + "\n")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -123,6 +129,10 @@ def test_incomplete_dev_is_rejected_before_model_loading(tmp_path, monkeypatch):
             "--official-repo",
             str(tmp_path),
             "--execute",
+            "--expected-examples",
+            str(expected),
+            "--split",
+            declared,
         ],
     )
     monkeypatch.setattr(

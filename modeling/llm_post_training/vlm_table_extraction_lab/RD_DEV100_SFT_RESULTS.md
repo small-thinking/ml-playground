@@ -4,6 +4,9 @@
 sampler；训练为 8 张自生成表格、16 步 LoRA，peak LR 5e-5、10% warmup。
 这次不更新模型参数、不改变数据划分、不访问 Test100，也不上传 W&B。
 
+后续应用户要求，同一轮模型另做了 [Test100 留出对照](RD_TEST100_SFT_RESULTS.md)；
+本页保留当时的 Dev 结果和决策，Test 结果不混入本页指标。
+
 ## 先区分两套 Dev
 
 - **Synthetic Dev4**：原 SFT smoke 的完整验证集，来自与 Train8 相同的简单生成器。
