@@ -12,7 +12,7 @@ SFT、错误分析和后续迭代带来的变化。目标是学会控制实验�
 答案 loss 和生成闭环；配置、运行步骤与结果见 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。
 本次 smoke 已跑通 16 步，不调用 W&B；估算计算费用约 $0.0156。简单表格的
 cell F1 训练前后均为 1.0，NLL 下降，不代表真实表格能力提升。
-当前默认 peak LR 5e-5 / 10% warmup；每 4 步记录固定 Train/Dev 的 NLL、PPL 和 gap，
+smoke 入口默认 peak LR 5e-5 / 10% warmup；每 4 步记录固定 Train/Dev 的 NLL、PPL 和 gap，
 每 8 步记录 Dev 自由生成指标。独立 sampler 复核及错配图片对照见实验文档。
 warmup 版 SFT 已完成同一轮 before/after 的完整 RD Dev100 对照：NLL
 0.1072 → 0.0852、cell F1 0.3765 → 0.4643、数字 F1 0.4177 → 0.5399，
@@ -21,10 +21,13 @@ warmup 版 SFT 已完成同一轮 before/after 的完整 RD Dev100 对照：NLL
 同一轮模型的完整 Test100 对照也已完成：cell F1 0.4072 → 0.4971、数字 F1
 0.4445 → 0.6164、格式通过率 89% → 99%，但整表完全一致率 7% → 3%。
 配对统计及完整限制见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。
-正式训练尚未启动。
+首轮完整 RD Train800 LoRA SFT 已完成：rank 8、1 epoch、peak LR 1e-4、10 步
+warmup。固定 Test100 的 cell F1 **0.4072 → 0.6325**，数字 F1 **0.4445 → 0.7138**，
+结构完全一致率 **14% → 37%**；训练、Dev 和 Test 合计约 25.5 分钟，token 计算费
+估算 **$2.28**。完整结果与 W&B 链接见 [Train800 结果](RD_TRAIN800_SFT_RESULTS.md)。
 
-RD 是官方评测 benchmark；旧 800/100/100 文件保留用于追溯，旧 Train800
-不再作为当前训练计划。继续固定 Dev100 做开发评估，Test100 的首轮留出比较
+RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
+Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
 Test100 上评估，并在 W&B 与 [固定 Base](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/9409ea84393aebb0)
 比较；训练过程仍用 Dev。登记命令与分组规则见 [评测流程](EVALUATION.md#固定-test100-baseline-与每轮迭代登记)。
@@ -34,10 +37,13 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 推理时 Tinker 接收图片与固定 prompt；SFT 时还会接收训练 HTML 标签以计算 loss。
 参考答案不进入生成 prompt。数据、凭证、checkpoint 地址和实际路径仅保留本地。
 既有 evaluator 可选上报 W&B 的 quality / structure / runtime 共 14 项汇总指标；
-SFT smoke 没有 W&B 初始化或上传入口。
+历史 SFT smoke 仅记录本地；正式训练可显式启用 W&B，实时记录 loss/PPL、
+学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
+- [完整 Train800 LoRA SFT 结果与 W&B](RD_TRAIN800_SFT_RESULTS.md)
+- [完整 Train800 LoRA SFT 配置与预算](FULL_SFT_PLAN.md)
 - [第一次 SFT：方案、命令、结果与费用](SFT_EXPERIMENT.md)
 - [训练前后完整 RD Dev100 对照](RD_DEV100_SFT_RESULTS.md)
 - [训练前后完整 RD Test100 对照](RD_TEST100_SFT_RESULTS.md)
@@ -90,7 +96,7 @@ outputs/                      # Git ignored; future predictions and checkpoints
 
 | 数据 | 官方/可验证内容 | 本实验用途 |
 | --- | --- | --- |
-| [RD-TableBench](https://huggingface.co/datasets/reducto/rd-tablebench) | 表格抽取 benchmark；1,000 个图片/PDF/groundtruth HTML 配对 | 仅用于评估；保留历史划分，当前不使用其 Train800 训练 |
+| [RD-TableBench](https://huggingface.co/datasets/reducto/rd-tablebench) | 表格抽取 benchmark；1,000 个图片/PDF/groundtruth HTML 配对 | 个人实验划分为 Train800 / Dev100 / Test100；正式首轮使用 Train800 |
 | [MLE Interview](https://huggingface.co/datasets/reducto/mle-interview) | 996 张 JPEG，无公开任务说明或标签 | 暂不纳入主线，不能假定其面试任务是表格抽取 |
 | [Table Judge Benchmark](https://huggingface.co/datasets/reducto/table-judge-benchmark) | 538 个原图/clean HTML/corrupted HTML 配对及错误元数据 | 独立保留，主要用于 judge 校准；不作为默认训练集 |
 
@@ -104,7 +110,7 @@ MLE 不能整体假设为裁剪后的表格测试集；若后续用于表格抽�
 
 RD 数据卡标注 `CC-BY-NC-ND-4.0`；MLE 和 Judge 的当前 HF 元数据没有
 明确 license 字段。公开可下载不等于任意用途许可，本目录不再分发数据。
-本轮训练采用自生成表格；不使用这些公开 benchmark 的样本作 SFT 标签。
+此前 smoke 使用自生成表格；本轮按用户选择使用 RD Train800，数据和派生标签保留本地。
 
 ## 验证边界
 

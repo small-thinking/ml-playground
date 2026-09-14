@@ -16,18 +16,18 @@ from .sft_metrics import summarize_nll
 from .tinker_inference import COOKBOOK_REVISION, PROCESSOR_REVISION, SEED, load_renderer
 
 
-def estimate_cost(examples, max_new_tokens):
+def estimate_cost(examples, max_new_tokens, stages=2):
     # compute_logprobs processes the full sequence and generates one ignored token.
-    nll_tokens = 2 * sum(d.model_input.length + 1 for _, _, d in examples)
-    input_tokens = 2 * sum(p.length for _, p, _ in examples)
-    output_tokens = 2 * len(examples) * max_new_tokens
+    nll_tokens = stages * sum(d.model_input.length + 1 for _, _, d in examples)
+    input_tokens = stages * sum(p.length for _, p, _ in examples)
+    output_tokens = stages * len(examples) * max_new_tokens
     return {
         "nll_input_tokens": nll_tokens,
         "generation_input_tokens": input_tokens,
         "generation_output_token_bound": output_tokens,
         "estimated_compute_usd_bound": (
             (nll_tokens + input_tokens) * FORWARD_RATE
-            + (output_tokens + 2 * len(examples)) * SAMPLE_RATE
+            + (output_tokens + stages * len(examples)) * SAMPLE_RATE
         )
         / 1e6,
     }
@@ -135,6 +135,7 @@ def main():
         p.add_argument(f"--{name}", type=Path, required=True)
     p.add_argument("--env-file", type=Path)
     p.add_argument("--split", choices=["dev", "test"], default="dev")
+    p.add_argument("--stage", choices=["before", "after", "both"], default="both")
     p.add_argument("--expected-examples", type=int, default=100)
     p.add_argument("--max-new-tokens", type=int, default=8192)
     p.add_argument("--max-pixels", type=int, default=1048576)
@@ -184,7 +185,8 @@ def main():
     examples = prepare_examples(
         records, args.data_root, renderer, args.max_pixels, 65536
     )
-    cost = estimate_cost(examples, args.max_new_tokens)
+    stages = ("before", "after") if args.stage == "both" else (args.stage,)
+    cost = estimate_cost(examples, args.max_new_tokens, len(stages))
     if cost["estimated_compute_usd_bound"] > args.max_estimated_usd:
         raise ValueError("Preflight exceeds the estimated compute budget")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -196,7 +198,7 @@ def main():
         "config": {
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
         },
-        "sampler_paths": {k: source["sampler_paths"][k] for k in ("before", "after")},
+        "sampler_paths": {k: source["sampler_paths"][k] for k in stages},
         "processor_revision": PROCESSOR_REVISION,
         "seed": SEED,
         "nll_method": "saved_sampler.compute_logprobs, full original reference HTML, assistant mask",
@@ -226,7 +228,7 @@ def main():
     report["status"] = "running"
     write_json(path, report)
     try:
-        for stage in ("before", "after"):
+        for stage in stages:
             sampler = service.create_sampling_client(
                 model_path=report["sampler_paths"][stage]
             )
@@ -267,9 +269,7 @@ def main():
             write_json(args.output_dir / f"{stage}_details.json", details)
             report[stage].update(metrics)
             write_json(path, report)
-        output_tokens = sum(
-            report[s]["eval/output_tokens_total"] for s in ("before", "after")
-        )
+        output_tokens = sum(report[s]["eval/output_tokens_total"] for s in stages)
         report["estimated_compute_usd"] = (
             cost["estimated_compute_usd_bound"]
             - (cost["generation_output_token_bound"] - output_tokens)

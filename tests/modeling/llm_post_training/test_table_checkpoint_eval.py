@@ -20,6 +20,11 @@ def test_before_after_budget_includes_full_nll_and_ignored_sample_token():
     assert cost["estimated_compute_usd_bound"] == pytest.approx(
         (60000 * 0.33 + 1638600 * 1.005) / 1e6
     )
+    single = mod.estimate_cost([ex] * 100, 8192, stages=1)
+    assert single["estimated_compute_usd_bound"] == pytest.approx(
+        cost["estimated_compute_usd_bound"] / 2
+    )
+    assert single["generation_output_token_bound"] == 819200
 
 
 def test_sampler_alignment_masks_prompt_but_includes_first_answer_and_eos():
