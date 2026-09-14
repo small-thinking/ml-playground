@@ -1,5 +1,9 @@
 # 首轮传统 Top10 KD：77 条有效训练样本
 
+历史pilot记录。用户随后要求全量800条对照，已删除本轮W&B训练与Test记录并核验
+不存在；本地结果和teacher缓存保留用于审计与复用，不重新发布。全量运行设置见
+[FULL_KD_PLAN.md](FULL_KD_PLAN.md)。下文数值仅描述此次历史pilot。
+
 日期：2026-09-14。固定 Qwen3.6-35B-A3B MoE teacher，先采集其原始生成轨迹和
 Top10 概率，再从原始 Qwen3.5-4B 新建 LoRA 训练。没有加载 SFT800 adapter，
 没有 student rollout、gold-label CE 混合或 RL reward。
@@ -7,9 +11,7 @@ Top10 概率，再从原始 Qwen3.5-4B 新建 LoRA 训练。没有加载 SFT800 
 训练、完整 Dev100 及最终 Test100 已完成。KD 的 Test 单元格与数字 F1 高于 Base，
 低于 SFT800；原版 RD similarity 略降，格式失败计零后的 RD 提高。
 
-- [Base / SFT800 / KD 固定 Test100 比较组](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/groups/rd-test100-0ddf5237b84f)
-- [本轮 KD 训练配置与曲线](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/dr8tpgs1)
-- [本轮 KD 固定 Test100](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/ac6824646069eb3a)
+- [当前固定 Test100 比较组](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/groups/rd-test100-0ddf5237b84f)（旧KD77已移除）
 - [Teacher 完整 Dev100](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/m7qk5jpg)
 - [实现说明与复现流程](KD_RUNBOOK.md)
 
