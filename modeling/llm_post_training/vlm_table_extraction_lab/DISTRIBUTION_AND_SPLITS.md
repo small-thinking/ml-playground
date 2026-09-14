@@ -27,7 +27,11 @@ Table Judge 图片/clean HTML 配对可作额外外部检查，但其图片由 H
 而来，也不能代表真实扫描件的全部难度。RD 图片通常已定位/裁剪出表格区域，
 仍需模型从像素抽取 HTML；对应的 groundtruth HTML 是另外提供的标签。
 
-## 已冻结的 RD 划分
+## 已冻结的 RD 划分（历史，2026-09-14 更新用途）
+
+当前不再用 RD Train800 进行 SFT；文件保留用于复现历史设计。
+第一次 SFT 使用独立自生成的 8 Train / 4 Dev，见 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。
+以下表格描述历史划分；Dev100/Test100 仍按原约定保留。
 
 规范文件：本地 `manifests/rd_splits.json`（可用脚本重建，不发布）。
 

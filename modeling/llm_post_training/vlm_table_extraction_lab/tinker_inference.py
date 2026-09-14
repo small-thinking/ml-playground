@@ -30,33 +30,56 @@ def verify_cookbook(directory):
     return directory
 
 
+def load_renderer(model, revision, cookbook_dir):
+    """Load the shared training/inference template without contacting Tinker."""
+    if model != "Qwen/Qwen3.5-4B":
+        raise ValueError("This Tinker renderer supports Qwen/Qwen3.5-4B only")
+    source = verify_cookbook(cookbook_dir)
+    if (
+        not isinstance(revision, str)
+        or len(revision) != 40
+        or any(c not in "0123456789abcdef" for c in revision.lower())
+    ):
+        raise ValueError(
+            "Tinker processor revision must be a full 40-character commit SHA"
+        )
+    sys.path.insert(0, str(source))
+    import tinker_cookbook.renderers as renderers
+    from transformers import AutoImageProcessor, AutoTokenizer
+
+    if not Path(renderers.__file__).resolve().is_relative_to(source):
+        raise ValueError("A different Tinker cookbook was already imported")
+    tokenizer = AutoTokenizer.from_pretrained(model, revision=revision)
+    processor = AutoImageProcessor.from_pretrained(model, revision=revision)
+    return tokenizer, renderers.get_renderer(
+        "qwen3_5_disable_thinking", tokenizer, image_processor=processor
+    )
+
+
+def image_message(image_path, max_pixels):
+    from PIL import Image
+
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+    if image.width * image.height > max_pixels:
+        scale = (max_pixels / (image.width * image.height)) ** 0.5
+        image = image.resize(
+            (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+        )
+    return {
+        "role": "user",
+        "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": PROMPT},
+        ],
+    }
+
+
 class TinkerPredictor:
     def __init__(self, model, revision, max_new_tokens, max_pixels, cookbook_dir):
-        if model != "Qwen/Qwen3.5-4B":
-            raise ValueError(
-                "This Tinker renderer currently supports Qwen/Qwen3.5-4B only"
-            )
-        source = verify_cookbook(cookbook_dir)
-        if (
-            not isinstance(revision, str)
-            or len(revision) != 40
-            or any(c not in "0123456789abcdef" for c in revision.lower())
-        ):
-            raise ValueError(
-                "Tinker processor revision must be a full 40-character commit SHA"
-            )
-        sys.path.insert(0, str(source))
+        self.tokenizer, self.renderer = load_renderer(model, revision, cookbook_dir)
         import tinker
-        import tinker_cookbook.renderers as renderers
-        from transformers import AutoImageProcessor, AutoTokenizer
 
-        if not Path(renderers.__file__).resolve().is_relative_to(source):
-            raise ValueError("A different Tinker cookbook was already imported")
-        self.tokenizer = AutoTokenizer.from_pretrained(model, revision=revision)
-        processor = AutoImageProcessor.from_pretrained(model, revision=revision)
-        self.renderer = renderers.get_renderer(
-            "qwen3_5_disable_thinking", self.tokenizer, image_processor=processor
-        )
         self.processor_revision = revision
         self.revision = (
             None  # The sampling API does not expose hosted weight revisions.
@@ -70,28 +93,11 @@ class TinkerPredictor:
         self.prepare_lock = Lock()
 
     def __call__(self, image_path):
-        from PIL import Image
-
         start = perf_counter()
-        with Image.open(image_path) as source:
-            image = source.convert("RGB")
-        if image.width * image.height > self.max_pixels:
-            scale = (self.max_pixels / (image.width * image.height)) ** 0.5
-            image = image.resize(
-                (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
-            )
         # Tokenizer/renderer preparation is serialized; hosted requests overlap.
         with self.prepare_lock:
             prompt = self.renderer.build_generation_prompt(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": PROMPT},
-                        ],
-                    }
-                ]
+                [image_message(image_path, self.max_pixels)]
             )
         result = self.client.sample(
             prompt=prompt,

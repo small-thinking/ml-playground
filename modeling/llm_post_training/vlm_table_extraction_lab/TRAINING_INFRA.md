@@ -1,5 +1,10 @@
 # Tinker 起步与后续 TRL 迁移
 
+2026-09-14 更新：已实现可读的 `sft.py` 最小训练循环；第一次自生成数据
+smoke 的参数、验证与结果见 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。
+下面保留框架选型依据；正式训练未启动，本次不使用 RD Train800 或 W&B。
+
+
 核实日期：2026-09-13。训练首轮计划使用 Tinker；以后保留迁移到自租 GPU
 与 TRL 的空间。Tinker 与本地 MLX 推理基线均已完成，当前默认评测恢复为
 Tinker 4B inference；本地 MLX/Transformers 可选，未启动训练。

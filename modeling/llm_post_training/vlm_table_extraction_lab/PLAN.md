@@ -1,11 +1,13 @@
-# 低预算实验计划 v6
+# 低预算实验计划 v7
 
-日期：2026-09-13。状态：数据已下载；RD 800 Train / 100 Dev / 100 Test
-与训练子集已冻结；Table Judge 离线 setup 已验证。训练计划先用 Tinker，
-以后保留 TRL 迁移路径；训练尚未启动。Tinker 与本地 MLX 的 Dev100 baseline
-均已完成，当前默认评测恢复为 Tinker 4B inference，本地后端保留可选。
-本次只切回默认后端并合并代码，无需重跑 baseline；历史结果见
-[BASELINE_RESULTS.md](BASELINE_RESULTS.md)。
+日期：2026-09-14。Tinker 与本地 MLX 的 Dev100 baseline 已完成，见
+[BASELINE_RESULTS.md](BASELINE_RESULTS.md)。当前执行第一次自生成数据 SFT smoke：
+8 Train / 4 Dev、16 步、仅本地日志；v2 增加 5e-5 peak LR、10% warmup、
+周期 Train/Dev NLL/PPL 和 Dev 自由生成检查。具体配置和结果见
+[SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。正式训练仍只做成本估算，尚未启动。
+
+RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持评测用途，
+历史 Train800 清单保留用于追溯，不再是当前训练数据池。MLE 暂不进入主线。
 本计划替代原先约 $90 的完整实验路线，不把旧预算视为已授权。
 
 ## 目标与模型选择
@@ -32,18 +34,12 @@
 
 1. 下载 RD、MLE、Judge 的完整公开数据，保留原始文件与版本、哈希。
 2. 检查图片/标签配对、图像可读性、输出长度、精确和近重复、来源文档。
-3. 按最新要求，划 RD Train 800 / Dev 100 / Test 100。已冻结训练
-   子集 8 / 80 / 200 / 400 / 800，彼此嵌套；正式开发评测固定使用全量 Dev。
-   Test 不用于挑选提示词、reward、checkpoint 或超参数。实验方案固定后，
-   对初始模型和最终模型各评一次 Test；不根据 Test 结果继续挑选模型。
-   分组规则、边界和哈希见 [DISTRIBUTION_AND_SPLITS.md](DISTRIBUTION_AND_SPLITS.md)。
-4. 保留 Judge 全部案例作外部检查，确认与 RD 训练部分没有可识别重叠。
-   MLE 保留作无标签外部输入；最新随机 24 张中有 8 张清楚含常规数据表，
-   其余还有正文、广告、封面、表单等。与 RD 的表格区域分布明显不同，
-   需要先筛选/定位并补标签，才能讨论有依据的表格测试准确率。
-   人工 spot-check 标签，不把 provider 输出当 GT。
-5. RD 数据集声明有 NC/ND 条款，训练使用条件仍需核查；若不适合所选用途，
-   以 200 条自生成表格作为训练集，RD 保持纯评测。训练不以模糊的许可推断为前提。
+3. 保留已有 RD Dev100 作为开发集、Test100 作为每轮固定比较基准；两者均不参与 SFT。
+   原 800/100/100 划分是历史个人实验设计，不是官方拆分；Train800 暂不使用。
+4. 用自生成图片与 HTML 验证 SFT 数据/训练/推理闭环：8 Train、4 Dev，固定种子。
+   这只能说明工程链路和简单表格拟合；不能代表真实扫描件、合并单元格的能力。
+5. 后续先设计来源允许训练的 80 张训练集与独立验证集；可扩大合成数据覆盖，
+   或核验其他公开训练集。Judge 保留裁判校准；MLE 在任务与标签明确前不纳入。
 
 ## 两个 baseline 任务必须分开
 
@@ -54,7 +50,8 @@
 - Judge 数据中的 clean HTML 作为离线参考，不放进模型输入；corrupted HTML
   不参与这个抽取任务。
 - 已完成开发侧链路验证与全量 100 条 Dev baseline，后续按同协议复测。
-  最终量化测试使用 RD Test 100。Judge 图片/clean HTML 可作为额外外部检查，
+  每轮完成后在固定 RD Test100 上评估并上传 W&B，与已登记 Base 比较。
+  Judge 图片/clean HTML 可作为额外外部检查，
   报告其渲染图片分布边界，不能把无标签的 MLE 分数包装成真实抽取准确率。
 - 主指标：内容/数字正确性、行列完整度、合并结构、官方 table similarity。
   另报 HTML 有效率、截断率、输出 tokens、耗时和费用。不可只报告 reward。
@@ -72,11 +69,13 @@
   作为 A 的外部测试集使用时，不再用它反复改抽取提示词或奖励。
 - 该任务测判断能力，不能代替 A 的抽取质量，也不能预设小学生自身是可靠 judge。
 
-## 首轮训练预算建议（训练尚未授权运行）
+## 正式首轮预算（小规模 smoke 已获授权）
 
-先执行 A → 80 条 SFT（最多 2 epochs）→ 同协议全量 Dev 复测 → 看失败案例，暂不做 RL。
+先完成 8 条合成 SFT smoke → 审阅结果与成本 → 80 条独立训练数据 SFT（最多 2 epochs）
+→ 同协议 Dev100 复测 → 完整 Test100 评测并登记 W&B 与固定 Base 比较
+→ 看 Dev 失败案例，暂不做 RL。正式阶段不自动运行。
 
-以下为托管方案的预算假设，不是账单或新增运行授权。已有 Tinker Dev100 baseline
+以下保留粗略预算假设；基于本次实测 token 的更新见 SFT_EXPERIMENT.md。不是账单或新增运行授权。已有 Tinker Dev100 baseline
 的采样费估算约 $0.17；后续费用随生成长度和调用次数变化。
 Tinker 4B 的参考价格：prefill $0.33/M、sample $1.005/M、train $0.737/M。
 假设训练序列合计 4,000 计费 tokens，80 × 2 epochs 的训练费约 $0.47。
@@ -99,14 +98,17 @@ Tinker 到 TRL 的实现边界及 verl 行业证据见 [TRAINING_INFRA.md](TRAIN
 
 记录模型 ID、初始 checkpoint、LoRA 参数、图像处理、数据和 split 哈希、
 eval IDs、解码配置、训练 tokens、采样 tokens、费用及逐样本错误。
-已接入 W&B，仅上传分组汇总指标及受控配置；原始结果保留本地。训练仍待后续批准。
-新评测 run 使用 quality / structure / runtime 共 14 项业务指标。Tinker
-只接收待推理图片和固定 prompt，参考标签不发给推理服务；本地后端无需发送图片。
+已有 evaluator 支持 W&B 汇总；本次 SFT smoke 明确不调用 W&B，仅记录本地 JSON。
+独立 evaluator 保持 quality / structure / runtime 共 14 项指标；保存 checkpoint 的
+登记使用 16 项（含格式门控 RD 和 NLL/PPL，省略未知 wall time）。当前 Base Test100
+已登记，后续每轮新版本使用独立 run 和同一比较 group，不覆盖 Base；具体规则与命令
+见 [评测流程](EVALUATION.md#固定-test100-baseline-与每轮迭代登记)。Tinker
+推理只接收图片和固定 prompt；SFT 则需要发送训练答案计算监督 loss。
 
 数据、提示词、评测和 reward 保持独立于训练后端；只有后端适配代码依赖
 Tinker SDK。保存中立的图片/HTML 清单与逐样本预测，不把 Tinker Datum
 作为唯一数据格式。TRL 迁移先复用数据和评测，再验证权重与训练语义兼容性；
-目前记录的是实现约束，尚未编写训练适配器。
+当前小规模训练入口为 sft.py，TRL 后端尚未实现。
 
 只有在小规模 SFT 与评测可靠运行后，才决定下一步：补数据、改预处理、
 继续 SFT 或小规模 GRPO。一次改变一个主要因素，继续 SFT 也应作为 RL 对照。
