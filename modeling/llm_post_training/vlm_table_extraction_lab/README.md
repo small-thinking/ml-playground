@@ -25,7 +25,9 @@ warmup 版 SFT 已完成同一轮 before/after 的完整 RD Dev100 对照：NLL
 
 RD 是官方评测 benchmark；旧 800/100/100 文件保留用于追溯，旧 Train800
 不再作为当前训练计划。继续固定 Dev100 做开发评估，Test100 的首轮留出比较
-见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)，后续不根据 Test 结果调整配置。
+见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
+Test100 上评估，并在 W&B 与 [固定 Base](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/9409ea84393aebb0)
+比较；训练过程仍用 Dev。登记命令与分组规则见 [评测流程](EVALUATION.md#固定-test100-baseline-与每轮迭代登记)。
 MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独立的裁判校准任务。
 这几份资源不是经官方确认的一套训练/测试流程。
 

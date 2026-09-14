@@ -48,6 +48,11 @@ def log_metrics(payload):
         config=payload["config"],
         settings=settings,
         job_type="evaluation",
+        id=payload.get("run_id"),
+        resume="allow" if payload.get("run_id") else None,
+        name=payload.get("name"),
+        group=payload.get("group"),
+        tags=payload.get("tags"),
     ) as run:
         run.log(payload["metrics"])
         run.summary.update(payload["metrics"])

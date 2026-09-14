@@ -34,7 +34,7 @@ RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持
 
 1. 下载 RD、MLE、Judge 的完整公开数据，保留原始文件与版本、哈希。
 2. 检查图片/标签配对、图像可读性、输出长度、精确和近重复、来源文档。
-3. 保留已有 RD Dev100 作为开发集、Test100 作为最终比较；两者均不参与 SFT。
+3. 保留已有 RD Dev100 作为开发集、Test100 作为每轮固定比较基准；两者均不参与 SFT。
    原 800/100/100 划分是历史个人实验设计，不是官方拆分；Train800 暂不使用。
 4. 用自生成图片与 HTML 验证 SFT 数据/训练/推理闭环：8 Train、4 Dev，固定种子。
    这只能说明工程链路和简单表格拟合；不能代表真实扫描件、合并单元格的能力。
@@ -50,7 +50,8 @@ RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持
 - Judge 数据中的 clean HTML 作为离线参考，不放进模型输入；corrupted HTML
   不参与这个抽取任务。
 - 已完成开发侧链路验证与全量 100 条 Dev baseline，后续按同协议复测。
-  最终量化测试使用 RD Test 100。Judge 图片/clean HTML 可作为额外外部检查，
+  每轮完成后在固定 RD Test100 上评估并上传 W&B，与已登记 Base 比较。
+  Judge 图片/clean HTML 可作为额外外部检查，
   报告其渲染图片分布边界，不能把无标签的 MLE 分数包装成真实抽取准确率。
 - 主指标：内容/数字正确性、行列完整度、合并结构、官方 table similarity。
   另报 HTML 有效率、截断率、输出 tokens、耗时和费用。不可只报告 reward。
@@ -71,7 +72,8 @@ RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持
 ## 正式首轮预算（小规模 smoke 已获授权）
 
 先完成 8 条合成 SFT smoke → 审阅结果与成本 → 80 条独立训练数据 SFT（最多 2 epochs）
-→ 同协议 Dev100 复测 → 看失败案例，暂不做 RL。正式阶段不自动运行。
+→ 同协议 Dev100 复测 → 完整 Test100 评测并登记 W&B 与固定 Base 比较
+→ 看 Dev 失败案例，暂不做 RL。正式阶段不自动运行。
 
 以下保留粗略预算假设；基于本次实测 token 的更新见 SFT_EXPERIMENT.md。不是账单或新增运行授权。已有 Tinker Dev100 baseline
 的采样费估算约 $0.17；后续费用随生成长度和调用次数变化。
@@ -97,7 +99,10 @@ Tinker 到 TRL 的实现边界及 verl 行业证据见 [TRAINING_INFRA.md](TRAIN
 记录模型 ID、初始 checkpoint、LoRA 参数、图像处理、数据和 split 哈希、
 eval IDs、解码配置、训练 tokens、采样 tokens、费用及逐样本错误。
 已有 evaluator 支持 W&B 汇总；本次 SFT smoke 明确不调用 W&B，仅记录本地 JSON。
-新评测 run 使用 quality / structure / runtime 共 14 项业务指标。Tinker
+独立 evaluator 保持 quality / structure / runtime 共 14 项指标；保存 checkpoint 的
+登记使用 16 项（含格式门控 RD 和 NLL/PPL，省略未知 wall time）。当前 Base Test100
+已登记，后续每轮新版本使用独立 run 和同一比较 group，不覆盖 Base；具体规则与命令
+见 [评测流程](EVALUATION.md#固定-test100-baseline-与每轮迭代登记)。Tinker
 推理只接收图片和固定 prompt；SFT 则需要发送训练答案计算监督 loss。
 
 数据、提示词、评测和 reward 保持独立于训练后端；只有后端适配代码依赖

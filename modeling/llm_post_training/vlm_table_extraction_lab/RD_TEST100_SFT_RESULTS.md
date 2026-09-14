@@ -96,9 +96,22 @@ RD similarity 是补充指标；同时报告原版 RD 分数。每个指标报�
 不确定性。它们只描述本次模型和生成结果下的样本不确定性，不覆盖训练随机种子、
 服务推理波动或新的数据分布；不是多次训练复现，也没有多指标同时覆盖率保证。
 
-Test100 至此已被查看，不能继续称为“从未使用过的测试集”。后续开发仍以固定
-全量 Dev100 为依据；不根据本次逐例 Test 错误定制训练数据或挑选配置。若未来
-多轮开发需要新的独立最终结论，应另留未经查看且与训练来源隔离的评测集。
+Test100 至此已被查看，不能继续称为“从未使用过的测试集”。按用户随后明确的约定，
+每轮迭代都在固定全量 Test100 上评估，与固定 Base 比较；训练期间仍以全量 Dev100
+监控。Test100 因而是持续使用的回归比较基准。若未来需要新的独立最终结论，
+应另留未经查看且与训练来源隔离的评测集。
+
+## W&B Base 登记
+
+后续单独将本次 **before/Base** 汇总上传到
+[qwen35-4b-base-test100-9409ea](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/9409ea84393aebb0)。
+group：`rd-test100-0ddf5237b84f`；baseline run ID：`9409ea84393aebb0`。
+上传复用了现有预测，没有再次调用推理或训练 API；本页前面的“没有 W&B 上传”
+指原始推理运行阶段。此次没有上传 SFT after，其结果仍保留在本地报告。
+
+已从远端读回确认 `finished`、16 项指标及全部受控 config 均一致，远端文件仅
+`config.yaml` 和 `wandb-summary.json`。没有图片、HTML、逐样本记录或私有路径。
+登记方法及每轮新版本比较规则见 [评测流程](EVALUATION.md#固定-test100-baseline-与每轮迭代登记)。
 
 原始证据只保留在本地 `outputs/rd_test100_sft_v2/`：运行记录、两阶段逐 token
 概率、预测与逐样本评分，以及 `verification.json` 和 `paired_comparison.json`。

@@ -60,7 +60,8 @@ Tinker 生成预测时会把调用者提供的图片和固定指令发送到推�
 参考标签只用于本地评分，不发送给模型。若图片需始终留在本机，请显式选本地后端。
 可提供 `image_sha256`、`label_sha256`，评测会核验相应输入；数据准备脚本会生成它们。
 已有 RD 清单可以直接传入，其中相对路径以准备数据时的 `--work-dir` 为根。
-Manifest 决定精确评测集合；开发阶段传 Dev，Test 只在最后固定模型时传入。
+Manifest 决定精确评测集合；训练期间使用 Dev。按当前实验约定，每轮迭代完成后
+还需在固定全量 Test100 上评测，与登记在 W&B 的 Base 比较，见下面的登记流程。
 
 默认推荐的 Tinker 推理与评测命令：
 
@@ -216,6 +217,45 @@ F1 = 2 × precision × recall / (precision + recall)。例如GT有10个单元格
 F1=16/22≈0.727。把数字单独提取并保留位置，就得到数字F1。它们先逐表计算，
 再对样本取平均，并非简单汇总所有表格的单元格数量；整体错位会导致很多位置
 失配。RD采用较宽松的模糊匹配，因此分数可能远高于这些严格指标。
+
+## 固定 Test100 baseline 与每轮迭代登记
+
+Base 已登记为 [qwen35-4b-base-test100-9409ea](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/9409ea84393aebb0)，
+run ID `9409ea84393aebb0`，比较 group 为 `rd-test100-0ddf5237b84f`。
+它使用已完成的 Test100 before 预测，重新评分并核验后上传；没有重复付费推理。
+Test manifest 哈希及完整 Base/SFT 结果见 [Test100 报告](RD_TEST100_SFT_RESULTS.md)。
+
+后续每轮固定 checkpoint 后，必须用同一个完整 Test100、相同生成协议和评分器评估，
+再把新模型汇总作为单独 run 上传，并引用上述 baseline ID。在 W&B 按此 group
+过滤，比较 `model_role=base` 与 `model_role=sft` 的相同指标。训练过程仍使用
+全量 Dev 监控；Test100 作为持续回归比较基准，不再称为从未查看的最终测试集。
+
+`checkpoint_eval.py --split test` 生成完整 before/after 结果后，登记新模型：
+
+```bash
+uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.log_checkpoint_eval \
+  --evaluation-dir "$CHECKPOINT_EVAL_DIR" \
+  --manifest "$TEST_MANIFEST" --data-root "$DATA_ROOT" \
+  --official-repo "$RD_SCORER_DIR" --stage after \
+  --baseline-run-id 9409ea84393aebb0 \
+  --wandb-project vlm-table-extraction --env-file "$ENV_FILE" --upload
+```
+
+登记 Base 时使用 `--stage before` 并省略 `--baseline-run-id`；当前 Base 已上传，
+后续直接复用它。不带 `--upload` 只生成本地可审查 payload。工具核验源训练记录、
+manifest、完整预测与 likelihood 覆盖，重算全部生成指标和 NLL/PPL，再通过隔离
+telemetry 子进程上传 allowlist；不创建 Tinker 客户端，不重新推理。
+
+相同内容使用确定性的 run ID，重试会继续同一 run；不同预测或源运行使用不同 ID。
+group 由数据清单和生成/评分协议哈希决定，改变协议会自动进入新 group，不能直接
+混入既有比较。新版本用 `baseline_run_id` 记录对照关系，不覆盖 Base。
+
+checkpoint 登记使用 **16 项**汇总，按 `quality`（5）、`structure`（4）、
+`runtime`（5）、`likelihood`（2）分组：在已有视图基础上增加格式门控 RD、NLL/PPL，
+不记录未知的单模型 wall time。已有完整对照耗时是两个模型加 NLL 的总时间，不能
+拿它冒充 Base 推理耗时；`runtime/total_tokens` 只统计自由生成输入加输出 tokens。
+源记录/预测/清单哈希、样本数、有效分母和协议放 config，不上传原始内容或 sampler 地址。
+本地 payload/receipt 便于追溯，远端读回需核对 `finished` 状态、全部指标与文件清单。
 
 ## Apple Silicon：MLX 本地后端
 

@@ -174,6 +174,10 @@ def test_wandb_offline_records_do_not_capture_private_context(tmp_path):
         "project": "table-eval-software-fixtures",
         "config": {"evaluator_version": "fixture"},
         "metrics": {"eval/examples": 2, "eval/cell_f1": 0.5},
+        "run_id": "publicfixture123",
+        "name": "public-fixture",
+        "group": "public-comparison",
+        "tags": ["fixture"],
     }
     env = dict(
         os.environ, WANDB_CONFIG_PATHS=str(tmp_path / marker), WANDB_NOTES=marker
