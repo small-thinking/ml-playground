@@ -13,6 +13,7 @@ from .evaluate import digest, evaluate, read_jsonl
 from .inference import PROMPT
 from .metrics import VERSION, parse_table
 from .official import OfficialScorer, REVISION
+from .sft_metrics import summarize_nll
 from .tinker_inference import (
     COOKBOOK_REVISION,
     PROCESSOR_REVISION,
@@ -128,30 +129,36 @@ def token_mean_batch(datums):
 
 
 def mean_nll(output, datums):
-    loss, count = 0.0, 0
-    for result, datum in zip(output.loss_fn_outputs, datums, strict=True):
-        for lp, mask in zip(
-            result["logprobs"].data, datum.loss_fn_inputs["weights"].data, strict=True
-        ):
-            if mask:
-                if not math.isfinite(lp):
-                    raise ValueError("Non-finite supervised log probability")
-                loss -= lp
-                count += 1
-    if not count:
-        raise ValueError("No supervised tokens in NLL")
-    return loss / count
+    return summarize_nll(output, datums)["assistant_nll"]
 
 
-def estimate_cost(train, dev, epochs, max_new_tokens):
+def evaluation_steps(total_steps, every):
+    """Include initial/final evaluations once, even off the interval boundary."""
+    return sorted({0, total_steps, *range(every, total_steps, every)})
+
+
+def scheduled_lr(step, peak_lr, warmup_steps):
+    return peak_lr * min(1.0, step / warmup_steps) if warmup_steps else peak_lr
+
+
+def estimate_cost(
+    train, dev, epochs, max_new_tokens, batch_size=2, eval_every=4, generate_every=8
+):
+    total_steps = math.ceil(len(train) / batch_size) * epochs
+    nll_passes = len(evaluation_steps(total_steps, eval_every))
+    extra_generations = len(evaluation_steps(total_steps, generate_every)) - 2
     train_tokens = sum(d.model_input.length for _, _, d in train) * epochs
-    # Full teacher-forced train/dev NLL before and after (including masked input).
-    forward_tokens = 2 * sum(d.model_input.length for _, _, d in train + dev)
+    forward_tokens = nll_passes * sum(d.model_input.length for _, _, d in train + dev)
+    # Endpoints generate Train+Dev; periodic generation is Dev-only.
     prefill_tokens = 2 * sum(p.length for _, p, _ in train + dev)
-    output_bound = 2 * len(train + dev) * max_new_tokens
+    prefill_tokens += extra_generations * sum(p.length for _, p, _ in dev)
+    generation_examples = 2 * len(train + dev) + extra_generations * len(dev)
+    output_bound = generation_examples * max_new_tokens
     return {
         "training_tokens": train_tokens,
         "nll_forward_tokens": forward_tokens,
+        "nll_evaluations": nll_passes,
+        "generation_examples": generation_examples,
         "generation_prefill_tokens": prefill_tokens,
         "generation_output_token_bound": output_bound,
         "training_usd": train_tokens * TRAIN_RATE / 1e6,
@@ -213,36 +220,97 @@ def run(args, train, dev, tokenizer, renderer, scorer, report):
     report["training_info"] = client.get_info().model_dump(mode="json")
     write_json(args.output_dir / "run.json", report)
 
-    def assess(stage):
+    def assess(stage, step, generate_train=False, generate_dev=False):
         start = perf_counter()
-        # Saved initial and final adapters establish actual before/after provenance.
-        saved = client.save_weights_for_sampler(stage, ttl_seconds=7 * 86400).result()
-        report.setdefault("sampler_paths", {})[stage] = saved.path
-        write_json(args.output_dir / "run.json", report)
-        sampler = service.create_sampling_client(model_path=saved.path)
-        results = {}
+        sampler = None
+        if generate_train or generate_dev:
+            saved = client.save_weights_for_sampler(
+                stage, ttl_seconds=7 * 86400
+            ).result()
+            report.setdefault("sampler_paths", {})[stage] = saved.path
+            write_json(args.output_dir / "run.json", report)
+            sampler = service.create_sampling_client(model_path=saved.path)
+        results = {"step": step}
         for name, examples in (("train", train), ("dev", dev)):
             datums = [d for _, _, d in examples]
             output = client.forward(datums, loss_fn="cross_entropy").result(timeout=600)
-            predictions = generate(
-                sampler,
+            summary = summarize_nll(output, datums)
+            # Keep raw supervised probabilities locally for independent recalculation.
+            likelihoods = []
+            for (row, _, datum), result, per_example in zip(
                 examples,
-                tokenizer,
-                renderer.get_stop_sequences(),
-                args,
-                args.output_dir / f"{stage}_{name}_predictions.jsonl",
+                output.loss_fn_outputs,
+                summary.pop("per_example"),
+                strict=True,
+            ):
+                mask = datum.loss_fn_inputs["weights"].data
+                likelihoods.append(
+                    {
+                        "id": row["id"],
+                        **per_example,
+                        "token_logprobs": [
+                            lp
+                            for lp, w in zip(result["logprobs"].data, mask, strict=True)
+                            if w
+                        ],
+                        "target_tokens": [
+                            t
+                            for t, w in zip(
+                                datum.loss_fn_inputs["target_tokens"].data,
+                                mask,
+                                strict=True,
+                            )
+                            if w
+                        ],
+                    }
+                )
+            write_json(
+                args.output_dir / f"{stage}_{name}_likelihoods.json", likelihoods
             )
-            details, metrics = evaluate(
-                [r for r, _, _ in examples], args.data_root, predictions, scorer
-            )
-            write_json(args.output_dir / f"{stage}_{name}_details.json", details)
-            results[name] = {"assistant_nll": mean_nll(output, datums), **metrics}
+            if (name == "train" and generate_train) or (name == "dev" and generate_dev):
+                predictions = generate(
+                    sampler,
+                    examples,
+                    tokenizer,
+                    renderer.get_stop_sequences(),
+                    args,
+                    args.output_dir / f"{stage}_{name}_predictions.jsonl",
+                )
+                details, metrics = evaluate(
+                    [r for r, _, _ in examples], args.data_root, predictions, scorer
+                )
+                write_json(args.output_dir / f"{stage}_{name}_details.json", details)
+                summary.update(metrics)
+            results[name] = summary
         results["wall_seconds"] = perf_counter() - start
+        results["dev_train_nll_gap"] = (
+            results["dev"]["assistant_nll"] - results["train"]["assistant_nll"]
+        )
         report[stage] = results
+        report.setdefault("evaluation_stages", []).append(stage)
         write_json(args.output_dir / "run.json", report)
+        curve = {"step": step, "dev_train_nll_gap": results["dev_train_nll_gap"]}
+        for name in ("train", "dev"):
+            for metric in (
+                "assistant_nll",
+                "assistant_perplexity",
+                "example_nll_max",
+                "eval/cell_f1",
+                "eval/numeric_f1",
+                "eval/parse_success",
+                "eval/truncated",
+            ):
+                if metric in results[name]:
+                    curve[f"{name}/{metric}"] = results[name][metric]
+        with (args.output_dir / "evaluations.jsonl").open("a") as stream:
+            stream.write(json.dumps(curve, allow_nan=False) + "\n")
+        print(json.dumps({"evaluation": curve}), flush=True)
 
-    assess("before")
+    total_steps = math.ceil(len(train) / args.batch_size) * args.epochs
+    warmup_steps = math.ceil(args.warmup_ratio * total_steps)
+    assess("before", 0, generate_train=True, generate_dev=True)
     start = perf_counter()
+    optimization_seconds = 0.0
     rng = random.Random(args.seed)
     with (args.output_dir / "steps.jsonl").open("x") as log:
         step = 0
@@ -256,10 +324,14 @@ def run(args, train, dev, tokenizer, renderer, scorer, report):
                 result = client.forward_backward(
                     token_mean_batch(datums), loss_fn="cross_entropy"
                 ).result(timeout=600)
-                nll = mean_nll(result, datums)  # Validate before applying gradients.
+                batch_metrics = summarize_nll(result, datums)
+                nll = batch_metrics[
+                    "assistant_nll"
+                ]  # Validate before applying gradients.
+                learning_rate = scheduled_lr(step, args.learning_rate, warmup_steps)
                 optim = client.optim_step(
                     tinker.AdamParams(
-                        learning_rate=args.learning_rate,
+                        learning_rate=learning_rate,
                         beta1=0.9,
                         beta2=0.95,
                         eps=1e-8,
@@ -271,14 +343,17 @@ def run(args, train, dev, tokenizer, renderer, scorer, report):
                     "step": step,
                     "epoch": epoch + 1,
                     "assistant_nll": nll,
+                    "assistant_perplexity": batch_metrics["assistant_perplexity"],
+                    "perplexity_overflow": batch_metrics["perplexity_overflow"],
                     "input_tokens": sum(d.model_input.length for d in datums),
                     "supervised_tokens": sum(
                         sum(d.loss_fn_inputs["weights"].data) for d in datums
                     ),
-                    "learning_rate": args.learning_rate,
+                    "learning_rate": learning_rate,
                     "seconds": perf_counter() - started,
                     "optimizer_metrics": optim.metrics,
                 }
+                optimization_seconds += entry["seconds"]
                 log.write(json.dumps(entry, allow_nan=False) + "\n")
                 log.flush()
                 print(
@@ -287,15 +362,22 @@ def run(args, train, dev, tokenizer, renderer, scorer, report):
                     ),
                     flush=True,
                 )
-    report["training_seconds"] = perf_counter() - start
+                if step < total_steps and step % args.eval_every == 0:
+                    assess(
+                        f"step_{step:04d}",
+                        step,
+                        generate_dev=step % args.generate_every == 0,
+                    )
+    report["training_loop_seconds"] = perf_counter() - start
+    report["training_seconds"] = optimization_seconds
     report["state_path"] = (
         client.save_state("final", ttl_seconds=7 * 86400).result().path
     )
     write_json(args.output_dir / "run.json", report)
-    assess("after")
+    assess("after", step, generate_train=True, generate_dev=True)
     output_tokens = sum(
-        report[stage][split]["eval/output_tokens_total"]
-        for stage in ("before", "after")
+        report[stage][split].get("eval/output_tokens_total", 0)
+        for stage in report["evaluation_stages"]
         for split in ("train", "dev")
     )
     report["estimated_compute_usd"] = (
@@ -332,7 +414,10 @@ def parser():
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--rank", type=int, default=8)
-    p.add_argument("--learning-rate", type=float, default=1e-4)
+    p.add_argument("--learning-rate", type=float, default=5e-5)
+    p.add_argument("--warmup-ratio", type=float, default=0.1)
+    p.add_argument("--eval-every", type=int, default=4)
+    p.add_argument("--generate-every", type=int, default=8)
     p.add_argument("--seed", type=int, default=20260914)
     p.add_argument("--max-sequence-tokens", type=int, default=8192)
     p.add_argument("--max-new-tokens", type=int, default=2048)
@@ -346,9 +431,15 @@ def parser():
 def main():
     args = parser().parse_args()
     for key, value in vars(args).items():
+        if key == "warmup_ratio":
+            continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite and positive")
+    if not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio <= 1:
+        raise ValueError("warmup_ratio must be between 0 and 1")
+    if args.generate_every % args.eval_every:
+        raise ValueError("generate_every must be a multiple of eval_every")
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise ValueError(
             "Use a fresh output directory; automatic training resume is unsupported"
@@ -372,7 +463,15 @@ def main():
         )
         for rows in (train_rows, dev_rows)
     ]
-    cost = estimate_cost(train, dev, args.epochs, args.max_new_tokens)
+    cost = estimate_cost(
+        train,
+        dev,
+        args.epochs,
+        args.max_new_tokens,
+        args.batch_size,
+        args.eval_every,
+        args.generate_every,
+    )
     if cost["estimated_usd_bound"] > args.max_estimated_usd:
         raise ValueError(
             "Estimated token-cost bound exceeds budget; no Tinker calls made"
@@ -415,6 +514,10 @@ def main():
             "grad_clip_norm": 1.0,
         },
         "loss_reduction": "batch_supervised_token_mean",
+        "learning_rate_schedule": "linear_warmup_then_constant",
+        "warmup_steps": math.ceil(
+            args.warmup_ratio * math.ceil(len(train) / args.batch_size) * args.epochs
+        ),
         "cost": cost,
         "rates_usd_per_million": {
             "training": TRAIN_RATE,

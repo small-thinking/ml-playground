@@ -31,7 +31,7 @@ SFT 必须将图片、固定指令及答案 HTML 发给 Tinker 计算 loss；生
 真实路径和 Tinker checkpoint 地址保存在调用者的本地目录，不上传 Git 或 W&B。
 本 PR 不包含图片；今后确需提交图片时使用 Git LFS。
 
-## 首次参数
+## v1 历史参数（保留原实跑条件）
 
 | 参数 | 设置 | 原因 |
 | --- | --- | --- |
@@ -74,6 +74,42 @@ Tinker 的 LoRA 创建接口不暴露 alpha、dropout、dtype 或逐层 target-m
 变化不能证明泛化收益。若原模型已经把简单表格抽取正确，NLL 下降但 F1 不变也
 是有效的训练链路证据。不同 checkpoint 地址本身不是权重已更新的证明。
 
+## 当前默认与训练过程监控（v2）
+
+用户复核后，当前默认 peak LR 调整为 **5e-5**，`--warmup-ratio 0.1`：
+16 步中前 2 步分别为 2.5e-5、5e-5，之后保持 5e-5。warmup 步数向上取整；
+`--warmup-ratio 0` 可关闭。它是更保守的诊断配置，不是已证明优于 1e-4 的最优值。
+同时改了 LR 与 warmup，不能把两次差异归因于单独一个参数。
+
+1e-5 不是所有 SFT 的通用学习率。Tinker 的 [LoRA Primer](https://tinker-docs.thinkingmachines.ai/tinker/lora-primer/)
+建议 LoRA 通常比 full fine-tuning 使用约 10 倍 LR；
+[官方小型 SFT 示例](https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tutorials/102_first_sft.py) 使用 2e-4。
+因此 v1 的 1e-4 不属于明显异常；但当前任务需要验证，不应把官方经验当作最优超参。
+
+| 指标组 | 固定定义与频率 | 如何解读 |
+| --- | --- | --- |
+| 每步训练 | assistant token NLL / PPL、LR、梯度范数、监督与总 tokens、耗时 | 本步更新前的 batch loss；不能直接与另一批数据作泛化对照 |
+| 固定 Train/Dev | 更新后每 `--eval-every 4` 步及 step 0/最终步；NLL、PPL、逐样本平均/最大 NLL、零 logprob 比例 | 同样数据的 teacher-forced 轨迹；逐样本指标防止长表掩盖短表 |
+| 训练验证差距 | `dev_nll - train_nll`，同一 checkpoint 上比较 | train 降而 dev 持续升是警讯；绝对 gap 也受两组数据难度影响 |
+| Dev 自由生成 | 每 `--generate-every 8` 步及前后；cell/numeric F1、RD similarity、结构、格式、截断、输出长度 | 判断模型能否从图片生成正确内容，不给参考答案 |
+| Train 自由生成 | 仅初始与最终 | 检查拟合，降低频繁生成开销 |
+
+16 步对应 NLL 检查 0/4/8/12/16，Dev 生成 0/8/16，Train 生成 0/16。
+最终步不重复评估，即使总步数不是间隔的整数倍也会评估。生成间隔必须为 NLL
+评估间隔的整数倍。Dev 只做 forward/生成，不参与 backward 或 optimizer step。
+
+NLL = `-sum(supervised target logprobs) / supervised token count`，只包括 HTML
+答案与结束 token。PPL = `exp(聚合后的 NLL)`，不是逐样本 PPL 的平均；不同 tokenizer、
+mask 或数据集的 PPL 不宜直接比较。PPL 接近 1 表示给定真实答案前缀时目标 token
+很容易预测，不等于整张图片的抽取准确率接近 100%。不记录无法从 target logprobs
+得到的 top-1 token accuracy。非有限/正 logprob、非二值 mask 或长度不匹配会报错；
+PPL 溢出写 null 和显式标记，不伪造截断后的 PPL。
+
+本轮只观察完整曲线，不自动早停或声称选出 best checkpoint。正式训练可在稳定且
+足够大的 Dev 上预先定义 checkpoint 选择/early stopping；低 NLL 还要满足生成质量
+与格式没有退化。4 张同模板 Dev 不足以排除对模板的过拟合；需要新模板/复杂度的
+独立验证和固定 RD Dev100 检查。RD Test100 仍不用于调参。
+
 ## 运行命令
 
 从仓库根目录，先同步既有依赖：`uv sync --locked --extra tinker --extra table-eval`。
@@ -94,7 +130,8 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.s
   --train-manifest "$SYNTHETIC_DIR/train.jsonl" --dev-manifest "$SYNTHETIC_DIR/dev.jsonl" \
   --data-root "$SYNTHETIC_DIR" --output-dir "$SFT_RUN_DIR" \
   --tinker-cookbook-dir "$TINKER_COOKBOOK_DIR" --official-repo "$RD_OFFICIAL_REPO" \
-  --env-file "$ENV_FILE" --execute
+  --env-file "$ENV_FILE" --learning-rate 5e-5 --warmup-ratio 0.1 \
+  --eval-every 4 --generate-every 8 --execute
 ```
 
 不带 `--execute` 时不创建 Tinker 客户端，也不读取 `.env`；首次 renderer 加载
@@ -104,10 +141,13 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.s
 
 输出目录必须为空；发生异常会记录 `status=failed`，本程序不自动重复训练或恢复。
 `run.json` 保存参数、哈希、版本、阶段结果和 checkpoint 地址；`steps.jsonl`
-保存每步指标；`before/after_*_predictions.jsonl` 与 `*_details.json` 保存本地诊断。
+保存每步指标；`evaluations.jsonl` 保存按 optimizer step 对齐的 Train/Dev 曲线。
+`*_likelihoods.json` 保存每条样本的监督 target tokens/logprobs，可离线重算 NLL；
+`before/after/step_*_predictions.jsonl` 与 `*_details.json` 保存生成诊断。
+所有这些原始数据仅在本地，W&B 保持关闭。
 日志是本地私有工作文件，不能直接作为 PR 附件上传。
 
-## 实跑结果与正式成本
+## v1 结果、独立复核与后续成本
 
 本地 run `sft_smoke_v1` 已完成，Tinker SDK 0.27.0，16/16 步成功；未创建 W&B run。
 新 LoRA 的初始化、processor、cookbook 与配置按上表执行。正式 80 条训练没有启动。
@@ -146,6 +186,63 @@ Black 与 diff 空白检查通过。PR 的远端 CI 状态单独报告。
 实跑期间只补充了 running 状态和参数记录字段，训练/生成/计费逻辑没有改变；
 没有为补日志字段重复付费跑一轮。
 
+### 近零 NLL 的独立复核
+
+用户质疑后，通过保存的初始/最终 sampler 的 `compute_logprobs` API 重算完整序列，
+使用同一份答案 mask 提取监督位置。这个接口不接收训练 loss 权重，因而可独立检查
+训练阶段的归一化是否误缩小了 NLL。原始输入、targets、mask 还与固定 cookbook 的
+官方构造函数逐项比较，12 条全部一致；没有监督图片或 prompt，没有只计算 EOS。
+Train/Dev 分别监督 1,276/676 tokens，其中结束标记仅 8/4 个。
+
+| 集合 | 训练接口原报告 | 独立 sampler 复核 | 复核 PPL |
+| --- | ---: | ---: | ---: |
+| 初始 Train8 | 0.1504647 | 0.1495896 | 1.161358 |
+| 初始 Dev4 | 0.1389968 | 0.1381990 | 1.148204 |
+| 最终 Train8 | 0.000003323 | 0.000003300 | 1.000003300 |
+| 最终 Dev4 | 0.000004006 | 0.000004361 | 1.000004361 |
+
+两条服务路径数值不完全相同，差异原因未单独定位；它们均支持“最终 NLL 已近零”的
+结论。最终 Train/Dev 的精确零 logprob 比例约 35.34%/35.21%，最大单 token NLL
+约 0.000232/0.000387。数值分辨率会影响近零尾数，不能把这些数当作精确的置信度。
+
+负对照：循环错配 4 张 Dev 的图片，保持原标签不变；最终 sampler 的 NLL 从约
+0.00000436 升至 **0.60699**，PPL 从约 1 升至 **1.83491**。这表明至少部分预测
+依赖图片，与“完全忽略图片、只靠标签前缀”不符；它不单独证明所有潜在泄漏都不存在。
+整个复核 28 次只读概率调用，计算费用估算 **$0.00277**，没有更新参数或上传 W&B。
+本地证据为 `sft_smoke_v1/nll_independent_audit.json`。
+
+目前最符合证据的解释是：初始模型已经读对简单表格，SFT 学会其固定 HTML 序列化。
+这不是测试出高泛化能力；同生成器 Dev 也下降，并不能排除对共同模板的过拟合。
+
+### v2 监控实跑
+
+使用新的小规模运行验证 warmup 与周期评测；不覆盖 v1，也不从 v1 checkpoint 续训。
+本地 `sft_smoke_v2_monitored` 已完成，16/16 步、2 步 warmup 正确执行。
+每个固定检查点同时计算 Train/Dev，结果如下（NLL 单位 nats/token）：
+
+| Optimizer step | Train NLL | Dev NLL | Dev PPL | Dev cell F1 |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 0.150465 | 0.138997 | 1.149120 | 1.0 |
+| 4 | 0.00077213 | 0.00074340 | 1.00074367 | 未生成 |
+| 8 | 0.00013221 | 0.00010800 | 1.00010801 | 1.0 |
+| 12 | 0.00005671 | 0.00004012 | 1.00004012 | 未生成 |
+| 16 | 0.00003143 | 0.00002109 | 1.00002109 | 1.0 |
+
+Train 最终 PPL 为 1.00003143；Dev numeric F1 与格式通过率在 0/8/16 均为 1，
+截断率均为 0。每步 batch NLL 可能波动，固定全量 Train/Dev 的 NLL 在这些检查点
+持续下降。本轮未出现 train 降而该 Dev 持续升的典型信号，但不能排除模板过拟合。
+更小 LR 和 warmup 后仍快速下降，与任务简单的解释一致，不能推导一般任务上的最优 LR。
+
+优化步骤耗时 80.4 秒；含中间评估的训练循环 113.0 秒；
+总墙钟约 218.7 秒（3.6 分钟）。计算费用估算 **$0.019938**，非账单；
+预检查上界 $0.07159，包含额外监控。加上只读独立复核，本轮新增计算估算约
+$0.0227。没有 W&B 上传，也没有正式数据训练。
+
+所有 10 份 Train/Dev NLL/PPL 均从本地监督 logprobs 重新计算匹配，5 份生成结果
+重新评分匹配；完整 16 步、warmup LR 与训练 token 合计均核验通过。
+最终全量本地测试 **194 passed / 3 skipped**；新增假客户端流程测试确认 Dev 从未
+进入 backward，检查点为 0/4/8/12/16、生成安排无重复，费用计算包含全部监控。
+
 ### 正式 80 条尝试的预算与设计
 
 本次简单表格已达到指标上限，不建议直接把同模板复制到 80 条。下一轮先准备
@@ -153,7 +250,8 @@ Black 与 diff 空白检查通过。PR 的远端 CI 状态单独报告。
 表头、较长数字、布局和渲染变化。先检查 base 有可改善的错误，再锁定训练清单。
 RD Dev100 继续用于外部分布开发评估，Test100 不用于调整方案。
 
-初始沿用 rank 8 / LR 1e-4，batch 4、最多 2 epochs（40 步），先不做超参数 sweep。
+初始建议 rank 8 / peak LR 5e-5 / 10% warmup，batch 4、最多 2 epochs（40 步），先不做超参数 sweep。
+正式阶段 NLL 每 10 步、Dev 生成每 20 步，避免把频繁监控开销忽略。
 不从这个 smoke checkpoint 继续，以相同基础模型创建新 LoRA；保留其初始 sampler，
 正式 before/after 使用同一轮保存的两个 sampler。Dev100 保持 baseline 的
 1,048,576 pixels、8,192 output tokens、seed 20260913 及同版本评分。
@@ -164,10 +262,10 @@ RD Dev100 继续用于外部分布开发评估，Test100 不用于调整方案�
 | 部分 | 假设 | 估算 |
 | --- | --- | ---: |
 | 训练 | 80 × 2 epochs × 1,000–4,000 序列 tokens | $0.12–0.47 |
-| 前后 teacher-forced NLL | Train80 + Dev20，各两次，同样长度范围 | $0.07–0.26 |
-| 当前 runner 的 Train/Dev 前后生成检查 | 200 次，平均 input 600 / output 1,500 tokens | $0.34 |
+| 周期 teacher-forced NLL | Train80 + Dev20，0/10/20/30/40 五次，同样长度范围 | $0.17–0.66 |
+| Train/Dev 前后及 step20 Dev 生成 | 220 次，平均 input 600 / output 1,500 tokens | $0.38 |
 | RD Dev100 同起点前后生成 | 参考既有 Dev100 的实测 token，运行两次 | 约 $0.34 |
-| 合计 | 不含额外 judge、重试、存储 | **约 $0.9–1.5** |
+| 合计 | 不含额外 judge、重试、存储 | **约 $1.0–1.9** |
 
 建议正式尝试先设 **$2 预算**，根据真实序列及输出上限重新 preflight；若保守上界
 超过 $2，应缩减生成检查量或另行调整预算，而不能用平均值冒充硬上限。

@@ -2,7 +2,8 @@
 
 日期：2026-09-14。Tinker 与本地 MLX 的 Dev100 baseline 已完成，见
 [BASELINE_RESULTS.md](BASELINE_RESULTS.md)。当前执行第一次自生成数据 SFT smoke：
-8 Train / 4 Dev、16 步、仅本地日志，具体配置和结果见
+8 Train / 4 Dev、16 步、仅本地日志；v2 增加 5e-5 peak LR、10% warmup、
+周期 Train/Dev NLL/PPL 和 Dev 自由生成检查。具体配置和结果见
 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。正式训练仍只做成本估算，尚未启动。
 
 RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持评测用途，

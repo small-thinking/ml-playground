@@ -90,11 +90,12 @@ def test_cost_includes_masked_tokens_and_both_before_after():
     )
     cost = sft.estimate_cost([example] * 8, [example] * 4, 4, 2048)
     assert cost["training_tokens"] == 4800
-    assert cost["nll_forward_tokens"] == 3600
-    assert cost["generation_prefill_tokens"] == 2400
-    assert cost["generation_output_token_bound"] == 49152
+    assert cost["nll_forward_tokens"] == 9000
+    assert cost["nll_evaluations"] == 5
+    assert cost["generation_prefill_tokens"] == 2800
+    assert cost["generation_output_token_bound"] == 57344
     assert cost["estimated_usd_bound"] == pytest.approx(
-        (4800 * 0.737 + 6000 * 0.33 + 49152 * 1.005) / 1e6
+        (4800 * 0.737 + 11800 * 0.33 + 57344 * 1.005) / 1e6
     )
 
 
@@ -162,3 +163,152 @@ def test_budget_rejects_before_hosted_execution(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="budget"):
         sft.main()
     assert not output.exists()
+
+
+def test_monitor_boundaries_and_warmup():
+    assert sft.evaluation_steps(16, 4) == [0, 4, 8, 12, 16]
+    assert sft.evaluation_steps(10, 4) == [0, 4, 8, 10]
+    assert sft.evaluation_steps(1, 4) == [0, 1]
+    assert [sft.scheduled_lr(i, 5e-5, 2) for i in (1, 2, 3, 16)] == [
+        2.5e-5,
+        5e-5,
+        5e-5,
+        5e-5,
+    ]
+    assert sft.scheduled_lr(1, 1e-4, 0) == 1e-4
+
+
+def test_periodic_run_evaluates_after_updates_without_training_on_dev(
+    tmp_path, monkeypatch
+):
+    import json
+    import math
+
+    tinker = pytest.importorskip("tinker")
+    root, output_dir = tmp_path / "data", tmp_path / "out"
+    generate(root)
+    output_dir.mkdir()
+    train_rows, dev_rows = [
+        sft.read_jsonl(root / f"{split}.jsonl") for split in ("train", "dev")
+    ]
+
+    def examples(rows, offset):
+        return [
+            (
+                row,
+                SimpleNamespace(length=2),
+                tinker.Datum(
+                    model_input=tinker.ModelInput.from_ints([offset + i, 10]),
+                    loss_fn_inputs={
+                        "target_tokens": tinker.TensorData(
+                            data=[10, 11], dtype="int64"
+                        ),
+                        "weights": tinker.TensorData(data=[0.0, 1.0], dtype="float32"),
+                    },
+                ),
+            )
+            for i, row in enumerate(rows)
+        ]
+
+    train, dev = examples(train_rows, 0), examples(dev_rows, 100)
+    rates, forward_steps, sampler_stages = [], [], []
+
+    def future(value):
+        return SimpleNamespace(result=lambda **kw: value)
+
+    class Client:
+        updates = 0
+
+        def get_info(self):
+            return SimpleNamespace(model_dump=lambda **kw: {})
+
+        def result(self, data):
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {"logprobs": SimpleNamespace(data=[-1.0, -1 / (self.updates + 1)])}
+                    for _ in data
+                ]
+            )
+
+        def forward(self, data, **kw):
+            forward_steps.append(self.updates)
+            return future(self.result(data))
+
+        def forward_backward(self, data, **kw):
+            assert all(d.model_input.chunks[0].tokens[0] < 100 for d in data)
+            assert sum(
+                sum(d.loss_fn_inputs["weights"].data) for d in data
+            ) == pytest.approx(1)
+            return future(self.result(data))
+
+        def optim_step(self, params):
+            rates.append(params.learning_rate)
+            self.updates += 1
+            return future(SimpleNamespace(metrics={"unclipped_grad_l2:mean": 0.1}))
+
+        def save_weights_for_sampler(self, stage, **kw):
+            sampler_stages.append(stage)
+            return future(SimpleNamespace(path="sampler-" + stage))
+
+        def save_state(self, stage, **kw):
+            return future(SimpleNamespace(path="state-" + stage))
+
+    client = Client()
+    monkeypatch.setattr(
+        tinker,
+        "ServiceClient",
+        lambda: SimpleNamespace(
+            create_lora_training_client=lambda **kw: client,
+            create_sampling_client=lambda **kw: object(),
+        ),
+    )
+    generated_counts = []
+
+    def generate_predictions(client, examples, tokenizer, stop, args, path):
+        generated_counts.append(len(examples))
+        return {
+            row["id"]: {
+                "html": (root / row["label"]).read_text(),
+                "input_tokens": 2,
+                "output_tokens": 1,
+                "stop_reason": "stop",
+                "latency_seconds": 0,
+            }
+            for row, _, _ in examples
+        }
+
+    monkeypatch.setattr(sft, "generate", generate_predictions)
+    args = SimpleNamespace(
+        output_dir=output_dir,
+        data_root=root,
+        rank=8,
+        seed=20260914,
+        epochs=4,
+        batch_size=2,
+        learning_rate=5e-5,
+        warmup_ratio=0.1,
+        eval_every=4,
+        generate_every=8,
+    )
+    report = {"cost": sft.estimate_cost(train, dev, 4, 2048)}
+    sft.run(
+        args,
+        train,
+        dev,
+        None,
+        SimpleNamespace(get_stop_sequences=lambda: []),
+        lambda a, b: 1.0,
+        report,
+    )
+    assert report["status"] == "completed"
+    assert forward_steps == [0, 0, 4, 4, 8, 8, 12, 12, 16, 16]
+    assert rates[:3] == [2.5e-5, 5e-5, 5e-5]
+    assert sampler_stages == ["before", "step_0008", "after"]
+    assert generated_counts == [8, 4, 4, 8, 4]
+    curve = [
+        json.loads(line)
+        for line in (output_dir / "evaluations.jsonl").read_text().splitlines()
+    ]
+    assert [entry["step"] for entry in curve] == [0, 4, 8, 12, 16]
+    assert curve[-1]["dev/assistant_perplexity"] == pytest.approx(math.exp(1 / 17))
+    assert len(list(output_dir.glob("*_likelihoods.json"))) == 10
