@@ -36,6 +36,7 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 既有 evaluator 可选上报 W&B 的 quality / structure / runtime 共 14 项汇总指标；
 SFT smoke 没有 W&B 初始化或上传入口。
 
+- [下一步：传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [第一次 SFT：方案、命令、结果与费用](SFT_EXPERIMENT.md)
