@@ -1,9 +1,10 @@
 # 传统 Off-policy Knowledge Distillation：实验方案
 
-2026-09-14。状态：已实现 Top10 缓存、原生 soft-target CE 训练与完整 Dev 检查，
-teacher 已确定为 Qwen3.6-35B-A3B。已完成真实工程烟测：8条 teacher rollout 中
-7条格式有效，用其完成2步 LoRA 更新及完整 Dev100 前后检查；没有创建 KD W&B run。
-结果与明确的样本排除记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
+2026-09-14。状态：已实现并完成正式 Top10 KD、完整 Dev100 与固定 Test100；
+teacher 为 Qwen3.6-35B-A3B，80个候选中77条有效目标，4B从Base新建LoRA训练20步。
+Base / SFT800 / KD 已登记到相同 W&B Test 比较组；本次新增计算费估算$1.203783。
+正式结果见 [RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。此前7/8有效样本的2步
+工程烟测未上传W&B，历史结果与排除记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
 实现与运行命令见 [KD_RUNBOOK.md](KD_RUNBOOK.md)。
 本 PR 复用仍待审阅的 [Train800 SFT PR #101](https://github.com/small-thinking/ml-playground/pull/101)
 中的遥测和 checkpoint evaluation，以其分支为 base；不会自动合并任一 PR。
@@ -37,7 +38,8 @@ Qwen3.5-35B-A3B，遗漏了当前 3.6 的替代型号，此处修正推荐。
 35B-A3B 表示总参数约 35B、每 token 激活约 3B。它是 MoE，不能按 35/9 的
 参数比例推断 Tinker 价格，也不能把它理解成性能等同于 3B dense。
 账户只读 capabilities 确认：3.6-35B-A3B 与 3.5-9B 可见，3.5-35B-A3B 不可见。
-两者在 RD 上的真实质量和吞吐尚未测，公开成绩只支持优先验证 MoE，不能保证胜出。
+9B 尚未进行 RD 实测。所选 MoE 已完成相同协议的 Dev100：cell F1 0.509603、
+numeric F1 0.598524；尚不能据此做两个 teacher 的实测优劣比较。
 
 | 官方模型卡指标 | Qwen3.5-9B | Qwen3.6-35B-A3B |
 | --- | ---: | ---: |
@@ -74,8 +76,8 @@ SFT800 → KD 是另一问题（额外数据/额外训练是否改善），以�
 - 账户的只读 server capabilities 已确认 4B、9B、3.6-35B-A3B、397B-A17B 可见；未调用采样或训练。
 - 本地 Tinker SDK 0.27.0 已有 `sample(topk_prompt_logprobs=K)` 和 Top-K 返回结构；
   不需要仅为该参数升级既有环境。离线二维 Datum 构造及 toy CE/KL 梯度等价检查通过；
-  真实图像 Top-K 及服务端二维 target 反向传播仍需小烟测。
-- 既有 `load_renderer` 目前只允许 4B；实现时需显式增加经过验证的 9B、3.6-35B-A3B 与各自 revision，
+  真实图像 Top-K 及服务端二维 target 反向传播现已通过付费烟测和本轮77条训练。
+- `load_renderer` 已显式支持固定 revision 的 4B、9B、3.6-35B-A3B，
   不允许任意模型绕过 tokenizer/processor 检查。
 
 [9B config](https://huggingface.co/Qwen/Qwen3.5-9B/blob/c202236235762e1c871ad0ccb60c8ee5ba337b9a/config.json)、

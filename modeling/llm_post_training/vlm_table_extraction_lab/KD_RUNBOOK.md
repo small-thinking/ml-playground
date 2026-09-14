@@ -4,8 +4,10 @@
 8条采集中7条有效，实际训练7条、2步；完整记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
 工程烟测单独限制在 $0.50 内。用户随后已授权正式 KD 训练和固定 Test100 评测，
 采用预选80条候选及显式无效目标过滤；不从SFT800继续训练。
+正式运行也已完成：77条有效目标、20步、完整Dev100与Test100，本次新增估算$1.203783。
+三版本指标、训练曲线、费用和限制见 [RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。
 
-本地验证：开启可选 pinned-renderer / official-scorer 集成后，lab 测试 **159 passed**，
+本地验证：开启可选 pinned-renderer / official-scorer 集成后，lab 测试 **174 passed**，
 Black、Ruff、`git diff --check` 通过。
 测试包含概率与梯度、失败后付费重试保护、缓存篡改拒绝、完整 Dev100 的模拟训练流程和
 离线 W&B 隐私检查。真实 Tinker Top10 反向传播另由上述付费烟测验证。
@@ -21,7 +23,7 @@ Black、Ruff、`git diff --check` 通过。
 | 温度 | 分布 τ=1；rollout temperature=0，与 loss 温度分别记录 |
 | LoRA | rank8；attention/MLP 开启，unembedding 关闭 |
 | 优化器 | Adam，LR=1e-4，β=(0.9,0.95)，eps=1e-8，clip=1，weight decay=0 |
-| 步数 | 烟测 8÷4=2 步，warmup1；pilot 80÷4=20 步，warmup2 |
+| 步数 | 烟测 7 条有效目标、2 步、warmup1；pilot 77/80 条有效目标、20 步、warmup2 |
 | Dev | 全量100；初始、每10步、结束时 gold NLL/PPL；pilot结束生成完整Dev100 |
 | Test | 最终 checkpoint 在固定 Test100 上评测一次，与已有 Base 和 SFT800 比较 |
 
@@ -95,7 +97,7 @@ uv run --no-sync python -m "$KD_PACKAGE.kd" \
 
 `--train-examples 80`在过滤模式下表示候选前缀大小；若其中有3条被拒绝，实际训练
 数量就是77。结果必须按实际数量解释，不能把候选数当成有效训练数。此次Teacher
-Dev100已完成；过滤策略固定后，再进行student训练及最终Test，不根据Test挑样本。
+Dev100、student训练和最终Test均已完成；过滤策略在训练前固定，没有根据Test挑样本。
 
 最终 Test 使用现有 `checkpoint_eval --stage after --split test`，以 KD 的
 `run.json` 为 `--source-run`；不用再支付一次 Base inference。
