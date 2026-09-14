@@ -178,8 +178,9 @@ def test_monitor_boundaries_and_warmup():
     assert sft.scheduled_lr(1, 1e-4, 0) == 1e-4
 
 
+@pytest.mark.parametrize("economical", [False, True])
 def test_periodic_run_evaluates_after_updates_without_training_on_dev(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, economical
 ):
     import json
     import math
@@ -289,8 +290,20 @@ def test_periodic_run_evaluates_after_updates_without_training_on_dev(
         warmup_ratio=0.1,
         eval_every=4,
         generate_every=8,
+        generate_train=not economical,
+        train_nll_endpoints_only=economical,
     )
-    report = {"cost": sft.estimate_cost(train, dev, 4, 2048)}
+    report = {
+        "cost": sft.estimate_cost(
+            train,
+            dev,
+            4,
+            2048,
+            generate_train=not economical,
+            train_nll_endpoints_only=economical,
+        )
+    }
+    events = []
     sft.run(
         args,
         train,
@@ -299,16 +312,66 @@ def test_periodic_run_evaluates_after_updates_without_training_on_dev(
         SimpleNamespace(get_stop_sequences=lambda: []),
         lambda a, b: 1.0,
         report,
+        SimpleNamespace(log=events.append),
     )
     assert report["status"] == "completed"
-    assert forward_steps == [0, 0, 4, 4, 8, 8, 12, 12, 16, 16]
+    assert forward_steps == (
+        [0, 0, 4, 8, 12, 16, 16] if economical else [0, 0, 4, 4, 8, 8, 12, 12, 16, 16]
+    )
     assert rates[:3] == [2.5e-5, 5e-5, 5e-5]
     assert sampler_stages == ["before", "step_0008", "after"]
-    assert generated_counts == [8, 4, 4, 8, 4]
+    assert generated_counts == ([4, 4, 4] if economical else [8, 4, 4, 8, 4])
     curve = [
         json.loads(line)
         for line in (output_dir / "evaluations.jsonl").read_text().splitlines()
     ]
     assert [entry["step"] for entry in curve] == [0, 4, 8, 12, 16]
     assert curve[-1]["dev/assistant_perplexity"] == pytest.approx(math.exp(1 / 17))
-    assert len(list(output_dir.glob("*_likelihoods.json"))) == 10
+    assert len(list(output_dir.glob("*_likelihoods.json"))) == (7 if economical else 10)
+    assert len([e for e in events if "training/batch_nll" in e]) == 16
+    assert [e["training/optimizer_step"] for e in events if "dev/nll" in e] == [
+        0,
+        4,
+        8,
+        12,
+        16,
+    ]
+    if economical:
+        assert "dev/train_nll_gap" not in events[5]
+
+
+def test_parallel_generation_preserves_prepared_prompt_and_sample_identity(tmp_path):
+    pytest.importorskip("tinker")
+    examples = [
+        (
+            {"id": str(i), "image": f"{i}.png"},
+            SimpleNamespace(length=10, marker=i),
+            None,
+        )
+        for i in range(12)
+    ]
+
+    def sample(prompt, **kwargs):
+        assert kwargs["sampling_params"].seed == 20260914
+        return SimpleNamespace(
+            result=lambda **kw: SimpleNamespace(
+                sequences=[SimpleNamespace(tokens=[prompt.marker], stop_reason="stop")]
+            )
+        )
+
+    predictions = sft.generate(
+        SimpleNamespace(sample=sample),
+        examples,
+        SimpleNamespace(decode=lambda tokens, **kw: str(tokens[0])),
+        [],
+        SimpleNamespace(
+            data_root=tmp_path,
+            inference_concurrency=4,
+            seed=20260914,
+            max_new_tokens=8192,
+        ),
+        tmp_path / "predictions.jsonl",
+    )
+    assert len(predictions) == 12
+    assert all(row["html"] == key for key, row in predictions.items())
+    assert len((tmp_path / "predictions.jsonl").read_text().splitlines()) == 12

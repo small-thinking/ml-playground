@@ -1,14 +1,16 @@
-# 低预算实验计划 v7
+# 低预算实验计划 v8
 
-日期：2026-09-14。Tinker 与本地 MLX 的 Dev100 baseline 已完成，见
-[BASELINE_RESULTS.md](BASELINE_RESULTS.md)。当前执行第一次自生成数据 SFT smoke：
-8 Train / 4 Dev、16 步、仅本地日志；v2 增加 5e-5 peak LR、10% warmup、
-周期 Train/Dev NLL/PPL 和 Dev 自由生成检查。具体配置和结果见
-[SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。正式训练仍只做成本估算，尚未启动。
+日期：2026-09-14。4B baseline 与合成 Train8 smoke 已完成；历史结果见
+[BASELINE_RESULTS.md](BASELINE_RESULTS.md) 和 [SFT_EXPERIMENT.md](SFT_EXPERIMENT.md)。
+本轮按用户明确选择，已完成 RD Train800 的 LoRA SFT：1 epoch、rank 8、
+peak LR 1e-4、10% warmup，并记录 W&B 配置及曲线，再与固定 Base 比较 Test100。
+实际训练、Dev 和最终 Test 计算费估算 $2.28；Test cell F1 0.4072 → 0.6325，
+数字 F1 0.4445 → 0.7138。详见 [完整结果](RD_TRAIN800_SFT_RESULTS.md)与
+[配置及预算](FULL_SFT_PLAN.md)。后续训练需要另定方案，本轮不自动继续。
 
-RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持评测用途，
-历史 Train800 清单保留用于追溯，不再是当前训练数据池。MLE 暂不进入主线。
-本计划替代原先约 $90 的完整实验路线，不把旧预算视为已授权。
+RD、MLE、Table Judge 属于不同公开资源，不能假设配套。800/100/100 是个人实验
+划分，不是官方训练/测试协议；Dev/Test 不进入训练。MLE 暂不进入主线。
+本计划替代此前的合成 Train80 设想及更早约 $90 路线。
 
 ## 目标与模型选择
 
@@ -35,11 +37,11 @@ RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持
 1. 下载 RD、MLE、Judge 的完整公开数据，保留原始文件与版本、哈希。
 2. 检查图片/标签配对、图像可读性、输出长度、精确和近重复、来源文档。
 3. 保留已有 RD Dev100 作为开发集、Test100 作为每轮固定比较基准；两者均不参与 SFT。
-   原 800/100/100 划分是历史个人实验设计，不是官方拆分；Train800 暂不使用。
+   完整 Train800 用于本轮梯度更新，保留既有划分和哈希，不重新分组。
 4. 用自生成图片与 HTML 验证 SFT 数据/训练/推理闭环：8 Train、4 Dev，固定种子。
    这只能说明工程链路和简单表格拟合；不能代表真实扫描件、合并单元格的能力。
-5. 后续先设计来源允许训练的 80 张训练集与独立验证集；可扩大合成数据覆盖，
-   或核验其他公开训练集。Judge 保留裁判校准；MLE 在任务与标签明确前不纳入。
+5. Train800 全部保留；2 条带表格外文字/样式的标签派生为仅含完整表格的版本，
+   留存本地转换审计。Judge 保留裁判校准；MLE 在任务与标签明确前不纳入。
 
 ## 两个 baseline 任务必须分开
 
@@ -69,21 +71,14 @@ RD、MLE、Table Judge 属于不同公开资源，不能假设配套。RD 保持
   作为 A 的外部测试集使用时，不再用它反复改抽取提示词或奖励。
 - 该任务测判断能力，不能代替 A 的抽取质量，也不能预设小学生自身是可靠 judge。
 
-## 正式首轮预算（小规模 smoke 已获授权）
+## 正式首轮预算
 
-先完成 8 条合成 SFT smoke → 审阅结果与成本 → 80 条独立训练数据 SFT（最多 2 epochs）
-→ 同协议 Dev100 复测 → 完整 Test100 评测并登记 W&B 与固定 Base 比较
-→ 看 Dev 失败案例，暂不做 RL。正式阶段不自动运行。
-
-以下保留粗略预算假设；基于本次实测 token 的更新见 SFT_EXPERIMENT.md。不是账单或新增运行授权。已有 Tinker Dev100 baseline
-的采样费估算约 $0.17；后续费用随生成长度和调用次数变化。
-Tinker 4B 的参考价格：prefill $0.33/M、sample $1.005/M、train $0.737/M。
-假设训练序列合计 4,000 计费 tokens，80 × 2 epochs 的训练费约 $0.47。
-100 个 Dev 样本各跑训练前/后一次，假设每条输入 3,000、输出 1,000 tokens，
-采样费用合计约 $0.40。等实验固定后，100 个 Test 样本对初始/最终模型各评
-一次，按相同长度另约 $0.40。以上基础小计约 $1.27，不含额外 Judge 调用。
-加上 smoke、开发监控和余量，建议首轮总额度不超过
-$5；计划不保证模型质量提升。图片展开 token 数与截断长度需要实测后重算。
+完整 RD Train800 LoRA SFT → 周期完整 Dev100 NLL 与首尾自由生成 → 最终模型
+Test100 评测 → W&B 与固定 Base 比较。只运行一轮，不做学习率或 epoch sweep。
+训练 + Dev 计算上界 $3.495553，Test 上界 $0.901375；合计加 10% 余量及 $0.10
+存储预留为 $4.936620。该预算已满足本轮低于 $5 的执行授权；实测 token 费用
+仍是按公开费率估算，不是账单。配置、计费假设及协议见
+[FULL_SFT_PLAN.md](FULL_SFT_PLAN.md)。
 
 首轮不需要租 GPU。以后迁移 TRL 时，再对目标模型做 GPU 可运行性检查，
 测峰值显存和吞吐后制定 RunPod 的规格、时长与费用上限。
@@ -98,7 +93,8 @@ Tinker 到 TRL 的实现边界及 verl 行业证据见 [TRAINING_INFRA.md](TRAIN
 
 记录模型 ID、初始 checkpoint、LoRA 参数、图像处理、数据和 split 哈希、
 eval IDs、解码配置、训练 tokens、采样 tokens、费用及逐样本错误。
-已有 evaluator 支持 W&B 汇总；本次 SFT smoke 明确不调用 W&B，仅记录本地 JSON。
+已有 evaluator 支持 W&B 汇总；历史 SFT smoke 仅记录本地 JSON；完整 Train800 训练实时记录 W&B 的
+batch NLL/PPL、学习率、周期完整 Dev 指标及训练配置。
 独立 evaluator 保持 quality / structure / runtime 共 14 项指标；保存 checkpoint 的
 登记使用 16 项（含格式门控 RD 和 NLL/PPL，省略未知 wall time）。当前 Base Test100
 已登记，后续每轮新版本使用独立 run 和同一比较 group，不覆盖 Base；具体规则与命令
