@@ -1,16 +1,14 @@
 # MoE teacher → dense student：第一次传统蒸馏
 
-2026-09-14。已完成真实 teacher Top10 与 LoRA 反向传播烟测，计算费用估计 $0.140824。
-8条采集中7条有效，实际训练7条、2步；完整记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
-工程烟测单独限制在 $0.50 内。用户随后已授权正式 KD 训练和固定 Test100 评测，
-采用预选80条候选及显式无效目标过滤；不从SFT800继续训练。
-正式运行也已完成：77条有效目标、20步、完整Dev100与Test100，本次新增估算$1.203783。
-三版本指标、训练曲线、费用和限制见 [RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。
+2026-09-14。全量KD800、完整Dev100与固定Test100已完成，新增计算费用估算$4.670698。
+全部800张图片参与，训练100步，使用与SFT800一致的初始化、LoRA和主要超参数。
+当前正式命令见 [FULL_KD_PLAN.md](FULL_KD_PLAN.md)，指标与W&B链接见
+[RD_TRAIN800_KD_RESULTS.md](RD_TRAIN800_KD_RESULTS.md)。
 
-本地验证：开启可选 pinned-renderer / official-scorer 集成后，lab 测试 **174 passed**，
-Black、Ruff、`git diff --check` 通过。
-测试包含概率与梯度、失败后付费重试保护、缓存篡改拒绝、完整 Dev100 的模拟训练流程和
-离线 W&B 隐私检查。真实 Tinker Top10 反向传播另由上述付费烟测验证。
+此前工程烟测和77条pilot分别见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md) 与
+[RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。旧KD77的W&B训练/Test记录已删除。
+本地192项lab测试通过，Black、Ruff及已发布实现的CI通过；真实全量训练与缓存、
+完整Dev/Test及W&B数据另经独立核验，具体范围和限制见结果文档。
 
 ## 固定设置
 
@@ -18,13 +16,13 @@ Black、Ruff、`git diff --check` 通过。
 | --- | --- |
 | Teacher | 冻结 Qwen3.6-35B-A3B，关闭 thinking，greedy rollout |
 | Student | 原始 Qwen3.5-4B，新建 LoRA；不加载 SFT800 adapter |
-| 数据 | 冻结 Train800 中按 seed=20260913 选 80 条；烟测取该子集前 8 条 |
+| 数据 | 固定全部 Train800，保持manifest顺序；训练seed20260914，teacher seed20260913 |
 | 目标 | Teacher 自己生成的原始 token 轨迹上，Top10 概率 soft CE |
 | 温度 | 分布 τ=1；rollout temperature=0，与 loss 温度分别记录 |
 | LoRA | rank8；attention/MLP 开启，unembedding 关闭 |
 | 优化器 | Adam，LR=1e-4，β=(0.9,0.95)，eps=1e-8，clip=1，weight decay=0 |
-| 步数 | 烟测 7 条有效目标、2 步、warmup1；pilot 77/80 条有效目标、20 步、warmup2 |
-| Dev | 全量100；初始、每10步、结束时 gold NLL/PPL；pilot结束生成完整Dev100 |
+| 步数 | 1 epoch、batch8、100步、warmup10，然后固定LR |
+| Dev | 全量100；第0/25/50/75/100步 gold NLL/PPL；结束生成完整Dev100 |
 | Test | 最终 checkpoint 在固定 Test100 上评测一次，与已有 Base 和 SFT800 比较 |
 
 Teacher Top10 先归一化，student 使用其完整词表 softmax 下的 log probability，
@@ -44,7 +42,11 @@ Teacher Top10 先归一化，student 使用其完整词表 softmax 下的 log pr
 不通过 decode→encode 重建训练目标，不静默丢弃坏格式或截断输出，不退化为 hard SFT。
 Top10 mass 要求均值 ≥0.98 且 P05 ≥0.90，未达标时先停下分析。
 
-默认仍在无效输出处停止。正式运行显式启用 `--skip-rejected`：只排除格式无效或
+全量运行显式启用 `--include-invalid-rollouts`：保留格式失败与截断的原始轨迹，
+不补EOS、不修补答案；记录格式失败18条（含截断8条），全部800条参与训练。
+空输出、缺失概率、缓存损坏等技术性问题仍会停止执行。
+
+默认仍在无效输出处停止。历史pilot显式启用 `--skip-rejected`：只排除格式无效或
 截断的teacher输出，保留原始token/HTML和带哈希的`.rejected.json`，不清洗、不重试、
 不补换其他图片。采集和训练都重新验证排除原因；缺失概率、预算错误和不确定请求
 不能借这个开关跳过。候选数、排除数、实际训练数与过滤策略分别记录到W&B。
@@ -54,7 +56,9 @@ Top10 mass 要求均值 ≥0.98 且 P05 ≥0.90，未达标时先停下分析。
 普通完整缓存可以直接复用。训练中断不自动重新开始或恢复 optimizer，以免重复付费。
 所有金额都是 token 单价估计，额外保留 10%；它们不是服务商账单的硬限额。
 
-## 运行步骤
+## 历史烟测与 pilot 运行步骤
+
+以下80条命令用于理解早期流程；当前全量800命令以 [FULL_KD_PLAN.md](FULL_KD_PLAN.md) 为准。
 
 路径全部由调用者提供。下面变量代表本地配置，不能提交真实数据、token、图片、
 HTML、缓存、checkpoint 地址或 `.env`。本目录 `data/`、`outputs/` 已被 Git 忽略。
@@ -118,7 +122,7 @@ Teacher rollout 和 Top10 再评分分别计费；Top10 比 Top20 省缓存空�
 
 独立阶段的 CLI 上限不会自动合成为本轮总上限；执行者必须累计 teacher collection、
 teacher Dev、smoke、pilot 和最终 Test 的实际估计，并预留存储与失败请求费用。
-800条扩量及 matched hard-target control 不包含在本次80条 pilot 中。
+全量800已单独完成；matched hard-target control 尚未运行。
 
 ## MoE 的影响
 

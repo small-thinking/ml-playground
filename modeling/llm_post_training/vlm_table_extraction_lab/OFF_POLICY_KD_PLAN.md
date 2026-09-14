@@ -1,15 +1,17 @@
 # 传统 Off-policy Knowledge Distillation：实验方案
 
-2026-09-14。状态：已实现并完成正式 Top10 KD、完整 Dev100 与固定 Test100；
-teacher 为 Qwen3.6-35B-A3B，80个候选中77条有效目标，4B从Base新建LoRA训练20步。
-Base / SFT800 / KD 已登记到相同 W&B Test 比较组；本次新增计算费估算$1.203783。
-正式结果见 [RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。此前7/8有效样本的2步
-工程烟测未上传W&B，历史结果与排除记录见 [KD_SMOKE_RESULTS.md](KD_SMOKE_RESULTS.md)。
-实现与运行命令见 [KD_RUNBOOK.md](KD_RUNBOOK.md)。
+2026-09-14。当前状态：全量Top10 KD800、完整Dev100与固定Test100已完成。
+teacher为Qwen3.6-35B-A3B，4B从Base新建LoRA，全部800张图片参与100步训练。
+Base / SFT800 / KD800已登记到相同W&B Test比较组；本轮新增计算费估算$4.670698。
+实际设置及命令见 [FULL_KD_PLAN.md](FULL_KD_PLAN.md)，完整结果见
+[RD_TRAIN800_KD_RESULTS.md](RD_TRAIN800_KD_RESULTS.md)。
+旧KD77的W&B训练/Test记录已删除，历史记录见 [RD_KD80_RESULTS.md](RD_KD80_RESULTS.md)。
+以下保留最初设计与当时的预算情景；全量实际执行以上述两份文档为准。
+
 本 PR 复用仍待审阅的 [Train800 SFT PR #101](https://github.com/small-thinking/ml-playground/pull/101)
 中的遥测和 checkpoint evaluation，以其分支为 base；不会自动合并任一 PR。
 下述金额是最初方案估算；用户随后已授权正式KD与eval。本轮逐阶段记录实际token估计，
-复用已有缓存和Base/SFT评测，不自动扩大到800条。
+后续用户已明确授权扩至全量800，执行时复用已有teacher缓存和Base/SFT评测。
 
 ## 实验问题与边界
 
@@ -76,7 +78,7 @@ SFT800 → KD 是另一问题（额外数据/额外训练是否改善），以�
 - 账户的只读 server capabilities 已确认 4B、9B、3.6-35B-A3B、397B-A17B 可见；未调用采样或训练。
 - 本地 Tinker SDK 0.27.0 已有 `sample(topk_prompt_logprobs=K)` 和 Top-K 返回结构；
   不需要仅为该参数升级既有环境。离线二维 Datum 构造及 toy CE/KL 梯度等价检查通过；
-  真实图像 Top-K 及服务端二维 target 反向传播现已通过付费烟测和本轮77条训练。
+  真实图像 Top-K 及服务端二维 target 反向传播现已通过付费烟测、历史pilot和全量800训练。
 - `load_renderer` 已显式支持固定 revision 的 4B、9B、3.6-35B-A3B，
   不允许任意模型绕过 tokenizer/processor 检查。
 
