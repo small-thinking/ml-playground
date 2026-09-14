@@ -1,10 +1,11 @@
 # Evaluation v1
 
 本阶段评测“表格图片 → HTML”抽取任务。无需训练；也不要求启动推理服务。
-默认用 Transformers 在当前机器直接推理，也可显式选择读取已有预测 JSONL。
-自动优先选择 CUDA，其次 Apple MPS，最后 CPU；不会调用 Tinker。
+默认使用 Tinker 托管推理，评分在本地执行。Transformers、Apple Metal/MLX
+以及读取已有预测 JSONL 均保留为显式可选后端。
 Qwen3.5-4B 自带视觉能力，正式模型 ID 是 `Qwen/Qwen3.5-4B`。
-Tinker 也能提供推理，但本 PR 不依赖其 SDK；以后只需导出相同预测格式。
+已有 Tinker Dev100 推理实测约 4.7 分钟、估算约 $0.17（非账单）；本次切回
+默认后端无需重跑已完成的 baseline。历史结果见 [BASELINE_RESULTS.md](BASELINE_RESULTS.md)。
 
 ## 安装与官方代码
 
@@ -12,7 +13,7 @@ Tinker 也能提供推理，但本 PR 不依赖其 SDK；以后只需导出相�
 Transformers 版本，仓库锁文件在 Python 3.10+ 上解析到 5.8.1）：
 
 ```bash
-uv sync --locked --extra dev --extra table-eval
+uv sync --locked --extra dev --extra table-eval --extra tinker
 ```
 
 不重新分发上游实现；把 [RD 官方仓库](https://github.com/reductoai/rd-tablebench)
@@ -23,15 +24,31 @@ git clone https://github.com/reductoai/rd-tablebench.git "$RD_SCORER_DIR"
 git -C "$RD_SCORER_DIR" checkout 1cae108e6395ddc8389af17385f9769519070558
 ```
 
+默认 Tinker 后端还需调用者提供干净、固定 commit 的
+[Tinker cookbook](https://github.com/thinking-machines-lab/tinker-cookbook) 源码目录：
+
+```bash
+git clone https://github.com/thinking-machines-lab/tinker-cookbook.git "$TINKER_COOKBOOK_DIR"
+git -C "$TINKER_COOKBOOK_DIR" checkout 485726f55d3b2b5abe5fcb4a0d2f3e18e4599dfe
+```
+
+通过 `--tinker-cookbook-dir` 显式传入此路径，不 pip 安装 cookbook，不将其源码或
+本地数据提交到本仓库。`--revision` 在 Tinker 后端表示 HF processor revision，
+默认固定为 `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`，不是托管模型权重 revision。
+覆盖此参数时也必须提供完整 40 位 commit SHA，不接受 `main` 或可变 tag。
+Tinker 采样 API 未暴露权重 revision，不能把 processor 的固定版本当作远端权重证明。
+
 `official.py` 在执行之前验证 `grading.py` 和 `convert.py` 的固定 SHA-256。
 不自动下载或执行新版本。采用上游 HTML 转换与 `table_similarity` 原始逻辑，
-不更改其归一化或分数；解析失败的预测计零。过大表格触发计算上限时，官方
-分数记为不可用并增加 `official_error`，不能将其冒充完整覆盖的 benchmark。
+不更改其归一化或分数。`official_rd_similarity_raw` 独立于本地格式门槛，
+`official_rd_similarity` 则把格式失败计零。过大表格触发计算上限时，官方
+分数记为不可用并保留实际计分分母，不能将其冒充完整覆盖的 benchmark。
 
 ## 输入与执行
 
 先在自己的 shell 中设置以下变量，真实路径不进入代码或 Git：
-`EVAL_MANIFEST`、`DATA_ROOT`、`PREDICTIONS_FILE`、`RD_SCORER_DIR`、`EVAL_OUTPUT_DIR`。
+`EVAL_MANIFEST`、`DATA_ROOT`、`RD_SCORER_DIR`、`TINKER_COOKBOOK_DIR`、`EVAL_OUTPUT_DIR`。
+读取已有预测时再提供 `PREDICTIONS_FILE`；凭证可通过环境或显式 `ENV_FILE` 提供。
 Manifest 每行一个 JSON 对象，字段如下（下面的名字只是合成示例）：
 
 ```json
@@ -39,10 +56,28 @@ Manifest 每行一个 JSON 对象，字段如下（下面的名字只是合成�
 ```
 
 `image` 和 `label` 相对 `--data-root` 解析，也支持调用者明确提供的绝对路径。
-生成预测时只读取图片和固定指令，不把标签传入模型。
+Tinker 生成预测时会把调用者提供的图片和固定指令发送到推理服务，产生采样费用；
+参考标签只用于本地评分，不发送给模型。若图片需始终留在本机，请显式选本地后端。
 可提供 `image_sha256`、`label_sha256`，评测会核验相应输入；数据准备脚本会生成它们。
 已有 RD 清单可以直接传入，其中相对路径以准备数据时的 `--work-dir` 为根。
 Manifest 决定精确评测集合；开发阶段传 Dev，Test 只在最后固定模型时传入。
+
+默认推荐的 Tinker 推理与评测命令：
+
+```bash
+uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.evaluate \
+  --backend tinker --model Qwen/Qwen3.5-4B \
+  --tinker-cookbook-dir "$TINKER_COOKBOOK_DIR" \
+  --concurrency 4 --max-new-tokens 8192 --max-pixels 1048576 \
+  --manifest "$EVAL_MANIFEST" --data-root "$DATA_ROOT" \
+  --official-repo "$RD_SCORER_DIR" --output-dir "$EVAL_OUTPUT_DIR" \
+  --wandb-project vlm-table-extraction --env-file "$ENV_FILE"
+```
+
+`--backend` 默认 `tinker`，`--concurrency` 默认 4，`--max-new-tokens` 默认 8192；
+显式列出便于复现实验。Tinker 需要 `TINKER_API_KEY`，不要求下载完整模型权重
+或租 GPU；processor/tokenizer 文件仍由固定 HF revision 加载。关闭 thinking，
+保持固定 prompt、图片策略和生成配置后再比较训练前后结果。
 
 预测 JSONL：
 
@@ -67,12 +102,12 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.e
 离线 run 保存在 output 下的 `wandb_offline`；需要时可用 `wandb sync` 同步其中
 具体 offline run 目录。W&B 失败会非零退出，本地结果保留为 pending，避免假报成功。
 
-本机或租用 GPU 上直接推理：
+可选：本机或租用 GPU 上用 Transformers 直接推理：
 
 ```bash
 uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.evaluate \
   --backend transformers --model Qwen/Qwen3.5-4B --revision "$MODEL_REVISION" \
-  --device cuda --max-new-tokens 4096 --max-pixels 1048576 \
+  --device cuda --max-new-tokens 8192 --max-pixels 1048576 \
   --manifest "$EVAL_MANIFEST" --data-root "$DATA_ROOT" \
   --official-repo "$RD_SCORER_DIR" --output-dir "$EVAL_OUTPUT_DIR" \
   --wandb-project vlm-table-extraction
@@ -80,8 +115,9 @@ uv run --no-sync python -m modeling.llm_post_training.vlm_table_extraction_lab.e
 
 也接受 `--model "$LOCAL_MODEL_DIR"`；本地路径只进本地 provenance。
 模型首次运行可能下载权重。已在 Apple Silicon 上验证原始 Qwen3.5-4B 权重的
-Transformers/MPS 和 MLX 本地推理；正式整套评测使用 MLX，结果另行记录。
-`--device auto` 自动选择本机设备，Apple Silicon 使用 MPS；也可显式选择设备。
+Transformers/MPS 和 MLX 本地推理；MLX 的完整 Dev100 结果保留为历史对照。
+Transformers 的 `--device auto` 优先 CUDA，其次 Apple MPS，最后 CPU；
+MLX 使用 Apple Metal，不将其记录为 CPU 或 CUDA。
 逐张推理，关闭 thinking，greedy decoding，按像素上限等比缩小（processor
 可能进一步调整尺寸）。保存模型 revision 和实际 token 数；正式对照需固定
 模型、processor、图片处理和生成配置。遇推理错误立即退出，已完成预测逐行
@@ -121,11 +157,17 @@ Table Judge 官方任务是“图片 + 候选 HTML → 判断错误”，与本�
 本地生成 `summary.json`、`per_sample.jsonl`、`provenance.json`，直接推理还会
 生成 `predictions.jsonl`。使用新 output 目录避免覆盖结果；中断后可用 `--resume` 继续，必须保持模型、revision、
 输入清单、设备、像素和输出上限相同。还会核验本地模型文件的内容指纹或远端
-模型的实际 revision；缺少原始 inference_config.json 时拒绝续跑。已有预测
+HF 模型的实际 revision；Tinker 则记录服务模型名与固定 processor/cookbook 协议，
+不能证明服务端权重在两次运行间完全相同。缺少原始 inference_config.json 时拒绝续跑。已有预测
 不会重复生成。上述文件、原始数据、
 凭证和清单均不进入 PR；Git 忽略这些格式和目录。未来明确要发布的图片须走
 目录级 Git LFS 规则；本 PR 没有图片。
 
+Tinker 最多保留 `--concurrency` 个请求在途。某个请求失败后不再提交新样本；
+已发出的其他请求可能仍完成并计费，恢复时以已落盘预测为准。
+
+推理服务与监控服务的边界不同：Tinker 接收图片和固定 prompt，标签仅在本地；
+选择本地后端时，模型推理无需向托管服务发送图片。
 W&B 在独立进程中仅收到 allowlist 配置和汇总数值：evaluator/version、官方
 revision、输入清单哈希、backend、受控生成配置。不上传逐样本 ID、图片、
 标签、HTML、真实路径或完整命令行。关闭 console、code、Git、机器元数据
@@ -151,6 +193,8 @@ RD_OFFICIAL_REPO="$RD_SCORER_DIR" uv run --no-sync pytest -q \
   聚合指标正确；远端文件仅 config.yaml 和 wandb-summary.json。它不是模型结果。
 - 已下载固定 revision 的原始 Qwen3.5-4B 权重，Transformers/MPS 与 MLX
   均完成真实本地推理；未启动训练。完整 Dev 结果以对应运行报告为准。
+- 已完成 Tinker Dev100 baseline；本次修改默认后端不自动重新调用推理服务。
+  既有 baseline 与此次 CLI 变更的验证应分别报告，不能把历史运行称为新 CLI 的实跑。
 
 ## 精简的 W&B 默认视图
 
@@ -198,4 +242,5 @@ HF_HUB_OFFLINE=1 "$MLX_ENV/bin/python" -m modeling.llm_post_training.vlm_table_e
 
 模型下载通过Hugging Face进行一次，推理时`HF_HUB_OFFLINE=1`阻止再次联网取模型。
 W&B仅上传14项分组汇总及受控配置。通过`--model-label`指定公开显示名称，
-不要把实际模型路径填入显示名称。现有Tinker baseline保留作历史，不覆盖它。
+不要把实际模型路径填入显示名称。默认路线仍为 Tinker；上述 MLX 命令供显式选择
+本地计算时使用。现有 Tinker 与 MLX baseline 都保留，不覆盖旧 run。

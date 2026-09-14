@@ -311,11 +311,13 @@ def test_direct_official_score_is_separate_from_format_gate():
         scorer.score_raw(html, '<table><tr><td colspan="999999">x</td></tr></table>')
 
 
-def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["transformers", "tinker"])
+def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch, backend):
     from types import SimpleNamespace
     from PIL import Image
     from modeling.llm_post_training.vlm_table_extraction_lab import evaluate as cli
     from modeling.llm_post_training.vlm_table_extraction_lab import inference
+    from modeling.llm_post_training.vlm_table_extraction_lab import tinker_inference
 
     Image.new("RGB", (4, 4)).save(tmp_path / "image.png")
     (tmp_path / "label.html").write_text(table(["x"]))
@@ -325,7 +327,9 @@ def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch):
     calls = []
 
     class Predictor:
-        revision = "fixed"
+        revision = None if backend == "tinker" else "fixed"
+        processor_revision = "fixed-processor"
+        sdk_version = "test"
 
         def __init__(self, *args):
             pass
@@ -341,6 +345,7 @@ def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch):
             }
 
     monkeypatch.setattr(inference, "TransformersPredictor", Predictor)
+    monkeypatch.setattr(tinker_inference, "TinkerPredictor", Predictor)
     monkeypatch.setattr(cli, "OfficialScorer", lambda _: lambda a, b: 1.0)
     monkeypatch.setattr(
         cli.subprocess,
@@ -362,11 +367,20 @@ def test_resume_does_not_regenerate_completed_samples(tmp_path, monkeypatch):
         "--wandb-mode",
         "disabled",
     ]
+    if backend == "tinker":
+        argv += ["--tinker-cookbook-dir", str(tmp_path)]
+    else:
+        argv += ["--backend", backend]
     monkeypatch.setattr(sys, "argv", argv)
     cli.main()
     monkeypatch.setattr(sys, "argv", argv + ["--resume"])
     cli.main()
     assert len(calls) == 1
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert summary["config"]["backend"] == backend
+    if backend == "tinker":
+        assert summary["config"]["resolved_model_revision"] is None
+        assert summary["config"]["inference_device"] == "remote"
     protocol = tmp_path / "out" / "inference_config.json"
     protocol.unlink()
     with pytest.raises(ValueError, match="without an existing protocol"):
@@ -409,3 +423,117 @@ def test_local_model_identity_detects_changed_weights(tmp_path):
     before = model_identity(tmp_path, "fixed")
     weights.write_bytes(b"other")
     assert model_identity(tmp_path, "fixed") != before
+
+
+def test_tinker_sampling_contract_has_image_and_prompt_only(tmp_path):
+    from threading import Lock
+    from types import SimpleNamespace
+    from PIL import Image
+    from modeling.llm_post_training.vlm_table_extraction_lab.inference import PROMPT
+    from modeling.llm_post_training.vlm_table_extraction_lab.tinker_inference import (
+        TinkerPredictor,
+        SEED,
+    )
+
+    path = tmp_path / "synthetic.png"
+    Image.new("RGB", (40, 40)).save(path)
+    predictor = TinkerPredictor.__new__(TinkerPredictor)
+    predictor.prepare_lock = Lock()
+    predictor.max_pixels = 100
+    predictor.max_new_tokens = 8192
+    predictor.stop = ["<|im_end|>"]
+    predictor.sdk = SimpleNamespace(SamplingParams=SimpleNamespace)
+
+    def render(messages):
+        assert len(messages) == 1 and messages[0]["role"] == "user"
+        content = messages[0]["content"]
+        assert [c["type"] for c in content] == ["image", "text"]
+        assert content[1]["text"] == PROMPT
+        assert content[0]["image"].size == (10, 10)
+        return SimpleNamespace(length=42)
+
+    def sample(**kwargs):
+        assert kwargs["num_samples"] == 1
+        settings = kwargs["sampling_params"]
+        assert (settings.max_tokens, settings.temperature, settings.seed) == (
+            8192,
+            0,
+            SEED,
+        )
+        assert settings.stop == predictor.stop
+
+        def result(timeout):
+            assert timeout == 600
+            return SimpleNamespace(
+                sequences=[SimpleNamespace(tokens=[1, 2], stop_reason="stop")],
+                prompt_cache_hit_tokens=4,
+            )
+
+        return SimpleNamespace(result=result)
+
+    predictor.renderer = SimpleNamespace(build_generation_prompt=render)
+    predictor.client = SimpleNamespace(sample=sample)
+    predictor.tokenizer = SimpleNamespace(decode=lambda tokens, **kw: table(["x"]))
+    result = predictor(path)
+    assert result["input_tokens"] == 42 and result["output_tokens"] == 2
+    assert result["cached_input_tokens"] == 4 and result["stop_reason"] == "stop"
+
+
+def test_generation_concurrency_is_bounded(tmp_path):
+    from threading import Barrier, Lock
+    from modeling.llm_post_training.vlm_table_extraction_lab.evaluate import (
+        generate_predictions,
+    )
+
+    barrier, lock = Barrier(4), Lock()
+    active = peak = 0
+
+    def predict(path):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        barrier.wait(timeout=5)
+        with lock:
+            active -= 1
+        return {"html": table(["x"])}
+
+    rows = [{"id": str(i), "image": "unused.png"} for i in range(12)]
+    results = list(generate_predictions(rows, predict, tmp_path, 4))
+    assert peak == 4
+    assert {r["id"] for r in results} == {r["id"] for r in rows}
+
+
+def test_generation_failure_does_not_submit_entire_manifest(tmp_path):
+    from modeling.llm_post_training.vlm_table_extraction_lab.evaluate import (
+        generate_predictions,
+    )
+
+    calls = []
+
+    def fail(path):
+        calls.append(path)
+        raise ValueError("synthetic failure")
+
+    rows = [{"id": str(i), "image": "unused.png"} for i in range(100)]
+    with pytest.raises(ValueError, match="synthetic failure"):
+        list(generate_predictions(rows, fail, tmp_path, 4))
+    assert 1 <= len(calls) <= 4
+
+
+def test_tinker_rejects_unpinned_source_before_import(tmp_path, monkeypatch):
+    from modeling.llm_post_training.vlm_table_extraction_lab import tinker_inference
+
+    monkeypatch.setattr(
+        tinker_inference.subprocess, "check_output", lambda *a, **kw: "wrong-revision"
+    )
+    with pytest.raises(ValueError, match="clean checkout"):
+        tinker_inference.TinkerPredictor("Qwen/Qwen3.5-4B", "fixed", 10, 100, tmp_path)
+
+
+def test_tinker_rejects_mutable_processor_revision_before_import(tmp_path, monkeypatch):
+    from modeling.llm_post_training.vlm_table_extraction_lab import tinker_inference
+
+    monkeypatch.setattr(tinker_inference, "verify_cookbook", lambda _: tmp_path)
+    with pytest.raises(ValueError, match="40-character commit SHA"):
+        tinker_inference.TinkerPredictor("Qwen/Qwen3.5-4B", "main", 10, 100, tmp_path)

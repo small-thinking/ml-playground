@@ -1,9 +1,11 @@
-# 低预算实验计划 v5
+# 低预算实验计划 v6
 
 日期：2026-09-13。状态：数据已下载；RD 800 Train / 100 Dev / 100 Test
 与训练子集已冻结；Table Judge 离线 setup 已验证。训练计划先用 Tinker，
-以后保留 TRL 迁移路径；训练尚未启动。已有一次 Tinker Dev100 baseline，
-当前评测改用本地 MLX，实际结果见 [BASELINE_RESULTS.md](BASELINE_RESULTS.md)。
+以后保留 TRL 迁移路径；训练尚未启动。Tinker 与本地 MLX 的 Dev100 baseline
+均已完成，当前默认评测恢复为 Tinker 4B inference，本地后端保留可选。
+本次只切回默认后端并合并代码，无需重跑 baseline；历史结果见
+[BASELINE_RESULTS.md](BASELINE_RESULTS.md)。
 本计划替代原先约 $90 的完整实验路线，不把旧预算视为已授权。
 
 ## 目标与模型选择
@@ -14,14 +16,16 @@
 - 当前首选：Tinker + `Qwen/Qwen3.5-4B`，LoRA，关闭 thinking。2026-09-13 的
   [Tinker 公开模型列表](https://tinker-docs.thinkingmachines.ai/tinker/models/)
   未列出 0.8B 或 2B；最小列出的视觉模型是 4B。不能假定任意 HF 模型
-  都能上传到 Tinker 训练。先用 20 条开发样本验证模型与图像输入链路。
+  都能上传到 Tinker 训练。图像推理链路与 Dev100 baseline 已验证。
 - 后续 TRL 候选：[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B)
   或 [Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B)。它们支持视觉输入，
   但本项目尚未测量 GPU 显存、吞吐或训练兼容性。若更换模型，必须重新建立
   该模型自己的 baseline，不能把差异全部归因于框架或训练。
 
 小模型的 GPU 小时仍需另付费用；节省 Tinker 余额和节省总现金支出是不同
-目标。训练可采用 Tinker 4B 并减少训练数据；当前评测使用本机，不消耗推理 API 额度。
+目标。训练可采用 Tinker 4B 并减少训练数据；当前默认评测同样使用 Tinker。
+已完成的 Dev100 推理约 4.7 分钟，估算约 $0.17（按 token 与公开费率计算，
+非账单）。需要仅用本机计算时，可显式选择 MLX 或 Transformers。
 不在同一个 before/after 对照中更换模型、量化方式、输入分辨率或解码配置。
 
 ## 数据顺序
@@ -49,7 +53,7 @@
 - 输出：只生成保留 `rowspan/colspan` 的表格 HTML，关闭 thinking。
 - Judge 数据中的 clean HTML 作为离线参考，不放进模型输入；corrupted HTML
   不参与这个抽取任务。
-- 先从开发侧跑 20 条验证链路，正式开发评测固定用全部 100 条 Dev。
+- 已完成开发侧链路验证与全量 100 条 Dev baseline，后续按同协议复测。
   最终量化测试使用 RD Test 100。Judge 图片/clean HTML 可作为额外外部检查，
   报告其渲染图片分布边界，不能把无标签的 MLE 分数包装成真实抽取准确率。
 - 主指标：内容/数字正确性、行列完整度、合并结构、官方 table similarity。
@@ -72,8 +76,9 @@
 
 先执行 A → 80 条 SFT（最多 2 epochs）→ 同协议全量 Dev 复测 → 看失败案例，暂不做 RL。
 
-以下保留原托管方案的历史预算假设；当前默认本地评测，其推理 API 费用为 $0，
-耗时按真实运行报告判断。Tinker 4B 的参考价格：prefill $0.33/M、sample $1.005/M、train $0.737/M。
+以下为托管方案的预算假设，不是账单或新增运行授权。已有 Tinker Dev100 baseline
+的采样费估算约 $0.17；后续费用随生成长度和调用次数变化。
+Tinker 4B 的参考价格：prefill $0.33/M、sample $1.005/M、train $0.737/M。
 假设训练序列合计 4,000 计费 tokens，80 × 2 epochs 的训练费约 $0.47。
 100 个 Dev 样本各跑训练前/后一次，假设每条输入 3,000、输出 1,000 tokens，
 采样费用合计约 $0.40。等实验固定后，100 个 Test 样本对初始/最终模型各评
@@ -86,7 +91,8 @@ $5；计划不保证模型质量提升。图片展开 token 数与截断长度�
 Tinker 到 TRL 的实现边界及 verl 行业证据见 [TRAINING_INFRA.md](TRAINING_INFRA.md)。
 官方 Judge 的安装、离线检查及 provider 边界见 [JUDGE_SETUP.md](JUDGE_SETUP.md)。
 
-首轮预计 4–8 小时准备/评测开发与分析；远端运行时间由 20 样本测速确定。
+首轮原计划预计 4–8 小时准备/评测开发与分析；现有远端 Dev100 实测约 4.7 分钟，
+该单次观测不保证以后运行耗时。
 新 GPU 训练环境搭建时间另算。小 baseline 和单轮 SFT 不需要先建大规模平台。
 
 ## 记录与迭代
@@ -94,6 +100,8 @@ Tinker 到 TRL 的实现边界及 verl 行业证据见 [TRAINING_INFRA.md](TRAIN
 记录模型 ID、初始 checkpoint、LoRA 参数、图像处理、数据和 split 哈希、
 eval IDs、解码配置、训练 tokens、采样 tokens、费用及逐样本错误。
 已接入 W&B，仅上传分组汇总指标及受控配置；原始结果保留本地。训练仍待后续批准。
+新评测 run 使用 quality / structure / runtime 共 14 项业务指标。Tinker
+只接收待推理图片和固定 prompt，参考标签不发给推理服务；本地后端无需发送图片。
 
 数据、提示词、评测和 reward 保持独立于训练后端；只有后端适配代码依赖
 Tinker SDK。保存中立的图片/HTML 清单与逐样本预测，不把 Tinker Datum

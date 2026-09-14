@@ -1,12 +1,14 @@
 # Tinker 起步与后续 TRL 迁移
 
 核实日期：2026-09-13。训练首轮计划使用 Tinker；以后保留迁移到自租 GPU
-与 TRL 的空间。已建立 Tinker 推理基线，当前评测切换为本地 MLX；未启动训练。
+与 TRL 的空间。Tinker 与本地 MLX 推理基线均已完成，当前默认评测恢复为
+Tinker 4B inference；本地 MLX/Transformers 可选，未启动训练。
 
 ## 当前路线
 
-训练候选为 Tinker + Qwen3.5-4B + LoRA + W&B，评测独立使用本地后端。
-建立 100 条 Dev baseline，再用嵌套训练子集中的 80 条做最多 2 epochs SFT，
+训练候选为 Tinker + Qwen3.5-4B + LoRA + W&B，默认评测也走 Tinker inference，
+评分在本地执行。已有 100 条 Dev baseline，下一训练实验可用嵌套训练子集中的
+80 条做最多 2 epochs SFT，
 复测同一 Dev 并分析错误。Test 100 留到实验方案固定后，对初始与最终模型
 各评一次；不根据 Test 选择模型。首轮不直接上 RL。
 
@@ -15,12 +17,22 @@
 4B 才能成立；这是当前托管后端的选择范围。以后在自租 GPU 上可单独实验
 更小的 VLM，并为每个模型重新建立 baseline。
 
-以下为原托管方案的历史预算假设；当前本地评测不消耗推理 API 额度。
+已有 Tinker Dev100 推理实测约 4.7 分钟，按 token 与公开费率估算约 $0.17，
+不是账单金额。本地 MLX 的同集合历史运行约 103.8 分钟，推理 API 费用为 $0。
+当前选择 Tinker 以减少等待时间，不覆盖或删除本地结果，也无需为切换默认值重跑 baseline。
+
+以下为首轮训练与评测的预算假设：
 按训练序列 4,000 tokens、80 条 × 2 epochs 和 $0.737/M 估算，训练费约
 $0.47；100 Dev 训练前后各一次，假设每条输入 3,000、输出 1,000 tokens，
 采样费合计约 $0.40。最后两个固定模型的 Test 同样另约 $0.40。基础小计
 约 $1.27，另留 smoke、重试、额外开发评测与 Judge 费用。首轮建议 $5 上限，
 尚未授权运行；图片 token 数和生成长度必须先实测，不能把估算当账单。
+
+统一 evaluator 默认 `--backend tinker`，并发 4、输出上限 8,192 tokens，关闭 thinking。
+调用者提供固定 commit 的干净 cookbook 源码目录，仅用于 renderer，不需要 pip 安装 cookbook；
+SDK 等依赖使用仓库的 `table-eval` 与 `tinker` extras。具体安装与参数见
+[EVALUATION.md](EVALUATION.md)。推理服务接收图片和固定 prompt，标签留在本地评分。
+W&B 新运行仅接收 14 项分组业务指标及受控配置，不上传图片、HTML、清单或实际路径。
 
 ## 留给 TRL 的实现边界
 
@@ -38,7 +50,7 @@ $0.47；100 Dev 训练前后各一次，假设每条输入 3,000、输出 1,000 
 规范数据继续使用现有 JSONL/图片/HTML，不把 Tinker Datum 或远端 checkpoint
 作为唯一可恢复材料。预测至少保留 sample ID、原始输出、解析后 HTML、
 stop reason、token usage 和 checkpoint 标识，方便同一 evaluator 比较。
-将来仅在后端模块引入 Tinker SDK；数据划分、指标和 reward 不依赖 SDK。
+仅在后端模块引入 Tinker SDK；数据划分、指标和 reward 不依赖 SDK。
 
 迁移步骤：
 

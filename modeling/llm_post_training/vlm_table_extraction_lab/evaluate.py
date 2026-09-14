@@ -1,4 +1,4 @@
-"""Evaluate local table predictions or a Transformers VLM and log scalar metrics."""
+"""Evaluate Tinker or local VLM predictions and log grouped scalar metrics."""
 
 import argparse
 import hashlib
@@ -58,6 +58,39 @@ def model_identity(model_path, resolved_revision):
             "Model revision could not be resolved for reproducible inference"
         )
     return resolved_revision
+
+
+def generate_predictions(records, predictor, data_root, concurrency):
+    """Keep at most concurrency requests in flight; persist each completed result."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    def predict(row):
+        return {"id": row["id"], **predictor(data_root / row["image"])}
+
+    if concurrency == 1:
+        for row in records:
+            yield predict(row)
+        return
+    remaining = iter(records)
+    pool = ThreadPoolExecutor(max_workers=concurrency)
+    pending = set()
+    try:
+        for row in remaining:
+            pending.add(pool.submit(predict, row))
+            if len(pending) == concurrency:
+                break
+        while pending:
+            completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                yield future.result()
+            for _ in completed:
+                row = next(remaining, None)
+                if row is not None:
+                    pending.add(pool.submit(predict, row))
+    finally:
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def evaluate(records, data_root, predictions, scorer):
@@ -144,8 +177,8 @@ def parser():
     p.add_argument("--official-repo", type=Path, required=True)
     p.add_argument(
         "--backend",
-        choices=["predictions", "transformers", "mlx"],
-        default="transformers",
+        choices=["tinker", "predictions", "transformers", "mlx"],
+        default="tinker",
     )
     p.add_argument("--predictions", type=Path)
     p.add_argument(
@@ -160,10 +193,14 @@ def parser():
     p.add_argument(
         "--run-kind", choices=["evaluation", "software_fixture"], default="evaluation"
     )
-    p.add_argument("--revision", help="HF commit/revision for model and processor")
+    p.add_argument(
+        "--revision", help="HF revision; for Tinker this pins only the processor"
+    )
+    p.add_argument("--tinker-cookbook-dir", type=Path)
+    p.add_argument("--concurrency", type=int, default=4)
     p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     p.add_argument("--resume", action="store_true")
-    p.add_argument("--max-new-tokens", type=int, default=4096)
+    p.add_argument("--max-new-tokens", type=int, default=8192)
     p.add_argument("--max-pixels", type=int, default=1048576)
     p.add_argument(
         "--env-file", type=Path, help="Optional local credentials file; not uploaded"
@@ -177,8 +214,14 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    if args.max_new_tokens <= 0 or args.max_pixels <= 0:
-        raise ValueError("Token and pixel limits must be positive")
+    if args.max_new_tokens <= 0 or args.max_pixels <= 0 or args.concurrency <= 0:
+        raise ValueError("Token, pixel and concurrency limits must be positive")
+    if args.backend == "tinker":
+        from .tinker_inference import PROCESSOR_REVISION
+
+        if args.tinker_cookbook_dir is None:
+            raise ValueError("--tinker-cookbook-dir is required for Tinker inference")
+        args.revision = args.revision or PROCESSOR_REVISION
     if args.backend == "predictions" and args.predictions is None:
         raise ValueError("--predictions is required for the predictions backend")
     if args.backend != "predictions" and args.predictions is not None:
@@ -187,6 +230,8 @@ def main():
         from dotenv import load_dotenv
 
         load_dotenv(args.env_file, override=False)
+    if args.backend in {"tinker", "predictions"}:
+        args.device = None
     if args.device == "auto" and args.backend == "mlx":
         args.device = "mps"
     if args.device == "auto":
@@ -211,6 +256,7 @@ def main():
         )
     start = perf_counter()
     resolved_revision = None
+    predictor = None
     if args.backend == "predictions":
         predictions = {r["id"]: r for r in read_jsonl(args.predictions)}
     else:
@@ -246,14 +292,37 @@ def main():
             and not protocol_path.exists()
         ):
             raise ValueError("Cannot resume predictions without an existing protocol")
-        predictor_class = (
-            MLXPredictor if args.backend == "mlx" else TransformersPredictor
-        )
-        predictor = predictor_class(
-            args.model, args.revision, args.device, args.max_new_tokens, args.max_pixels
-        )
+        if args.backend == "tinker":
+            from .tinker_inference import TinkerPredictor, COOKBOOK_REVISION, SEED
+
+            predictor = TinkerPredictor(
+                args.model,
+                args.revision,
+                args.max_new_tokens,
+                args.max_pixels,
+                args.tinker_cookbook_dir,
+            )
+            protocol.update(
+                cookbook_revision=COOKBOOK_REVISION,
+                processor_revision=predictor.processor_revision,
+                seed=SEED,
+                tinker_sdk_version=predictor.sdk_version,
+                transformers_version=version("transformers"),
+            )
+            protocol["model_identity"] = "hosted-unpinned:" + args.model
+        else:
+            predictor_class = (
+                MLXPredictor if args.backend == "mlx" else TransformersPredictor
+            )
+            predictor = predictor_class(
+                args.model,
+                args.revision,
+                args.device,
+                args.max_new_tokens,
+                args.max_pixels,
+            )
+            protocol["model_identity"] = model_identity(args.model, predictor.revision)
         resolved_revision = predictor.revision
-        protocol["model_identity"] = model_identity(args.model, resolved_revision)
         if protocol_path.exists():
             if json.loads(protocol_path.read_text()) != protocol:
                 raise ValueError("Resume protocol mismatch")
@@ -269,11 +338,14 @@ def main():
         if set(predictions) - {r["id"] for r in records}:
             raise ValueError("Resume contains unknown IDs")
         with prediction_path.open("a" if args.resume else "x") as stream:
-            for row in records:
-                if row["id"] in predictions:
-                    continue
-                pred = {"id": row["id"], **predictor(args.data_root / row["image"])}
-                predictions[row["id"]] = pred
+            pending = [row for row in records if row["id"] not in predictions]
+            for pred in generate_predictions(
+                pending,
+                predictor,
+                args.data_root,
+                args.concurrency if args.backend == "tinker" else 1,
+            ):
+                predictions[pred["id"]] = pred
                 stream.write(json.dumps(pred) + "\n")
                 stream.flush()
                 print(
@@ -296,14 +368,23 @@ def main():
         "evaluator_version": VERSION,
         "metric_view": "grouped-v2",
         "mlx_vlm_version": version("mlx-vlm") if args.backend == "mlx" else None,
+        "tinker_sdk_version": getattr(predictor, "sdk_version", None),
+        "processor_revision": getattr(predictor, "processor_revision", None),
+        "cookbook_revision": COOKBOOK_REVISION if args.backend == "tinker" else None,
+        "sampling_seed": SEED if args.backend == "tinker" else None,
+        "inference_concurrency": args.concurrency if args.backend == "tinker" else 1,
         "model_label": args.model_label,
         "examples": len(records),
         "numeric_examples": metrics.get("eval/numeric_f1_count", 0),
         "rd_scored_examples": metrics.get("eval/official_rd_similarity_raw_count", 0),
         "inference_device": (
-            "metal"
-            if args.backend == "mlx"
-            else args.device if args.backend != "predictions" else None
+            "remote"
+            if args.backend == "tinker"
+            else (
+                "metal"
+                if args.backend == "mlx"
+                else args.device if args.backend != "predictions" else None
+            )
         ),
         "resolved_model_revision": resolved_revision,
         "run_kind": args.run_kind,
@@ -331,6 +412,11 @@ def main():
         "model": args.model if args.backend != "predictions" else None,
         "revision": args.revision,
         "resolved_revision": resolved_revision,
+        "tinker_cookbook_dir": (
+            str(args.tinker_cookbook_dir.resolve())
+            if args.tinker_cookbook_dir
+            else None
+        ),
         "predictions_sha256": (
             digest(args.predictions)
             if args.predictions

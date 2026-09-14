@@ -7,9 +7,14 @@ SFT、错误分析和后续迭代带来的变化。目标是学会控制实验�
 当前阶段：三份公开数据已下载并完成基础完整性审计；RD 800 Train / 100 Dev / 100 Test
 及 8/80/200/400/800 嵌套训练子集已冻结；官方 Table Judge 离线 setup 通过。
 训练首轮仍计划选择 Tinker，预留后续 TRL 迁移边界；训练和 GPU 租用尚未启动。
-评测已切换为本地推理，支持 Transformers 与 Apple Metal/MLX，使用原始
-Qwen3.5-4B 权重。官方评分、补充指标与 W&B 汇总已接入，新 run 仅上报
+默认评测使用 Tinker 的 `Qwen/Qwen3.5-4B` 推理；已有 Dev100 实测约 4.7 分钟，
+按 token 与公开费率估算约 $0.17，并非账单金额。Transformers 与 Apple Metal/MLX
+保留为可选本地后端，历史结果见下方报告；本次切回默认后端无需重跑已完成的 baseline。
+官方评分、补充指标与 W&B 汇总已接入，新 run 仅上报
 quality / structure / runtime 三组共 14 项业务指标。
+
+Tinker 会接收调用者提供的图片和固定抽取指令，标签仅用于本地评分；W&B
+只接收汇总指标及受控配置。数据、凭证和实际路径由运行参数提供，不进入 Git。
 
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
