@@ -14,6 +14,10 @@ SFT、错误分析和后续迭代带来的变化。目标是学会控制实验�
 cell F1 训练前后均为 1.0，NLL 下降，不代表真实表格能力提升。
 当前默认 peak LR 5e-5 / 10% warmup；每 4 步记录固定 Train/Dev 的 NLL、PPL 和 gap，
 每 8 步记录 Dev 自由生成指标。独立 sampler 复核及错配图片对照见实验文档。
+warmup 版 SFT 已完成同一轮 before/after 的完整 RD Dev100 对照：NLL
+0.1072 → 0.0852、cell F1 0.3765 → 0.4643、数字 F1 0.4177 → 0.5399，
+详见 [完整对照结果](RD_DEV100_SFT_RESULTS.md)。这次约 8.9 分钟、计算费估算 $0.40，
+仅记录本地结果；目前保留现有划分，之后每个 RD Dev 评估点均覆盖固定全量 100 条。
 正式训练尚未启动。
 
 RD 是官方评测 benchmark；旧 800/100/100 文件保留用于追溯，旧 Train800
@@ -29,6 +33,7 @@ SFT smoke 没有 W&B 初始化或上传入口。
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [第一次 SFT：方案、命令、结果与费用](SFT_EXPERIMENT.md)
+- [训练前后完整 RD Dev100 对照](RD_DEV100_SFT_RESULTS.md)
 - [数据完整性记录](DATA_AUDIT.md)
 - [分布抽样与数据划分](DISTRIBUTION_AND_SPLITS.md)
 - [Table Judge setup](JUDGE_SETUP.md)
