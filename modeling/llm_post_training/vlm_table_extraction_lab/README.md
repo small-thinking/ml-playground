@@ -56,6 +56,7 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
 - [OPD800 与传统 KD800：结果、区间与费用](RD_TRAIN800_OPD_RESULTS.md)
+- [OPD 四个假设：对照设置、预算和新增诊断指标](OPD_HYPOTHESES.md)
 - [OPD 固定协议、算法与运行命令](OPD_PLAN.md)
 - [OPD 烟测结果与工程修复](OPD_SMOKE_RESULTS.md)
 - [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)

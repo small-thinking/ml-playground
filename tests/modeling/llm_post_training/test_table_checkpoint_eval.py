@@ -145,3 +145,29 @@ def test_incomplete_or_wrong_split_is_rejected_before_model_loading(
     )
     with pytest.raises(ValueError, match="entire"):
         mod.main()
+
+
+@pytest.mark.parametrize("seed", [mod.SEED, 20260914])
+def test_generation_uses_declared_seed(seed):
+    from threading import Lock
+
+    seen = []
+
+    def sample(**kwargs):
+        seen.append(kwargs["sampling_params"].seed)
+        return SimpleNamespace(
+            result=lambda **kw: SimpleNamespace(
+                sequences=[SimpleNamespace(tokens=[1], stop_reason="stop")]
+            )
+        )
+
+    mod.sample_one(
+        SimpleNamespace(sample=sample),
+        ({"id": "fixture"}, SimpleNamespace(length=1), None),
+        SimpleNamespace(decode=lambda *a, **k: ""),
+        [],
+        10,
+        Lock(),
+        seed,
+    )
+    assert seen == [seed]

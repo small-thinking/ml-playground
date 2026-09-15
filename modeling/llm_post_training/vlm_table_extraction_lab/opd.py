@@ -9,6 +9,8 @@ import math
 from pathlib import Path
 import random
 import re
+
+import numpy as np
 from time import perf_counter
 
 from .evaluate import digest, evaluate, read_jsonl
@@ -16,16 +18,22 @@ from .inference import PROMPT
 from .kd import assess
 from .kd_collect import (
     CollectionBudget,
+    TOP_K,
+    completion_topk,
     TEACHER_FORWARD_RATE,
     TEACHER_SAMPLE_RATE,
     json_hash,
     tokenizer_identity,
 )
-from .metrics import VERSION, parse_table
+from .metrics import VERSION, parse_table, score_tables
 from .kd_collection_budget import ConcurrentBudget
 from .official import OfficialScorer, REVISION
 from .opd_sampling_budget import BudgetedSampler
 from .opd_targets import native_batch, policy_datum, summarize_policy
+from .opd_ablation_objectives import hybrid_batches, normalize_ce_batch
+from .opd_diagnostics import classify_token_categories, summarize_diagnostics
+from .kd_targets import soft_targets, summarize_soft, topk_diagnostics
+from .sft_metrics import summarize_nll
 from .sft import (
     MODEL,
     TRAIN_RATE,
@@ -65,15 +73,37 @@ def prepare_prompts(rows, root, renderer, teacher_renderer, args):
     return prompts
 
 
-def estimate_cost(train, dev, args):
+def estimate_cost(train, dev, args, gold_train=()):
     """Report both a length scenario and the worst output-cap bound, not a quote."""
     steps = math.ceil(len(train) / args.batch_size) * args.epochs
     prefill = sum(p.length for _, p in train) * args.epochs
     forward = len(evaluation_steps(steps, args.eval_every)) * sum(
         d.model_input.length for _, _, d in dev
     )
-    dev_prefill = sum(p.length for _, p, _ in dev) if args.generate_dev else 0
-    dev_output = len(dev) * args.max_new_tokens if args.generate_dev else 0
+    eval_steps = evaluation_steps(steps, args.eval_every)
+    every = getattr(args, "generate_dev_every", 0)
+    generations = int(args.generate_dev) + sum(
+        bool(every and 0 < step < steps and step % every == 0) for step in eval_steps
+    )
+    dev_prefill = generations * sum(p.length for _, p, _ in dev)
+    dev_output = generations * len(dev) * args.max_new_tokens
+    objective = getattr(args, "objective", "sampled_reverse_kl")
+    gold_tokens = (
+        sum(d.model_input.length for _, _, d in gold_train) * args.epochs
+        if objective == "hybrid_gold"
+        else 0
+    )
+    probe_tokens = len(eval_steps) * sum(
+        d.model_input.length
+        for _, _, d in gold_train[: getattr(args, "train_probe_examples", 0)]
+    )
+    diag_every = getattr(args, "diagnostic_every", 0)
+    diag_steps = sum(
+        bool(diag_every and (step == 1 or step % diag_every == 0 or step == steps))
+        for step in range(1, steps + 1)
+    )
+    diag_passes = diag_steps * (2 if objective == "topk_forward_kl" else 1)
+    diag_prefill_bound = args.batch_size * max(p.length for _, p in train)
 
     def cost(length):
         output = len(train) * args.epochs * length
@@ -83,7 +113,14 @@ def estimate_cost(train, dev, args):
             + (prefill + output) * TEACHER_FORWARD_RATE
             + len(train) * args.epochs * TEACHER_SAMPLE_RATE
             + (prefill + output - len(train) * args.epochs) * TRAIN_RATE
-            + (forward + dev_prefill) * FORWARD_RATE
+            + gold_tokens * TRAIN_RATE
+            + (
+                forward
+                + dev_prefill
+                + probe_tokens
+                + diag_passes * (diag_prefill_bound + args.batch_size * (length - 1))
+            )
+            * FORWARD_RATE
             + dev_output * SAMPLE_RATE
         ) / 1e6
 
@@ -92,6 +129,11 @@ def estimate_cost(train, dev, args):
         + len(train) * args.epochs * args.max_new_tokens
         - len(train) * args.epochs,
         "nll_forward_tokens": forward,
+        "gold_training_tokens": gold_tokens,
+        "train_probe_forward_tokens": probe_tokens,
+        "diagnostic_forward_tokens_bound": diag_passes
+        * (diag_prefill_bound + args.batch_size * (args.max_new_tokens - 1)),
+        "dev_generation_stages": generations,
         "generation_prefill_tokens": dev_prefill,
         "generation_output_token_bound": dev_output,
         "estimated_usd_bound": cost(args.max_new_tokens),
@@ -142,7 +184,35 @@ def collect_one(sampler, teacher, row, prompt, tokenizer, stop, args, step, posi
     if len(sequence.tokens) > args.max_new_tokens:
         raise ValueError("Student exceeded output cap")
     full = prompt.append(tinker.EncodedTextChunk(tokens=sequence.tokens))
-    teacher_logprobs = teacher.compute_logprobs(full).result(timeout=600)
+    if getattr(args, "objective", "sampled_reverse_kl") == "topk_forward_kl":
+        response = teacher.sample(
+            prompt=full,
+            num_samples=1,
+            include_prompt_logprobs=True,
+            topk_prompt_logprobs=TOP_K,
+            sampling_params=tinker.SamplingParams(
+                max_tokens=1, temperature=0, seed=args.seed
+            ),
+        ).result(timeout=600)
+        arrays = response.topk_prompt_logprobs_np
+        if arrays is not None:
+            np.savez_compressed(
+                path.with_suffix(".raw-topk.npz"),
+                token_ids=arrays.token_ids,
+                logprobs=arrays.logprobs,
+            )
+        teacher_logprobs = response.prompt_logprobs
+        record["teacher_full_logprobs"] = teacher_logprobs
+        write_json(path, record)
+        ids, probs = completion_topk(response, prompt.length, len(sequence.tokens))
+        soft_targets(prompt, sequence.tokens, ids, probs, len(tokenizer))
+        np.savez_compressed(
+            path.with_suffix(".topk.npz"), token_ids=ids, logprobs=probs
+        )
+        record["teacher_topk_sha256"] = digest(path.with_suffix(".topk.npz"))
+        record["retained_mass"] = topk_diagnostics(probs)
+    else:
+        teacher_logprobs = teacher.compute_logprobs(full).result(timeout=600)
     record["teacher_full_logprobs"] = teacher_logprobs
     write_json(path, record)
     if len(teacher_logprobs) != full.length:
@@ -190,10 +260,37 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
         train_mlp=True,
         train_unembed=False,
     )
+    objective = getattr(args, "objective", "sampled_reverse_kl")
+    diagnostic_every = getattr(args, "diagnostic_every", 0)
+    probe_count = getattr(args, "train_probe_examples", 0)
+    gold_rows = [row for row, _ in train]
+    if objective != "hybrid_gold":
+        gold_rows = gold_rows[:probe_count]
+    gold = (
+        prepare_examples(
+            gold_rows,
+            args.data_root,
+            renderer,
+            args.max_pixels,
+            args.max_sequence_tokens,
+        )
+        if gold_rows
+        else []
+    )
+    gold_by_id = {row["id"]: datum for row, _, datum in gold}
+    probe = gold[:probe_count]
     report.update(
         status="running", training_info=client.get_info().model_dump(mode="json")
     )
     report["intermediate_sampler_paths"] = {}
+    report["extra_usage"] = dict.fromkeys(
+        (
+            "gold_training_tokens",
+            "diagnostic_forward_tokens",
+            "train_probe_forward_tokens",
+        ),
+        0,
+    )
     write_json(args.output_dir / "run.json", report)
 
     def dev_assess(stage, step):
@@ -201,6 +298,74 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
         budget.reserve(f"{stage}:dev_nll", amount)
         assess(client, [], dev, stage, step, args, report, logger, False)
         budget.settle(amount)
+        if probe:
+            count = sum(d.model_input.length for _, _, d in probe)
+            budget.reserve(f"{stage}:train_probe_nll", count * FORWARD_RATE / 1e6)
+            output = client.forward(
+                [d for _, _, d in probe], loss_fn="cross_entropy"
+            ).result(timeout=600)
+            raw = []
+            for (row, _, datum), result in zip(
+                probe, output.loss_fn_outputs, strict=True
+            ):
+                weights = datum.loss_fn_inputs["weights"].data
+                raw.append(
+                    {
+                        "id": row["id"],
+                        "token_logprobs": [
+                            v
+                            for v, w in zip(
+                                result["logprobs"].data, weights, strict=True
+                            )
+                            if w
+                        ],
+                        "target_tokens": [
+                            v
+                            for v, w in zip(
+                                datum.loss_fn_inputs["target_tokens"].data,
+                                weights,
+                                strict=True,
+                            )
+                            if w
+                        ],
+                    }
+                )
+            write_json(args.output_dir / f"{stage}_train_probe_likelihoods.json", raw)
+            summary = summarize_nll(output, [d for _, _, d in probe])
+            summary.pop("per_example", None)
+            report[stage]["train"] = summary
+            report["extra_usage"]["train_probe_forward_tokens"] += count
+            budget.settle(count * FORWARD_RATE / 1e6)
+            logger.log(evaluation_metrics(report[stage]))
+        write_json(args.output_dir / f"{stage}_metrics.json", report[stage])
+
+    def generate_dev(stage, step, sampler_path):
+        nonlocal budget
+        budget = ConcurrentBudget(
+            args.output_dir / "usage.json", args.max_estimated_usd
+        )
+        sampler = service.create_sampling_client(
+            model_path=sampler_path, retry_config=retry
+        )
+        predictions = generate(
+            BudgetedSampler(
+                sampler, budget, args.output_dir / f"{stage}_dev_sampling_receipts"
+            ),
+            dev,
+            tokenizer,
+            renderer.get_stop_sequences(),
+            args,
+            args.output_dir / f"{stage}_dev_predictions.jsonl",
+        )
+        details, metrics = evaluate(
+            [r for r, _, _ in dev], args.data_root, predictions, scorer
+        )
+        write_json(args.output_dir / f"{stage}_dev_details.json", details)
+        report[stage]["dev"].update(metrics)
+        write_json(args.output_dir / f"{stage}_metrics.json", report[stage])
+        logger.log(evaluation_metrics(report[stage]))
+        report["estimated_compute_usd"] = budget.state["estimated_compute_usd"]
+        write_json(args.output_dir / "run.json", report)
 
     dev_assess("before", 0)
     rng, step = random.Random(args.seed), 0
@@ -224,17 +389,35 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                 step += 1
                 batch = order[start : start + args.batch_size]
                 tick = perf_counter()
+                diagnostic = bool(
+                    diagnostic_every
+                    and (
+                        step == 1
+                        or step % diagnostic_every == 0
+                        or step == report["optimizer_steps"]
+                    )
+                )
                 prefill = sum(p.length for _, p in batch)
                 cap = len(batch) * args.max_new_tokens
+                gold_batch = (
+                    [gold_by_id[row["id"]] for row, _ in batch]
+                    if objective == "hybrid_gold"
+                    else []
+                )
+                gold_tokens = sum(d.model_input.length for d in gold_batch)
+                diagnostic_passes = int(diagnostic) * (
+                    2 if objective == "topk_forward_kl" else 1
+                )
                 bound = (
                     prefill * FORWARD_RATE
                     + cap * SAMPLE_RATE
                     + (prefill + cap) * TEACHER_FORWARD_RATE
                     + len(batch) * TEACHER_SAMPLE_RATE
-                    + (prefill + cap - len(batch)) * TRAIN_RATE
+                    + (prefill + cap - len(batch) + gold_tokens) * TRAIN_RATE
+                    + diagnostic_passes * (prefill + cap - len(batch)) * FORWARD_RATE
                 ) / 1e6
                 budget.reserve(f"step_{step}:rollout_teacher_backward", bound)
-                # No update or prefetch across batches: this snapshot is current.
+                # Fresh weights each batch; no trajectory replay or cross-batch prefetch.
                 sampler = client.save_weights_and_get_sampling_client(
                     retry_config=retry
                 )
@@ -261,17 +444,79 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                             future.cancel()
                         raise
                 datums = [d for d, _ in collected]
-                output = client.forward_backward(
-                    native_batch(datums), loss_fn="importance_sampling"
-                ).result(timeout=600)
-                # Persist learner evidence before optimizer; a failure never retries.
+                native = native_batch(datums)
+                pre_policy = None
+                metrics = {}
+                if objective == "topk_forward_kl":
+                    soft = []
+                    masses = []
+                    for j, ((_, prompt), datum) in enumerate(
+                        zip(batch, datums, strict=True)
+                    ):
+                        path = args.output_dir / "rollouts" / f"{step:04d}_{j:02d}.json"
+                        row = json.loads(path.read_text())
+                        assert (
+                            digest(path.with_suffix(".topk.npz"))
+                            == row["teacher_topk_sha256"]
+                        )
+                        with np.load(
+                            path.with_suffix(".topk.npz"), allow_pickle=False
+                        ) as arrays:
+                            soft.append(
+                                soft_targets(
+                                    prompt,
+                                    row["tokens"],
+                                    arrays["token_ids"],
+                                    arrays["logprobs"],
+                                    len(tokenizer),
+                                )
+                            )
+                            masses.extend(np.exp(arrays["logprobs"]).sum(axis=1))
+                    if diagnostic:
+                        pre_policy = client.forward(
+                            native, loss_fn="importance_sampling"
+                        ).result(timeout=600)
+                    output = client.forward_backward(
+                        normalize_ce_batch(soft), loss_fn="cross_entropy"
+                    ).result(timeout=600)
+                    metrics.update(summarize_soft(output, soft))
+                    metrics.update(
+                        retained_mass_mean=float(np.mean(masses)),
+                        retained_mass_p05=float(np.quantile(masses, 0.05)),
+                    )
+                else:
+                    if objective == "hybrid_gold":
+                        native, gold_native = hybrid_batches(
+                            datums, gold_batch, opd_weight=1 - args.gold_weight
+                        )
+                    output = client.forward_backward(
+                        native, loss_fn="importance_sampling"
+                    ).result(timeout=600)
+                    pre_policy = output
+                    if gold_batch:
+                        gold_output = client.forward_backward(
+                            gold_native, loss_fn="cross_entropy"
+                        ).result(timeout=600)
+                        write_json(
+                            args.output_dir
+                            / "rollouts"
+                            / f"{step:04d}_gold_learner.json",
+                            [
+                                r["logprobs"].to_numpy().tolist()
+                                for r in gold_output.loss_fn_outputs
+                            ],
+                        )
+                        metrics["gold_batch_nll"] = summarize_nll(
+                            gold_output, gold_batch
+                        )["assistant_nll"]
                 write_json(
                     args.output_dir / "rollouts" / f"{step:04d}_learner.json",
                     [r["logprobs"].to_numpy().tolist() for r in output.loss_fn_outputs],
                 )
-                metrics = summarize_policy(output, datums)
+                if pre_policy is not None:
+                    metrics.update(summarize_policy(pre_policy, datums))
                 lr = scheduled_lr(step, args.learning_rate, report["warmup_steps"])
-                client.optim_step(
+                optim = client.optim_step(
                     tinker.AdamParams(
                         learning_rate=lr,
                         beta1=0.9,
@@ -281,24 +526,120 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                         grad_clip_norm=1,
                     )
                 ).result(timeout=600)
+                returned = getattr(optim, "metrics", None) or {}
+                grad = returned.get("unclipped_grad_l2:mean")
+                available = (
+                    isinstance(grad, (int, float))
+                    and not isinstance(grad, bool)
+                    and math.isfinite(grad)
+                    and grad >= 0
+                )
+                metrics["gradient_norm_available"] = int(available)
+                if available:
+                    metrics.update(
+                        unclipped_gradient_norm=float(grad),
+                        gradient_norm_exceeds_clip_threshold=int(grad > 1),
+                    )
+                diagnostic_metrics = {}
+                if diagnostic:
+                    post = client.forward(
+                        native_batch(datums), loss_fn="importance_sampling"
+                    ).result(timeout=600)
+                    for name, value in (("pre", pre_policy), ("post", post)):
+                        write_json(
+                            args.output_dir
+                            / "rollouts"
+                            / f"{step:04d}_{name}_policy.json",
+                            [
+                                r["logprobs"].to_numpy().tolist()
+                                for r in value.loss_fn_outputs
+                            ],
+                        )
+                    metadata = []
+                    for j, (_, usage) in enumerate(collected):
+                        raw = json.loads(
+                            (
+                                args.output_dir
+                                / "rollouts"
+                                / f"{step:04d}_{j:02d}.json"
+                            ).read_text()
+                        )
+                        metadata.append(
+                            {
+                                **usage,
+                                "token_categories": classify_token_categories(
+                                    tokenizer, raw["tokens"]
+                                ),
+                            }
+                        )
+                    diagnostic_metrics.update(
+                        summarize_diagnostics(
+                            datums, pre_policy, post, metadata, near_zero=0.001
+                        )
+                    )
+                if diagnostic_every:
+                    quality = []
+                    for j, (row, _) in enumerate(batch):
+                        raw = json.loads(
+                            (
+                                args.output_dir
+                                / "rollouts"
+                                / f"{step:04d}_{j:02d}.json"
+                            ).read_text()
+                        )
+                        reference = parse_table(
+                            (args.data_root / row["label"]).read_text()
+                        )
+                        try:
+                            parsed = parse_table(raw["html"])
+                        except ValueError:
+                            parsed = None
+                        quality.append(score_tables(reference, parsed))
+                    for key in (
+                        "cell_f1",
+                        "numeric_f1",
+                        "table_exact",
+                        "structure_exact",
+                    ):
+                        values = [q[key] for q in quality if q[key] is not None]
+                        if values:
+                            metrics[f"rollout_{key}"] = sum(values) / len(values)
+                            metrics[f"rollout_{key}_count"] = len(values)
                 usage = {key: sum(u[key] for _, u in collected) for key in totals}
+                diagnostic_tokens = diagnostic_passes * usage["training_tokens"]
                 amount = (
                     usage["prefill_tokens"] * FORWARD_RATE
                     + usage["rollout_tokens"] * SAMPLE_RATE
                     + usage["teacher_forward_tokens"] * TEACHER_FORWARD_RATE
                     + len(batch) * TEACHER_SAMPLE_RATE
-                    + usage["training_tokens"] * TRAIN_RATE
+                    + (usage["training_tokens"] + gold_tokens) * TRAIN_RATE
+                    + diagnostic_tokens * FORWARD_RATE
                 ) / 1e6
                 budget.settle(amount)
+                report["extra_usage"]["gold_training_tokens"] += gold_tokens
+                report["extra_usage"]["diagnostic_forward_tokens"] += diagnostic_tokens
                 for key, value in usage.items():
                     totals[key] += value
+                optimizer_metrics = {
+                    key: metrics.pop(key)
+                    for key in (
+                        "gradient_norm_available",
+                        "unclipped_gradient_norm",
+                        "gradient_norm_exceeds_clip_threshold",
+                    )
+                    if key in metrics
+                }
                 event = {
                     "training/optimizer_step": step,
                     "training/epoch": epoch + 1,
                     "training/learning_rate": lr,
                     "training/step_seconds": perf_counter() - tick,
                     **{f"training/{k}": v for k, v in metrics.items()},
+                    **{f"optimizer/{k}": v for k, v in optimizer_metrics.items()},
                     **{f"training/{k}": v for k, v in usage.items()},
+                    **{
+                        f"opd_diagnostics/{k}": v for k, v in diagnostic_metrics.items()
+                    },
                     "runtime/estimated_compute_usd": budget.state[
                         "estimated_compute_usd"
                     ],
@@ -320,6 +661,9 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                     ).result()
                     report["intermediate_sampler_paths"][stage] = saved.path
                     dev_assess(stage, step)
+                    every = getattr(args, "generate_dev_every", 0)
+                    if every and step % every == 0:
+                        generate_dev(stage, step, saved.path)
     report["training_loop_seconds"] = perf_counter() - started
     report["state_path"] = (
         client.save_state("final", ttl_seconds=7 * 86400).result().path
@@ -328,27 +672,7 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
     report["sampler_paths"] = {"after": saved.path}
     dev_assess("after", step)
     if args.generate_dev:
-        # Carry settled training usage into per-request concurrent reservations.
-        budget = ConcurrentBudget(
-            args.output_dir / "usage.json", args.max_estimated_usd
-        )
-        sampler = service.create_sampling_client(
-            model_path=saved.path, retry_config=retry
-        )
-        predictions = generate(
-            BudgetedSampler(sampler, budget, args.output_dir / "dev_sampling_receipts"),
-            dev,
-            tokenizer,
-            renderer.get_stop_sequences(),
-            args,
-            args.output_dir / "after_dev_predictions.jsonl",
-        )
-        details, metrics = evaluate(
-            [r for r, _, _ in dev], args.data_root, predictions, scorer
-        )
-        write_json(args.output_dir / "after_dev_details.json", details)
-        report["after"]["dev"].update(metrics)
-        logger.log(evaluation_metrics(report["after"]))
+        generate_dev("after", step, saved.path)
     report.update(
         status="completed",
         estimated_compute_usd=budget.state["estimated_compute_usd"],
@@ -382,6 +706,15 @@ def main():
     p.add_argument("--warmup-ratio", type=float, default=0.1)
     p.add_argument("--eval-every", type=int, default=25)
     p.add_argument("--generate-dev", action="store_true")
+    p.add_argument(
+        "--objective",
+        choices=["sampled_reverse_kl", "topk_forward_kl", "hybrid_gold"],
+        default="sampled_reverse_kl",
+    )
+    p.add_argument("--gold-weight", type=float, default=0.25)
+    p.add_argument("--diagnostic-every", type=int, default=0)
+    p.add_argument("--train-probe-examples", type=int, default=0)
+    p.add_argument("--generate-dev-every", type=int, default=0)
     p.add_argument("--max-new-tokens", type=int, default=8192)
     p.add_argument("--max-sequence-tokens", type=int, default=16384)
     p.add_argument("--max-pixels", type=int, default=1048576)
@@ -397,10 +730,27 @@ def main():
         if (
             isinstance(value, (int, float))
             and not isinstance(value, bool)
-            and key != "warmup_ratio"
+            and key
+            not in {
+                "warmup_ratio",
+                "diagnostic_every",
+                "train_probe_examples",
+                "generate_dev_every",
+            }
         ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite and positive")
+    if any(
+        getattr(args, k) < 0
+        for k in ("diagnostic_every", "train_probe_examples", "generate_dev_every")
+    ):
+        raise ValueError("Diagnostic counts must be nonnegative")
+    if not 0 < args.gold_weight < 1 or args.train_probe_examples > args.train_examples:
+        raise ValueError("Invalid hybrid weight or training probe size")
+    if args.generate_dev_every and (
+        not args.generate_dev or args.generate_dev_every % args.eval_every
+    ):
+        raise ValueError("Generation cadence must coincide with full Dev checks")
     if not 0 <= args.warmup_ratio <= 1 or not re.fullmatch(
         r"[A-Za-z0-9_.-]{1,80}", args.dataset_label
     ):
@@ -427,7 +777,21 @@ def main():
         dev_rows, args.data_root, renderer, args.max_pixels, args.max_sequence_tokens
     )
     scorer = OfficialScorer(args.official_repo)
-    cost = estimate_cost(train, dev, args)
+    gold_count = (
+        len(train) if args.objective == "hybrid_gold" else args.train_probe_examples
+    )
+    gold_for_cost = (
+        prepare_examples(
+            [row for row, _ in train[:gold_count]],
+            args.data_root,
+            renderer,
+            args.max_pixels,
+            args.max_sequence_tokens,
+        )
+        if gold_count
+        else []
+    )
+    cost = estimate_cost(train, dev, args, gold_for_cost)
     steps = math.ceil(len(train) / args.batch_size) * args.epochs
     args.generate_train, args.train_nll_endpoints_only, args.generate_every = (
         False,
@@ -439,6 +803,11 @@ def main():
         "opd.py",
         "opd_targets.py",
         "opd_sampling_budget.py",
+        "opd_diagnostics.py",
+        "opd_ablation_objectives.py",
+        "kd_targets.py",
+        "sft_metrics.py",
+        "training_logging.py",
         "kd.py",
         "sft.py",
         "kd_collect.py",
@@ -447,7 +816,11 @@ def main():
     report = {
         "status": "preflight",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "algorithm": "on_policy_reverse_kl_opd",
+        "algorithm": {
+            "sampled_reverse_kl": "on_policy_reverse_kl_opd",
+            "topk_forward_kl": "on_policy_topk_distillation",
+            "hybrid_gold": "on_policy_reverse_kl_gold",
+        }[args.objective],
         "model": MODEL,
         "initialization": "fresh_lora_on_hosted_model",
         "hosted_weight_revision": None,
@@ -468,7 +841,8 @@ def main():
         "tokenizer_sha256": identity,
         "rollout_temperature": 1.0,
         "loss_temperature": 1.0,
-        "opd_objective": "sampled_reverse_kl",
+        "opd_objective": args.objective,
+        "gold_weight": args.gold_weight if args.objective == "hybrid_gold" else 0,
         "advantage_discount": 0.0,
         "rollout_seed_policy": "seed_plus_1000_step_plus_position",
         "lora": {
@@ -486,7 +860,11 @@ def main():
             "weight_decay": 0,
             "grad_clip_norm": 1.0,
         },
-        "loss_reduction": "batch_supervised_position_mean_importance_sampling",
+        "loss_reduction": {
+            "sampled_reverse_kl": "batch_supervised_position_mean_importance_sampling",
+            "topk_forward_kl": "batch_supervised_position_mean_topk_ce",
+            "hybrid_gold": "separate_token_means_weighted_opd_and_gold_ce",
+        }[args.objective],
         "learning_rate_schedule": "linear_warmup_then_constant",
         "warmup_steps": math.ceil(args.warmup_ratio * steps),
         "rates_usd_per_million": {

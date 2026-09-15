@@ -33,7 +33,7 @@ def estimate_cost(examples, max_new_tokens, stages=2):
     }
 
 
-def sample_one(sampler, example, tokenizer, stop, max_new_tokens, lock):
+def sample_one(sampler, example, tokenizer, stop, max_new_tokens, lock, seed=SEED):
     import tinker
 
     row, prompt, _ = example
@@ -42,7 +42,7 @@ def sample_one(sampler, example, tokenizer, stop, max_new_tokens, lock):
         prompt=prompt,
         num_samples=1,
         sampling_params=tinker.SamplingParams(
-            temperature=0, seed=SEED, stop=stop, max_tokens=max_new_tokens
+            temperature=0, seed=seed, stop=stop, max_tokens=max_new_tokens
         ),
     ).result(timeout=600)
     seq = response.sequences[0]
@@ -140,6 +140,7 @@ def main():
     p.add_argument("--max-new-tokens", type=int, default=8192)
     p.add_argument("--max-pixels", type=int, default=1048576)
     p.add_argument("--concurrency", type=int, default=4)
+    p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--max-estimated-usd", type=float, default=2.0)
     p.add_argument("--execute", action="store_true")
     args = p.parse_args()
@@ -200,7 +201,7 @@ def main():
         },
         "sampler_paths": {k: source["sampler_paths"][k] for k in stages},
         "processor_revision": PROCESSOR_REVISION,
-        "seed": SEED,
+        "seed": args.seed,
         "nll_method": "saved_sampler.compute_logprobs, full original reference HTML, assistant mask",
         "max_reference_sequence_tokens": max(
             d.model_input.length + 1 for _, _, d in examples
@@ -221,6 +222,7 @@ def main():
 
         load_dotenv(args.env_file, override=False)
     import tinker
+    from tinker.lib.retry_handler import RetryConfig
 
     start = perf_counter()
     service = tinker.ServiceClient()
@@ -230,7 +232,8 @@ def main():
     try:
         for stage in stages:
             sampler = service.create_sampling_client(
-                model_path=report["sampler_paths"][stage]
+                model_path=report["sampler_paths"][stage],
+                retry_config=RetryConfig(enable_retry_logic=False),
             )
             likelihoods = collect(
                 examples,
@@ -259,6 +262,7 @@ def main():
                     renderer.get_stop_sequences(),
                     args.max_new_tokens,
                     lock,
+                    args.seed,
                 ),
                 args.output_dir / f"{stage}_predictions.jsonl",
                 args.concurrency,
