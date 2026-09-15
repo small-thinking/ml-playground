@@ -1,7 +1,7 @@
 # VLM Table Extraction Lab
 
 低预算的表格 VLM 后训练练习：建立初始模型的抽取 baseline，再观察小规模
-SFT、传统 KD、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
+SFT、传统 KD、OPD、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
 公开榜单最优结果。
 
 当前阶段：Tinker 与本地 MLX 的 4B Dev100 baseline 已完成并保存在
@@ -35,6 +35,12 @@ rank8 LoRA；使用与 SFT800 相同的全部800张图片，训练100步，LR1e-
 查看，完整设置、指标、费用和限制见 [KD800 结果](RD_TRAIN800_KD_RESULTS.md)。
 旧KD77的W&B训练/Test记录已按用户要求删除，历史结果仅保留作实验记录。
 
+完整 OPD800 已完成，与传统 KD800 使用相同 Base、teacher、800图和100步。
+Test100 单元格 F1 **0.4538 → 0.4689**、数字 F1 **0.5377 → 0.5481**、整表一致率
+**3% → 4%**，但配对置信区间均包含0；格式通过率 **97% → 95%**，截断率 **2% → 4%**。
+因此本轮尚不能确认 OPD 更好。正式训练/Dev/Test 费用估算 **$3.77**，含烟测与失败
+请求保守入账约 **$4.04**。评估恢复未重放训练；详情见 [OPD800 结果](RD_TRAIN800_OPD_RESULTS.md)。
+
 RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
 Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
@@ -49,6 +55,9 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 历史 SFT smoke 仅记录本地；正式训练可显式启用 W&B，实时记录 loss/PPL、
 学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
+- [OPD800 与传统 KD800：结果、区间与费用](RD_TRAIN800_OPD_RESULTS.md)
+- [OPD 固定协议、算法与运行命令](OPD_PLAN.md)
+- [OPD 烟测结果与工程修复](OPD_SMOKE_RESULTS.md)
 - [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)
 - [全量 KD800 结果与 Base / SFT800 比较](RD_TRAIN800_KD_RESULTS.md)
 - [全量 KD800 配置与复现命令](FULL_KD_PLAN.md)
