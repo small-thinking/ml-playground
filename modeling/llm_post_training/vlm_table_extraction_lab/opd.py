@@ -50,10 +50,10 @@ from .tinker_inference import (
     COOKBOOK_REVISION,
     PROCESSOR_REVISION,
     TEACHER_MODEL,
-    TEACHER_REVISION,
     image_message,
     load_renderer,
 )
+from .teacher_config import TEACHERS, teacher_spec
 from .training_logging import TrainingLogger, evaluation_metrics
 
 
@@ -75,6 +75,7 @@ def prepare_prompts(rows, root, renderer, teacher_renderer, args):
 
 def estimate_cost(train, dev, args, gold_train=()):
     """Report both a length scenario and the worst output-cap bound, not a quote."""
+    selected_teacher = teacher_spec(getattr(args, "teacher_model", TEACHER_MODEL))
     steps = math.ceil(len(train) / args.batch_size) * args.epochs
     prefill = sum(p.length for _, p in train) * args.epochs
     forward = len(evaluation_steps(steps, args.eval_every)) * sum(
@@ -110,8 +111,8 @@ def estimate_cost(train, dev, args, gold_train=()):
         return (
             prefill * FORWARD_RATE
             + output * SAMPLE_RATE
-            + (prefill + output) * TEACHER_FORWARD_RATE
-            + len(train) * args.epochs * TEACHER_SAMPLE_RATE
+            + (prefill + output) * selected_teacher.forward_rate
+            + len(train) * args.epochs * selected_teacher.sample_rate
             + (prefill + output - len(train) * args.epochs) * TRAIN_RATE
             + gold_tokens * TRAIN_RATE
             + (
@@ -246,11 +247,12 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
     import tinker
     from tinker.lib.retry_handler import RetryConfig
 
+    selected_teacher = teacher_spec(getattr(args, "teacher_model", TEACHER_MODEL))
     budget = CollectionBudget(args.output_dir / "usage.json", args.max_estimated_usd)
     service = tinker.ServiceClient()
     retry = RetryConfig(enable_retry_logic=False)
     teacher = service.create_sampling_client(
-        base_model=TEACHER_MODEL, retry_config=retry
+        base_model=selected_teacher.model, retry_config=retry
     )
     client = service.create_lora_training_client(
         base_model=MODEL,
@@ -411,8 +413,8 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                 bound = (
                     prefill * FORWARD_RATE
                     + cap * SAMPLE_RATE
-                    + (prefill + cap) * TEACHER_FORWARD_RATE
-                    + len(batch) * TEACHER_SAMPLE_RATE
+                    + (prefill + cap) * selected_teacher.forward_rate
+                    + len(batch) * selected_teacher.sample_rate
                     + (prefill + cap - len(batch) + gold_tokens) * TRAIN_RATE
                     + diagnostic_passes * (prefill + cap - len(batch)) * FORWARD_RATE
                 ) / 1e6
@@ -610,8 +612,8 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
                 amount = (
                     usage["prefill_tokens"] * FORWARD_RATE
                     + usage["rollout_tokens"] * SAMPLE_RATE
-                    + usage["teacher_forward_tokens"] * TEACHER_FORWARD_RATE
-                    + len(batch) * TEACHER_SAMPLE_RATE
+                    + usage["teacher_forward_tokens"] * selected_teacher.forward_rate
+                    + len(batch) * selected_teacher.sample_rate
                     + (usage["training_tokens"] + gold_tokens) * TRAIN_RATE
                     + diagnostic_tokens * FORWARD_RATE
                 ) / 1e6
@@ -696,6 +698,7 @@ def main():
         "official-repo",
     ):
         p.add_argument(f"--{name}", type=Path, required=True)
+    p.add_argument("--teacher-model", choices=tuple(TEACHERS), default=TEACHER_MODEL)
     p.add_argument("--env-file", type=Path)
     p.add_argument("--execute", action="store_true")
     p.add_argument("--train-examples", type=int, default=8)
@@ -726,6 +729,7 @@ def main():
     p.add_argument("--dataset-label", default="rd-opd-smoke8")
     p.add_argument("--inference-concurrency", type=int, default=4)
     args = p.parse_args()
+    selected_teacher = teacher_spec(args.teacher_model)
     for key, value in vars(args).items():
         if (
             isinstance(value, (int, float))
@@ -767,7 +771,7 @@ def main():
         MODEL, PROCESSOR_REVISION, args.tinker_cookbook_dir
     )
     teacher_tokenizer, teacher_renderer = load_renderer(
-        TEACHER_MODEL, TEACHER_REVISION, args.tinker_cookbook_dir
+        selected_teacher.model, selected_teacher.revision, args.tinker_cookbook_dir
     )
     identity = tokenizer_identity(tokenizer, teacher_tokenizer)
     train = prepare_prompts(
@@ -801,6 +805,8 @@ def main():
     args.rollouts_per_example, args.updates_per_rollout = 1, 1
     implementation_files = (
         "opd.py",
+        "teacher_config.py",
+        "tinker_inference.py",
         "opd_targets.py",
         "opd_sampling_budget.py",
         "opd_diagnostics.py",
@@ -824,8 +830,8 @@ def main():
         "model": MODEL,
         "initialization": "fresh_lora_on_hosted_model",
         "hosted_weight_revision": None,
-        "teacher_model": TEACHER_MODEL,
-        "teacher_processor_revision": TEACHER_REVISION,
+        "teacher_model": selected_teacher.model,
+        "teacher_processor_revision": selected_teacher.revision,
         "teacher_hosted_weight_revision": None,
         "processor_revision": PROCESSOR_REVISION,
         "cookbook_revision": COOKBOOK_REVISION,
@@ -871,8 +877,8 @@ def main():
             "training": TRAIN_RATE,
             "forward": FORWARD_RATE,
             "sample": SAMPLE_RATE,
-            "teacher_forward": TEACHER_FORWARD_RATE,
-            "teacher_scoring_output": TEACHER_SAMPLE_RATE,
+            "teacher_forward": selected_teacher.forward_rate,
+            "teacher_scoring_output": selected_teacher.sample_rate,
         },
         "implementation_sha256": json_hash(
             {f: digest(Path(__file__).with_name(f)) for f in implementation_files}

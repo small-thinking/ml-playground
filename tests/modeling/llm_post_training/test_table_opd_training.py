@@ -258,7 +258,7 @@ def rig(tmp_path, monkeypatch):
             if model_path is not None:
                 assert model_path.startswith("PRIVATE_MARKER/")
                 return object()
-            assert base_model == opd.TEACHER_MODEL
+            assert base_model == getattr(args, "teacher_model", opd.TEACHER_MODEL)
             assert retry_config.enable_retry_logic is False
             return Teacher()
 
@@ -789,3 +789,83 @@ def test_sparse_diagnostics_cover_first_and_final_steps_without_extra_middle_for
     assert rig.report["extra_usage"]["diagnostic_forward_tokens"] == (
         12 if objective == "topk_forward_kl" else 6
     )
+
+
+@pytest.mark.parametrize("model", tuple(opd.TEACHERS))
+def test_selected_teacher_rates_used_for_estimate_reservation_and_settlement(
+    rig, model
+):
+    rig.args.teacher_model = model
+    spec = opd.teacher_spec(model)
+    estimate = opd.estimate_cost(rig.train, rig.dev, rig.args)
+    expected_bound = (
+        6 * opd.FORWARD_RATE
+        + 9 * opd.SAMPLE_RATE
+        + 15 * spec.forward_rate
+        + 3 * spec.sample_rate
+        + 12 * opd.TRAIN_RATE
+        + 12 * opd.FORWARD_RATE
+    ) / 1e6
+    assert estimate["estimated_usd_bound"] == pytest.approx(expected_bound)
+    # Record reservations before settle clears their durable pending entry.
+    reserved = []
+    original = opd.CollectionBudget.reserve
+
+    def capture(self, key, amount):
+        reserved.append((key, amount))
+        return original(self, key, amount)
+
+    from unittest.mock import patch
+
+    with patch.object(opd.CollectionBudget, "reserve", capture):
+        run_rig(rig)
+    first = dict(reserved)["step_1:rollout_teacher_backward"]
+    assert first == pytest.approx(
+        (
+            4 * opd.FORWARD_RATE
+            + 6 * opd.SAMPLE_RATE
+            + 10 * spec.forward_rate
+            + 2 * spec.sample_rate
+            + 8 * opd.TRAIN_RATE
+        )
+        / 1e6
+    )
+    expected_actual = (
+        18 * opd.FORWARD_RATE
+        + 6 * opd.SAMPLE_RATE
+        + 12 * spec.forward_rate
+        + 3 * spec.sample_rate
+        + 9 * opd.TRAIN_RATE
+    ) / 1e6
+    journal = json.loads((rig.args.output_dir / "usage.json").read_text())
+    assert journal["estimated_compute_usd"] == pytest.approx(expected_actual)
+    assert journal["pending"] is None
+    assert rig.report["estimated_compute_usd"] == pytest.approx(expected_actual)
+
+
+def test_large_teacher_budget_rejects_before_rollouts_at_old_teacher_limit(rig):
+    old_estimate = opd.estimate_cost(rig.train, rig.dev, rig.args)
+    rig.args.teacher_model = "Qwen/Qwen3.5-397B-A17B"
+    rig.args.max_estimated_usd = old_estimate["estimated_usd_bound"]
+    with pytest.raises(ValueError, match="budget reached"):
+        run_rig(rig)
+    assert rig.events == [("dev", 0)]
+    assert rig.client.step == 0
+
+
+def test_teacher_selection_pins_processors_and_preserves_default():
+    from modeling.llm_post_training.vlm_table_extraction_lab.tinker_inference import (
+        PROCESSOR_REVISIONS,
+        TEACHER_REVISION,
+    )
+
+    default = opd.teacher_spec()
+    assert default.model == opd.TEACHER_MODEL
+    assert default.revision == TEACHER_REVISION
+    assert default.forward_rate == opd.TEACHER_FORWARD_RATE
+    assert default.sample_rate == opd.TEACHER_SAMPLE_RATE
+    for model, spec in opd.TEACHERS.items():
+        assert PROCESSOR_REVISIONS[model] == spec.revision
+        assert len(spec.revision) == 40
+    with pytest.raises(ValueError, match="Unsupported teacher"):
+        opd.teacher_spec("Qwen/unknown-model")
