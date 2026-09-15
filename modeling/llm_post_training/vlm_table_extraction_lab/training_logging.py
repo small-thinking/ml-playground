@@ -6,6 +6,13 @@ import subprocess
 import sys
 
 
+def training_role(report):
+    return {
+        "off_policy_topk_kd": "kd",
+        "on_policy_reverse_kl_opd": "opd",
+    }.get(report.get("algorithm"), "sft")
+
+
 def training_config(report):
     args = report["config"]
     config = {
@@ -60,8 +67,28 @@ def training_config(report):
         "lora_dropout": None,
         "implementation_sha256": report["implementation_sha256"],
     }
-    if report.get("algorithm") == "off_policy_topk_kd":
+    if training_role(report) in {"kd", "opd"}:
         config["generate_dev"] = args["generate_dev"]
+        config.update(
+            {
+                k: report[k]
+                for k in (
+                    "algorithm",
+                    "teacher_model",
+                    "teacher_processor_revision",
+                    "loss_temperature",
+                    "rollout_temperature",
+                    "tokenizer_sha256",
+                    "teacher_hosted_weight_revision",
+                )
+            }
+        )
+    if training_role(report) == "opd":
+        config.update(
+            {k: args[k] for k in ("rollouts_per_example", "updates_per_rollout")}
+        )
+        config.update({k: report[k] for k in ("opd_objective", "advantage_discount")})
+    if training_role(report) == "kd":
         for key in (
             "candidate_examples",
             "rejected_examples",
@@ -76,16 +103,9 @@ def training_config(report):
             {
                 k: report[k]
                 for k in (
-                    "algorithm",
-                    "teacher_model",
-                    "teacher_processor_revision",
                     "cache_sha256",
                     "top_k",
-                    "loss_temperature",
-                    "rollout_temperature",
-                    "tokenizer_sha256",
                     "retained_mass",
-                    "teacher_hosted_weight_revision",
                 )
             }
         )
@@ -131,7 +151,7 @@ class TrainingLogger:
         self.process = None
         if report["config"]["wandb_mode"] == "disabled":
             return
-        algorithm = "kd" if report.get("algorithm") == "off_policy_topk_kd" else "sft"
+        algorithm = training_role(report)
         payload = {
             "config": training_config(report),
             "metrics": {},

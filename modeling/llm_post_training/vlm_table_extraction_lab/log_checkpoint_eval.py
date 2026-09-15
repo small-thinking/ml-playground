@@ -16,6 +16,7 @@ from .official import OfficialScorer, REVISION
 from .reporting import grouped_metrics
 from .sft import MODEL
 from .tinker_inference import COOKBOOK_REVISION, PROCESSOR_REVISION
+from .training_logging import training_role
 
 
 def make_payload(
@@ -30,7 +31,7 @@ def make_payload(
     trained_role="sft",
 ):
     """Explicit allowlist: never serialize source config or sampler addresses."""
-    if trained_role not in {"sft", "kd"}:
+    if trained_role not in {"sft", "kd", "opd"}:
         raise ValueError("Unknown trained model role")
     config = {
         "model_label": "Qwen3.5-4B",
@@ -123,7 +124,7 @@ def main():
     p.add_argument("--upload", action="store_true")
     args = p.parse_args()
     if (args.stage == "after") != bool(args.baseline_run_id):
-        raise ValueError("Only SFT runs require --baseline-run-id")
+        raise ValueError("Only trained model runs require --baseline-run-id")
     report = json.loads((args.evaluation_dir / "run.json").read_text())
     source_path = Path(report["config"]["source_run"])
     source = json.loads(source_path.read_text())
@@ -178,7 +179,7 @@ def main():
         args.baseline_run_id,
         training=training,
         training_run_id=source.get("wandb_run_id"),
-        trained_role="kd" if source.get("algorithm") == "off_policy_topk_kd" else "sft",
+        trained_role=training_role(source),
     )
     # Public payload and receipt are locally inspectable before any network upload.
     payload_path = args.evaluation_dir / f"{args.stage}_wandb_payload.json"

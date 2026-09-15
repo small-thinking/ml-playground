@@ -63,3 +63,20 @@ def test_nonfinite_metrics_rejected(inputs):
     inputs[1]["eval/cell_f1"] = float("nan")
     with pytest.raises(ValueError, match="finite"):
         make_payload(*inputs, "before", "one", "project", None)
+
+
+def test_opd_keeps_shared_comparison_group_and_distinct_identity(inputs):
+    baseline = make_payload(*inputs, "before", "one", "project", None)
+    trained = [
+        make_payload(
+            *inputs, "after", "two", "project", baseline["run_id"], trained_role=role
+        )
+        for role in ("sft", "kd", "opd")
+    ]
+    assert all(payload["group"] == baseline["group"] for payload in trained)
+    assert len({payload["run_id"] for payload in [baseline, *trained]}) == 4
+    opd = trained[-1]
+    assert opd["config"]["model_role"] == "opd"
+    assert opd["config"]["baseline_run_id"] == baseline["run_id"]
+    assert "opd" in opd["tags"] and "-opd-" in opd["name"]
+    assert "PRIVATE_MARKER" not in json.dumps(opd)
