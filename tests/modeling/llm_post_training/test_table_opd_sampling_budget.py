@@ -21,10 +21,8 @@ from modeling.llm_post_training.vlm_table_extraction_lab.sft import (
 class Sequence:
     def __init__(self, tokens):
         self.tokens = tokens
-
-    def model_dump(self, mode):
-        assert mode == "json"
-        return {"tokens": self.tokens, "stop_reason": "stop"}
+        self.logprobs = None
+        self.stop_reason = "stop"
 
 
 class Client:
@@ -79,6 +77,45 @@ def test_budget_rejection_precedes_paid_call(tmp_path):
     with pytest.raises(ValueError, match="before next paid request"):
         sample(sampler)
     assert not client.calls and budget.state["pending"] is None
+
+
+@pytest.mark.parametrize("has_logprobs", [True, False])
+def test_real_sdk_sequence_is_saved_before_settlement(
+    tmp_path, monkeypatch, has_logprobs
+):
+    import numpy as np
+    import tinker
+
+    sequence = tinker.SampledSequence(
+        stop_reason="stop",
+        sequence_id="local-fixture",
+        tokens_np=np.array([1, 2], dtype=np.int64),
+        logprobs_np=np.array([-0.25, -0.5]) if has_logprobs else None,
+    )
+    response = tinker.SampleResponse(sequences=[sequence])
+    sdk_future = Future()
+    sdk_future.set_result(response)
+    client = SimpleNamespace(sample=lambda **kwargs: sdk_future)
+    budget = ConcurrentBudget(tmp_path / "usage.json", 1)
+    future = sample(BudgetedSampler(client, budget, tmp_path / "raw"))
+    original_settle = future.request.settle
+
+    def settle_after_persistence(amount):
+        raw = json.loads((tmp_path / "raw" / "000001.json").read_text())
+        assert raw == {
+            "sequences": [
+                {
+                    "tokens": [1, 2],
+                    "logprobs": [-0.25, -0.5] if has_logprobs else None,
+                    "stop_reason": "stop",
+                }
+            ]
+        }
+        original_settle(amount)
+
+    monkeypatch.setattr(future.request, "settle", settle_after_persistence)
+    assert future.result(timeout=1) is response
+    assert budget.state["pending"] is None and budget.state["calls"] == 1
 
 
 @pytest.mark.parametrize("error", [TimeoutError(), CancelledError()])

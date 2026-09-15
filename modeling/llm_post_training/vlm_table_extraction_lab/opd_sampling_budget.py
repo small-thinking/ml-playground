@@ -63,7 +63,12 @@ class _BudgetedFuture:
                     self.path,
                     {
                         "sequences": [
-                            s.model_dump(mode="json") for s in response.sequences
+                            {
+                                "tokens": s.tokens,
+                                "logprobs": s.logprobs,
+                                "stop_reason": s.stop_reason,
+                            }
+                            for s in response.sequences
                         ]
                     },
                 )
