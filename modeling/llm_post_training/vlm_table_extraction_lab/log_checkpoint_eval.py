@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -29,10 +30,15 @@ def make_payload(
     training=None,
     training_run_id=None,
     trained_role="sft",
+    run_label=None,
 ):
     """Explicit allowlist: never serialize source config or sampler addresses."""
     if trained_role not in {"sft", "kd", "opd"}:
         raise ValueError("Unknown trained model role")
+    if run_label is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_label
+    ):
+        raise ValueError("Expected a short public run label without paths")
     config = {
         "model_label": "Qwen3.5-4B",
         "model_role": "base" if stage == "before" else trained_role,
@@ -101,13 +107,14 @@ def make_payload(
     run_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[
         :16
     ]
+    label = f"-{run_label}" if run_label else ""
     return {
         "config": config,
         "metrics": values,
         "mode": "online",
         "project": project,
         "run_id": run_id,
-        "name": f"qwen35-4b-{config['model_role']}-{config['split']}{config['examples']}-{run_id[:6]}",
+        "name": f"qwen35-4b-{config['model_role']}{label}-{config['split']}{config['examples']}-{run_id[:6]}",
         "group": group,
         "tags": [config["split"], config["model_role"], "fixed-comparison"],
     }
@@ -119,6 +126,10 @@ def main():
         p.add_argument(f"--{name}", type=Path, required=True)
     p.add_argument("--stage", choices=["before", "after"], required=True)
     p.add_argument("--baseline-run-id")
+    p.add_argument(
+        "--run-label",
+        help="Optional public display label; does not change run identity",
+    )
     p.add_argument("--env-file", type=Path)
     p.add_argument("--wandb-project", default="vlm-table-extraction")
     p.add_argument("--upload", action="store_true")
@@ -180,6 +191,7 @@ def main():
         training=training,
         training_run_id=source.get("wandb_run_id"),
         trained_role=training_role(source),
+        run_label=args.run_label,
     )
     # Public payload and receipt are locally inspectable before any network upload.
     payload_path = args.evaluation_dir / f"{args.stage}_wandb_payload.json"

@@ -41,6 +41,13 @@ Test100 单元格 F1 **0.4538 → 0.4689**、数字 F1 **0.5377 → 0.5481**、�
 因此本轮尚不能确认 OPD 更好。正式训练/Dev/Test 费用估算 **$3.77**，含烟测与失败
 请求保守入账约 **$4.04**。评估恢复未重放训练；详情见 [OPD800 结果](RD_TRAIN800_OPD_RESULTS.md)。
 
+后续四个假设的验证已完成：更早checkpoint未胜出；同一Train160对照下，降低LR到3e-5
+和混入25%真实标签CE改善了Test Cell F1，Top10方案则出现重复/截断退步。
+四组Test Cell F1分别为Control **0.3955**、低LR **0.4575**、Top10 **0.4244**、
+Gold混合 **0.4876**；新增计算费估算 **$6.45**。新增KL更新诊断、梯度范数和信号分布
+均已记录到W&B。完整区间、局限和日志解释见 [四个假设的结果](OPD_HYPOTHESES_RESULTS.md)。
+这些Train160结果只与同规模对照比较，不替代原Train800比较。
+
 RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
 Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
@@ -57,6 +64,7 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 
 - [OPD800 与传统 KD800：结果、区间与费用](RD_TRAIN800_OPD_RESULTS.md)
 - [OPD 四个假设：对照设置、预算和新增诊断指标](OPD_HYPOTHESES.md)
+- [OPD 四个假设：验证结果、诊断和费用](OPD_HYPOTHESES_RESULTS.md)
 - [OPD 固定协议、算法与运行命令](OPD_PLAN.md)
 - [OPD 烟测结果与工程修复](OPD_SMOKE_RESULTS.md)
 - [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)

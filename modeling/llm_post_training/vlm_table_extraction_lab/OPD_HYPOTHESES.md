@@ -58,6 +58,9 @@ Log advantage standard deviation/quantiles/sign/near-zero fractions; concentrati
 absolute importance-weighted feedback; long/invalid trajectory signal shares; importance
 ESS and tail rate; token-category diagnostics with alignment failures explicitly unknown.
 These are signal proxies, not parameter-gradient attribution.
+The advantage/importance-weighted signal proxy always uses sampled reverse-KL:
+for H3 it is a diagnostic probe, not the Top10 CE training signal; for H4 it covers
+only the OPD branch, not the combined objective's gradient.
 
 On diagnostic updates, run a fresh forward pass after optimizer.step on the SAME
 original tokens and compare pre/post learner probabilities. Report sampled old-policy
@@ -103,6 +106,9 @@ All data, reports, command files and raw likelihoods stay in ignored local direc
 Full fixed Test100 uses `checkpoint_eval --split test --stage after --seed 20260913`;
 H1 Dev checkpoints explicitly use `--seed 20260914`, matching the original OPD Dev
 generation. The two protocols must not be mixed into one evaluation comparison.
+Publish verified Test aggregates with `log_checkpoint_eval --run-label control160`
+(or the corresponding variant label) to distinguish runs in the shared W&B group.
+The optional public display label changes neither run identity nor comparison protocol.
 
 Training W&B namespaces separate `training`, `dev`, `train`, `optimizer`,
 `opd_diagnostics`, and `runtime`. A diagnostic old-policy KL is a sampled estimate,
