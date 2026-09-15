@@ -1,7 +1,7 @@
 # VLM Table Extraction Lab
 
 低预算的表格 VLM 后训练练习：建立初始模型的抽取 baseline，再观察小规模
-SFT、传统 KD、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
+SFT、传统 KD、OPD、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
 公开榜单最优结果。
 
 当前阶段：Tinker 与本地 MLX 的 4B Dev100 baseline 已完成并保存在
@@ -35,6 +35,25 @@ rank8 LoRA；使用与 SFT800 相同的全部800张图片，训练100步，LR1e-
 查看，完整设置、指标、费用和限制见 [KD800 结果](RD_TRAIN800_KD_RESULTS.md)。
 旧KD77的W&B训练/Test记录已按用户要求删除，历史结果仅保留作实验记录。
 
+完整 OPD800 已完成，与传统 KD800 使用相同 Base、teacher、800图和100步。
+Test100 单元格 F1 **0.4538 → 0.4689**、数字 F1 **0.5377 → 0.5481**、整表一致率
+**3% → 4%**，但配对置信区间均包含0；格式通过率 **97% → 95%**，截断率 **2% → 4%**。
+因此本轮尚不能确认 OPD 更好。正式训练/Dev/Test 费用估算 **$3.77**，含烟测与失败
+请求保守入账约 **$4.04**。评估恢复未重放训练；详情见 [OPD800 结果](RD_TRAIN800_OPD_RESULTS.md)。
+
+后续四个假设的验证已完成：更早checkpoint未胜出；同一Train160对照下，降低LR到3e-5
+和混入25%真实标签CE改善了Test Cell F1，Top10方案则出现重复/截断退步。
+四组Test Cell F1分别为Control **0.3955**、低LR **0.4575**、Top10 **0.4244**、
+Gold混合 **0.4876**；新增计算费估算 **$6.45**。新增KL更新诊断、梯度范数和信号分布
+均已记录到W&B。完整区间、局限和日志解释见 [四个假设的结果](OPD_HYPOTHESES_RESULTS.md)。
+这些Train160结果只与同规模对照比较，不替代原Train800比较。
+
+397B teacher 替换实验也已完成：保持 H2 的 Train160、LR3e-5 和纯 OPD 配方，
+Test Cell F1 **0.4575 → 0.4342**，区间包含0；格式通过率 **97% → 93%**、
+截断率 **2% → 6%**，两项退步区间不含0。397B 本身在完整 Dev100 上也没有显示
+更强的任务能力。新增费用估算 **$3.97**；完整对照、全部历史版本索引和 W&B 链接见
+[Teacher 替换实验结果](STRONG_TEACHER_RESULTS.md)。
+
 RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
 Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
@@ -49,6 +68,13 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 历史 SFT smoke 仅记录本地；正式训练可显式启用 W&B，实时记录 loss/PPL、
 学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
+- [OPD800 与传统 KD800：结果、区间与费用](RD_TRAIN800_OPD_RESULTS.md)
+- [OPD 四个假设：对照设置、预算和新增诊断指标](OPD_HYPOTHESES.md)
+- [OPD 四个假设：验证结果、诊断和费用](OPD_HYPOTHESES_RESULTS.md)
+- [OPD 更换397B teacher：实验方案](STRONG_TEACHER_PLAN.md)
+- [OPD 更换397B teacher：结果、日志、费用和历史版本比较](STRONG_TEACHER_RESULTS.md)
+- [OPD 固定协议、算法与运行命令](OPD_PLAN.md)
+- [OPD 烟测结果与工程修复](OPD_SMOKE_RESULTS.md)
 - [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)
 - [全量 KD800 结果与 Base / SFT800 比较](RD_TRAIN800_KD_RESULTS.md)
 - [全量 KD800 配置与复现命令](FULL_KD_PLAN.md)

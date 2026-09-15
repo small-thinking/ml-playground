@@ -6,6 +6,15 @@ import subprocess
 import sys
 
 
+def training_role(report):
+    return {
+        "off_policy_topk_kd": "kd",
+        "on_policy_reverse_kl_opd": "opd",
+        "on_policy_topk_distillation": "opd",
+        "on_policy_reverse_kl_gold": "opd",
+    }.get(report.get("algorithm"), "sft")
+
+
 def training_config(report):
     args = report["config"]
     config = {
@@ -54,14 +63,51 @@ def training_config(report):
         "prompt_sha256": hashlib.sha256(report["prompt"].encode()).hexdigest(),
         "planned_training_tokens": report["cost"]["training_tokens"],
         "estimated_training_run_usd_bound": report["cost"]["estimated_usd_bound"],
-        "checkpoint_selection": "final_step",
+        "checkpoint_selection": report.get("checkpoint_selection", "final_step"),
         "checkpoint_ttl_days": 7,
         "lora_alpha": None,
         "lora_dropout": None,
         "implementation_sha256": report["implementation_sha256"],
     }
-    if report.get("algorithm") == "off_policy_topk_kd":
+    if "selected_checkpoint_step" in report:
+        config["selected_checkpoint_step"] = report["selected_checkpoint_step"]
+    if training_role(report) in {"kd", "opd"}:
         config["generate_dev"] = args["generate_dev"]
+        config.update(
+            {
+                k: report[k]
+                for k in (
+                    "algorithm",
+                    "teacher_model",
+                    "teacher_processor_revision",
+                    "loss_temperature",
+                    "rollout_temperature",
+                    "tokenizer_sha256",
+                    "teacher_hosted_weight_revision",
+                )
+            }
+        )
+    if training_role(report) == "opd":
+        for key in (
+            "objective",
+            "diagnostic_every",
+            "train_probe_examples",
+            "generate_dev_every",
+        ):
+            if key in args:
+                config[key] = args[key]
+        if "gold_weight" in report:
+            config["gold_weight"] = report["gold_weight"]
+        config["train_likelihood_scope"] = (
+            "fixed_gold_training_probe"
+            if args.get("train_probe_examples", 0)
+            else "not_measured"
+        )
+        config.update(
+            {k: args[k] for k in ("rollouts_per_example", "updates_per_rollout")}
+        )
+        config.update({k: report[k] for k in ("opd_objective", "advantage_discount")})
+    if training_role(report) == "kd":
         for key in (
             "candidate_examples",
             "rejected_examples",
@@ -76,16 +122,9 @@ def training_config(report):
             {
                 k: report[k]
                 for k in (
-                    "algorithm",
-                    "teacher_model",
-                    "teacher_processor_revision",
                     "cache_sha256",
                     "top_k",
-                    "loss_temperature",
-                    "rollout_temperature",
-                    "tokenizer_sha256",
                     "retained_mass",
-                    "teacher_hosted_weight_revision",
                 )
             }
         )
@@ -116,6 +155,9 @@ def evaluation_metrics(results):
             "assistant_nll": "nll",
             "assistant_perplexity": "perplexity",
             "eval/cell_f1": "cell_f1",
+            "eval/table_exact": "table_exact",
+            "eval/structure_exact": "structure_exact",
+            "eval/official_rd_similarity": "rd_similarity_format_gated",
             "eval/numeric_f1": "numeric_f1",
             "eval/official_rd_similarity_raw": "rd_similarity",
             "eval/parse_success": "format_pass_rate",
@@ -131,7 +173,7 @@ class TrainingLogger:
         self.process = None
         if report["config"]["wandb_mode"] == "disabled":
             return
-        algorithm = "kd" if report.get("algorithm") == "off_policy_topk_kd" else "sft"
+        algorithm = training_role(report)
         payload = {
             "config": training_config(report),
             "metrics": {},

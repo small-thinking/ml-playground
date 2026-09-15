@@ -8,6 +8,7 @@ from threading import Lock
 from time import perf_counter
 
 from .inference import PROMPT
+from .teacher_config import TEACHERS
 
 COOKBOOK_REVISION = "485726f55d3b2b5abe5fcb4a0d2f3e18e4599dfe"
 PROCESSOR_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
@@ -16,7 +17,7 @@ TEACHER_MODEL = "Qwen/Qwen3.6-35B-A3B"
 TEACHER_REVISION = "995ad96eacd98c81ed38be0c5b274b04031597b0"
 PROCESSOR_REVISIONS = {
     "Qwen/Qwen3.5-4B": PROCESSOR_REVISION,
-    TEACHER_MODEL: TEACHER_REVISION,
+    **{model: spec.revision for model, spec in TEACHERS.items()},
 }
 
 
