@@ -64,7 +64,8 @@ reserving the entire8192-token cap for final Dev generation. If final Dev resemb
 prior runs, actual cost should be lower. The all-trajectories-at-cap bound is$16.8168;
 that is not an approved spending level. Runtime cumulative training/Dev budget is
 $5.50 including10% accounting margin. A batch reserves its capped sampling, teacher
-scoring and training before making requests; uncertain calls stop without automatic
+scoring and training before making requests; final Dev generation reserves each
+request separately against that same cumulative ledger; uncertain calls stop without automatic
 application retries or resuming an optimizer. The smoke is separately capped at
 $0.40 and Test evaluation will have its own estimate and at most$1.00 allowance.
 The combined configured allowance is$6.90, not a promise that all of it will be spent.
@@ -80,6 +81,9 @@ in7days. Inter-batch synchronization adds latency; smoke timing will refine runt
 
 `opd_targets.py` contains tensor construction, normalization and metrics.
 `opd.py` contains synchronous collection, teacher scoring, update and evaluation.
+`opd_sampling_budget.py` preserves raw Dev sampling receipts and settles each
+request before proceeding. Formal within-batch concurrency is8; updates remain
+synchronous. The successful smoke used concurrency4.
 Only permitted aggregate metrics and configuration enter W&B. Image paths, prompts,
 rollouts, raw probability arrays, sample identifiers and checkpoint addresses stay
 local in ignored data/output directories. All actual paths come from CLI parameters.
@@ -93,7 +97,7 @@ uv run --no-sync python -m "$PACKAGE.opd" \
   --train-examples 800 --batch-size 8 --epochs 1 --rank 8 \
   --learning-rate 1e-4 --warmup-ratio 0.1 --eval-every 25 \
   --generate-dev --max-estimated-usd 5.50 \
-  --dataset-label rd-opd-train800-v1 --wandb-mode online
+  --dataset-label rd-opd-train800-v1 --wandb-mode online --inference-concurrency 8
 # Default is preflight; execute with a separate fresh output directory, adding:
 # --execute --env-file "$ENV_FILE"
 ```

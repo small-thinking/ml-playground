@@ -22,7 +22,9 @@ from .kd_collect import (
     tokenizer_identity,
 )
 from .metrics import VERSION, parse_table
+from .kd_collection_budget import ConcurrentBudget
 from .official import OfficialScorer, REVISION
+from .opd_sampling_budget import BudgetedSampler
 from .opd_targets import native_batch, policy_datum, summarize_policy
 from .sft import (
     MODEL,
@@ -168,10 +170,6 @@ def collect_one(sampler, teacher, row, prompt, tokenizer, stop, args, step, posi
         "format_invalid": int(not valid),
         "truncated": int(sequence.stop_reason == "length"),
     }
-
-
-def generation_cost(prefill, output):
-    return (prefill * FORWARD_RATE + output * SAMPLE_RATE) / 1e6
 
 
 def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
@@ -330,24 +328,21 @@ def run(args, train, dev, tokenizer, renderer, scorer, report, logger):
     report["sampler_paths"] = {"after": saved.path}
     dev_assess("after", step)
     if args.generate_dev:
-        prefill = sum(p.length for _, p, _ in dev)
-        budget.reserve(
-            "after:dev_generation",
-            generation_cost(prefill, len(dev) * args.max_new_tokens),
+        # Carry settled training usage into per-request concurrent reservations.
+        budget = ConcurrentBudget(
+            args.output_dir / "usage.json", args.max_estimated_usd
         )
         sampler = service.create_sampling_client(
             model_path=saved.path, retry_config=retry
         )
         predictions = generate(
-            sampler,
+            BudgetedSampler(sampler, budget, args.output_dir / "dev_sampling_receipts"),
             dev,
             tokenizer,
             renderer.get_stop_sequences(),
             args,
             args.output_dir / "after_dev_predictions.jsonl",
         )
-        output_tokens = sum(p["output_tokens"] for p in predictions.values())
-        budget.settle(generation_cost(prefill, output_tokens))
         details, metrics = evaluate(
             [r for r, _, _ in dev], args.data_root, predictions, scorer
         )
@@ -440,6 +435,15 @@ def main():
         steps,
     )
     args.rollouts_per_example, args.updates_per_rollout = 1, 1
+    implementation_files = (
+        "opd.py",
+        "opd_targets.py",
+        "opd_sampling_budget.py",
+        "kd.py",
+        "sft.py",
+        "kd_collect.py",
+        "kd_collection_budget.py",
+    )
     report = {
         "status": "preflight",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -493,17 +497,9 @@ def main():
             "teacher_scoring_output": TEACHER_SAMPLE_RATE,
         },
         "implementation_sha256": json_hash(
-            {
-                f: digest(Path(__file__).with_name(f))
-                for f in (
-                    "opd.py",
-                    "opd_targets.py",
-                    "kd.py",
-                    "sft.py",
-                    "kd_collect.py",
-                )
-            }
+            {f: digest(Path(__file__).with_name(f)) for f in implementation_files}
         ),
+        "implementation_files": implementation_files,
         "config": {
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
         },

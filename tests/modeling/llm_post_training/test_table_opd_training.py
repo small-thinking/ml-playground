@@ -368,7 +368,22 @@ def test_final_generation_follows_complete_final_dev_nll_and_is_budgeted(
         assert rig.events[-1] == ("dev", 2)
         assert len(examples) == len(rig.dev)
         journal = json.loads((args.output_dir / "usage.json").read_text())
-        assert journal["pending"]["key"] == "after:dev_generation"
+        assert journal["pending"] is None
+        assert isinstance(sampler, opd.BudgetedSampler)
+        # The real wrapper has separate raw-response and concurrency tests.
+        for index, (_, prompt, _) in enumerate(examples):
+            request = sampler.budget.for_example()
+            request.reserve(
+                str(index),
+                (
+                    prompt.length * opd.FORWARD_RATE
+                    + args.max_new_tokens * opd.SAMPLE_RATE
+                )
+                / 1e6,
+            )
+            request.settle(
+                (prompt.length * opd.FORWARD_RATE + 2 * opd.SAMPLE_RATE) / 1e6
+            )
         rig.events.append(("generation", 2))
         return {row["id"]: {"output_tokens": 2} for row, _, _ in examples}
 
