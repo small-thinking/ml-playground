@@ -9,6 +9,7 @@
 - [KD800固定Test100](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/runs/63278c924c12806f)
 - [固定Test100比较组](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/groups/rd-test100-0ddf5237b84f)
 - [全量计划和复现入口](FULL_KD_PLAN.md)
+- [实现审计、整表退化原因与过拟合证据](KD800_AUDIT.md)
 - [SFT800结果](RD_TRAIN800_SFT_RESULTS.md)
 
 ## 固定 Test100 三版本
