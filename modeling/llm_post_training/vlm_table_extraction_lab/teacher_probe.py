@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -71,6 +72,8 @@ def main():
     p.add_argument("--env-file", type=Path)
     p.add_argument("--execute", action="store_true")
     args = p.parse_args()
+    if not math.isfinite(args.max_estimated_usd) or args.max_estimated_usd <= 0:
+        raise ValueError("Budget must be positive and finite")
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         raise ValueError("A fresh output directory is required")
     source = json.loads(args.source_run.read_text())

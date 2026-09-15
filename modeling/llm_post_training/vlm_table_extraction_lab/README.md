@@ -48,6 +48,12 @@ Gold混合 **0.4876**；新增计算费估算 **$6.45**。新增KL更新诊断�
 均已记录到W&B。完整区间、局限和日志解释见 [四个假设的结果](OPD_HYPOTHESES_RESULTS.md)。
 这些Train160结果只与同规模对照比较，不替代原Train800比较。
 
+397B teacher 替换实验也已完成：保持 H2 的 Train160、LR3e-5 和纯 OPD 配方，
+Test Cell F1 **0.4575 → 0.4342**，区间包含0；格式通过率 **97% → 93%**、
+截断率 **2% → 6%**，两项退步区间不含0。397B 本身在完整 Dev100 上也没有显示
+更强的任务能力。新增费用估算 **$3.97**；完整对照、全部历史版本索引和 W&B 链接见
+[Teacher 替换实验结果](STRONG_TEACHER_RESULTS.md)。
+
 RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
 Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
@@ -65,6 +71,8 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 - [OPD800 与传统 KD800：结果、区间与费用](RD_TRAIN800_OPD_RESULTS.md)
 - [OPD 四个假设：对照设置、预算和新增诊断指标](OPD_HYPOTHESES.md)
 - [OPD 四个假设：验证结果、诊断和费用](OPD_HYPOTHESES_RESULTS.md)
+- [OPD 更换397B teacher：实验方案](STRONG_TEACHER_PLAN.md)
+- [OPD 更换397B teacher：结果、日志、费用和历史版本比较](STRONG_TEACHER_RESULTS.md)
 - [OPD 固定协议、算法与运行命令](OPD_PLAN.md)
 - [OPD 烟测结果与工程修复](OPD_SMOKE_RESULTS.md)
 - [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)

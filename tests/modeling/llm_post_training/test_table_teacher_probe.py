@@ -23,3 +23,22 @@ def test_uninformative_feedback_has_no_sign_denominator():
 def test_invalid_feedback_rejected(new):
     with pytest.raises(ValueError, match="aligned finite"):
         feedback_summary([-1], [-1], new)
+
+
+@pytest.mark.parametrize("budget", ["nan", "inf", "0", "-1"])
+def test_invalid_budget_rejected_before_loading_data(monkeypatch, budget):
+    import sys
+    from modeling.llm_post_training.vlm_table_extraction_lab.teacher_probe import main
+
+    argv = ["teacher-probe", "--max-estimated-usd", budget]
+    for flag in [
+        "source-run",
+        "manifest",
+        "data-root",
+        "output-dir",
+        "tinker-cookbook-dir",
+    ]:
+        argv.extend([f"--{flag}", "does-not-exist"])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(ValueError, match="Budget must be positive and finite"):
+        main()
