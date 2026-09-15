@@ -1,7 +1,7 @@
 # VLM Table Extraction Lab
 
 低预算的表格 VLM 后训练练习：建立初始模型的抽取 baseline，再观察小规模
-SFT、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
+SFT、传统 KD、错误分析和后续迭代带来的变化。目标是学会控制实验与解释指标，不追求
 公开榜单最优结果。
 
 当前阶段：Tinker 与本地 MLX 的 4B Dev100 baseline 已完成并保存在
@@ -26,6 +26,15 @@ warmup。固定 Test100 的 cell F1 **0.4072 → 0.6325**，数字 F1 **0.4445 �
 结构完全一致率 **14% → 37%**；训练、Dev 和 Test 合计约 25.5 分钟，token 计算费
 估算 **$2.28**。完整结果与 W&B 链接见 [Train800 结果](RD_TRAIN800_SFT_RESULTS.md)。
 
+全量传统 Top10 KD 已完成：冻结 Qwen3.6-35B-A3B teacher，4B 从 Base 新建
+rank8 LoRA；使用与 SFT800 相同的全部800张图片，训练100步，LR1e-4、warmup10。
+固定 Test100 单元格 F1 **0.4538**、数字 F1 **0.5377**，均值高于 Base，仍低于 SFT800；
+单元格提升的配对95%区间包含0，数字提升区间不含0。整表完全一致率由7%降至3%。
+本轮新增计算费估算 **$4.67**，执行阶段约47.5分钟。三版本可在
+[W&B 固定 Test100 比较组](https://wandb.ai/techtao-small-thinking/vlm-table-extraction/groups/rd-test100-0ddf5237b84f)
+查看，完整设置、指标、费用和限制见 [KD800 结果](RD_TRAIN800_KD_RESULTS.md)。
+旧KD77的W&B训练/Test记录已按用户要求删除，历史结果仅保留作实验记录。
+
 RD 是官方评测 benchmark。按本次明确选择，使用个人划分的 Train800 做训练，
 Dev100 做开发评估，Test100 做固定比较；这不是官方训练/测试划分。Test100 的首轮留出比较
 见 [Test100 结果](RD_TEST100_SFT_RESULTS.md)。按当前约定，每轮迭代都在相同
@@ -40,6 +49,12 @@ MLE 没有公开任务说明和标签，暂不纳入主线；Table Judge 是独�
 历史 SFT smoke 仅记录本地；正式训练可显式启用 W&B，实时记录 loss/PPL、
 学习率、完整 Dev 指标和允许上传的训练配置，不上传原始数据。
 
+- [传统 Off-policy Top-K KD 方案](OFF_POLICY_KD_PLAN.md)
+- [全量 KD800 结果与 Base / SFT800 比较](RD_TRAIN800_KD_RESULTS.md)
+- [全量 KD800 配置与复现命令](FULL_KD_PLAN.md)
+- [历史 KD77 pilot 结果（W&B记录已删除）](RD_KD80_RESULTS.md)
+- [MoE teacher → 4B student：KD 代码与运行步骤](KD_RUNBOOK.md)
+- [首次 KD 工程烟测结果：7/8 有效样本、完整 Dev100](KD_SMOKE_RESULTS.md)
 - [评测执行、指标与 W&B 隐私](EVALUATION.md)
 - [真实 Dev100 baseline 结果](BASELINE_RESULTS.md)
 - [完整 Train800 LoRA SFT 结果与 W&B](RD_TRAIN800_SFT_RESULTS.md)

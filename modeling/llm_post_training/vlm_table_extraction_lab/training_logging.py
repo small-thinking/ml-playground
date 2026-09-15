@@ -8,7 +8,7 @@ import sys
 
 def training_config(report):
     args = report["config"]
-    return {
+    config = {
         **{
             k: report[k]
             for k in (
@@ -60,6 +60,36 @@ def training_config(report):
         "lora_dropout": None,
         "implementation_sha256": report["implementation_sha256"],
     }
+    if report.get("algorithm") == "off_policy_topk_kd":
+        config["generate_dev"] = args["generate_dev"]
+        for key in (
+            "candidate_examples",
+            "rejected_examples",
+            "target_filter_policy",
+            "teacher_format_invalid_examples",
+            "teacher_truncated_examples",
+            "teacher_sampling_seed",
+        ):
+            if key in report:
+                config[key] = report[key]
+        config.update(
+            {
+                k: report[k]
+                for k in (
+                    "algorithm",
+                    "teacher_model",
+                    "teacher_processor_revision",
+                    "cache_sha256",
+                    "top_k",
+                    "loss_temperature",
+                    "rollout_temperature",
+                    "tokenizer_sha256",
+                    "retained_mass",
+                    "teacher_hosted_weight_revision",
+                )
+            }
+        )
+    return config
 
 
 def batch_metrics(entry):
@@ -101,15 +131,16 @@ class TrainingLogger:
         self.process = None
         if report["config"]["wandb_mode"] == "disabled":
             return
+        algorithm = "kd" if report.get("algorithm") == "off_policy_topk_kd" else "sft"
         payload = {
             "config": training_config(report),
             "metrics": {},
             "mode": "online",
             "project": report["config"]["wandb_project"],
-            "job_type": "sft",
-            "group": "table-sft-training",
+            "job_type": algorithm,
+            "group": f"table-{algorithm}-training",
             "name": f"qwen35-4b-lora-{report['config']['dataset_label']}-{report['created_at']}",
-            "tags": ["sft", "lora", report["config"]["dataset_label"]],
+            "tags": [algorithm, "lora", report["config"]["dataset_label"]],
         }
         self.process = subprocess.Popen(
             [

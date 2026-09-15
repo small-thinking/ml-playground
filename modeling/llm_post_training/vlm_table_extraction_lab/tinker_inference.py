@@ -12,6 +12,12 @@ from .inference import PROMPT
 COOKBOOK_REVISION = "485726f55d3b2b5abe5fcb4a0d2f3e18e4599dfe"
 PROCESSOR_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 SEED = 20260913
+TEACHER_MODEL = "Qwen/Qwen3.6-35B-A3B"
+TEACHER_REVISION = "995ad96eacd98c81ed38be0c5b274b04031597b0"
+PROCESSOR_REVISIONS = {
+    "Qwen/Qwen3.5-4B": PROCESSOR_REVISION,
+    TEACHER_MODEL: TEACHER_REVISION,
+}
 
 
 def verify_cookbook(directory):
@@ -32,8 +38,6 @@ def verify_cookbook(directory):
 
 def load_renderer(model, revision, cookbook_dir):
     """Load the shared training/inference template without contacting Tinker."""
-    if model != "Qwen/Qwen3.5-4B":
-        raise ValueError("This Tinker renderer supports Qwen/Qwen3.5-4B only")
     source = verify_cookbook(cookbook_dir)
     if (
         not isinstance(revision, str)
@@ -42,6 +46,10 @@ def load_renderer(model, revision, cookbook_dir):
     ):
         raise ValueError(
             "Tinker processor revision must be a full 40-character commit SHA"
+        )
+    if model not in PROCESSOR_REVISIONS or revision != PROCESSOR_REVISIONS[model]:
+        raise ValueError(
+            "Use an explicitly supported model and pinned processor revision"
         )
     sys.path.insert(0, str(source))
     import tinker_cookbook.renderers as renderers
